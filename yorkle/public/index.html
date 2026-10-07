@@ -12,8 +12,8 @@
 	textarea { min-height: 6rem; }
 	button { margin: .6rem .4rem 0 0; padding: .4rem .9rem; font: inherit; }
 	pre { white-space: pre-wrap; word-break: break-all; padding: .6rem; border: 1px solid #8884; border-radius: 4px; }
-	.huddle { border: 1px solid #8886; border-radius: 6px; padding: .5rem .8rem; margin: .6rem 0; }
-	.huddle.hidden { opacity: .55; }
+	.bubble { border: 1px solid #8886; border-radius: 6px; padding: .5rem .8rem; margin: .6rem 0; }
+	.bubble.hidden { opacity: .55; }
 	code { font-size: .9em; }
 	.badge { display: inline-block; padding: .05rem .5rem; border-radius: 999px; font-size: .85em; font-weight: 600; color: #fff; }
 	.badge.working { background: #9a5b00; }
@@ -32,21 +32,21 @@
 <label for="repo">Repository (blank = new repository)</label>
 <input id="repo" placeholder="r-1234abcd">
 
-<label for="huddle">Huddle to base the fork on (optional)</label>
-<input id="huddle">
+<label for="bubble">Bubble to base the fork on (optional)</label>
+<input id="bubble">
 
 <label for="prompt">Prompt</label>
 <textarea id="prompt"></textarea>
 
 <button id="agent">Spawn agent</button>
 <button id="notagent">Spawn notagent</button>
-<button id="refresh">Show huddles</button>
+<button id="refresh">Show bubbles</button>
 <button id="working">Show agents</button>
 
 <pre id="out" aria-live="polite"></pre>
 <div id="agents" aria-live="polite"></div>
-<div id="huddle-view" hidden>
-<div id="huddles"></div>
+<div id="bubble-view" hidden>
+<div id="bubbles"></div>
 <h2 id="viewer-title" hidden></h2>
 <pre id="viewer" hidden></pre>
 </div>
@@ -71,7 +71,7 @@ async function spawn(kind, button) {
 	button.disabled = true; // greyed out until the spawn request returns
 	$("out").textContent = "…";
 	try {
-		const body = { repo: $("repo").value || undefined, huddle: $("huddle").value || undefined, prompt: $("prompt").value };
+		const body = { repo: $("repo").value || undefined, bubble: $("bubble").value || undefined, prompt: $("prompt").value };
 		const r = await api("POST", `/${kind}`, body);
 		$("repo").value = r.repo;
 		$("out").textContent = JSON.stringify(r, null, 2);
@@ -80,22 +80,22 @@ async function spawn(kind, button) {
 	finally { button.disabled = false; }
 }
 
-// Only one of the agents / huddles views is shown at a time.
+// Only one of the agents / bubbles views is shown at a time.
 function showView(name) {
 	$("agents").hidden = name !== "agents";
-	$("huddle-view").hidden = name !== "huddles";
+	$("bubble-view").hidden = name !== "bubbles";
 	if (name !== "agents") clearTimeout(agentTimer); // stop agents auto-refresh when leaving that view
 }
 
 async function refresh() {
-	showView("huddles");
+	showView("bubbles");
 	try {
-		const { huddles, conflicts, waiting } = await api("GET", `/repos/${encodeURIComponent($("repo").value)}`);
-		const el = $("huddles");
+		const { bubbles, conflicts, waiting } = await api("GET", `/repos/${encodeURIComponent($("repo").value)}`);
+		const el = $("bubbles");
 		el.replaceChildren();
-		for (const h of huddles) {
+		for (const h of bubbles) {
 			const d = document.createElement("div");
-			d.className = "huddle" + (h.visible ? "" : " hidden");
+			d.className = "bubble" + (h.visible ? "" : " hidden");
 			const title = document.createElement("strong");
 			title.textContent = `${h.id}${h.visible ? "" : " (merging)"}`;
 			const ul = document.createElement("ul");

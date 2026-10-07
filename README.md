@@ -1,7 +1,7 @@
 # blingo
 
 Agent-based change control on Cloudflare. Agents (or a human, through a "notagent") work on
-forks of a repository; blingo groups finished forks into **huddles** of forks that touch disjoint
+forks of a repository; blingo groups finished forks into **bubbles** of forks that touch disjoint
 files, and a background loop rebases everything back together. See [design.md](design.md) for the
 idea and [ARCHITECTURE.md](ARCHITECTURE.md) for how it is built.
 
@@ -9,7 +9,7 @@ idea and [ARCHITECTURE.md](ARCHITECTURE.md) for how it is built.
 
 | Path | What |
 |---|---|
-| `backend/` | **blingo** — the Worker: API, huddle logic, merge loop, sandboxes (Durable Objects + Containers + Artifacts) |
+| `backend/` | **blingo** — the Worker: API, bubble logic, merge loop, sandboxes (Durable Objects + Containers + Artifacts) |
 | `yorkle/` | **yorkle** — the web UI: static page + a tiny Worker that forwards API calls to blingo |
 | `design.md` | Original design sketch |
 
@@ -32,7 +32,7 @@ npm workspaces: run `npm install` once at the root.
 ## Develop
 
 ```sh
-npm test            # huddle logic unit tests (backend)
+npm test            # bubble logic unit tests (backend)
 npm run check       # typecheck both projects
 npm run dev         # yorkle + blingo together; open the printed URL
 ```
@@ -58,10 +58,10 @@ All requests need `Authorization: Bearer $BLINGO_TOKEN`.
 
 | Method & path | Does |
 |---|---|
-| `POST /agents {prompt, repo?, huddle?}` | Fork and run Claude Code on it. No `repo` → new repository; no `huddle` → any huddle |
-| `POST /notagents {repo?, huddle?}` | Fork and return a one-push git remote; the push gets placed |
+| `POST /agents {prompt, repo?, bubble?}` | Fork and run Claude Code on it. No `repo` → new repository; no `bubble` → any bubble |
+| `POST /notagents {repo?, bubble?}` | Fork and return a one-push git remote; the push gets placed |
 | `GET /agents/:fork` | One agent's sandbox status and log tail |
-| `GET /repos/:repo` | Huddles, members, conflicts, notagents waiting, agent runs |
+| `GET /repos/:repo` | Bubbles, members, conflicts, notagents waiting, agent runs |
 | `GET /repos/:repo/:fork` | Kept diff of a merged fork |
 | `GET /repos/:repo/:fork?path=…` | A file as that fork sees it |
 | `DELETE /repos/:repo` | Delete the repository's git repos and all its records |

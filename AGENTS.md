@@ -4,8 +4,8 @@ Read [README.md](README.md) for setup and [ARCHITECTURE.md](ARCHITECTURE.md) bef
 
 ## Projects
 
-- `backend/` — the `blingo` Worker. Huddle rules live in `src/huddles.ts` as pure functions; keep
-  them I/O-free and add a test in `test/huddles.test.ts` when you change them.
+- `backend/` — the `blingo` Worker. Bubble rules live in `src/bubbles.ts` as pure functions; keep
+  them I/O-free and add a test in `test/bubbles.test.ts` when you change them.
 - `yorkle/` — the UI. One plain HTML file (`public/index.html`), no framework or build step. The
   Worker only forwards to blingo; put API logic in the backend, not here.
 

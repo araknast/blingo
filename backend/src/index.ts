@@ -5,7 +5,7 @@ export { RepoDO } from "./repo-do";
 
 const id = () => crypto.randomUUID().slice(0, 8);
 
-type Body = { prompt?: string; repo?: string; huddle?: string };
+type Body = { prompt?: string; repo?: string; bubble?: string };
 
 // Where a new fork comes from. No repo → brand-new repository (design: "a new repository is created").
 async function source(env: Env, b: Body): Promise<{ repo: string; from: string } | Response> {
@@ -15,10 +15,10 @@ async function source(env: Env, b: Body): Promise<{ repo: string; from: string }
 		return { repo, from: repo };
 	}
 	const repoDO = env.REPO.getByName(b.repo);
-	// No huddle named → any huddle; the base repo only while the repository has none.
-	if (!b.huddle) return { repo: b.repo, from: (await repoDO.anyHuddle()) ?? b.repo };
-	const rep = await repoDO.repOf(b.huddle);
-	return rep ? { repo: b.repo, from: rep } : Response.json({ error: "no such huddle" }, { status: 404 });
+	// No bubble named → any bubble; the base repo only while the repository has none.
+	if (!b.bubble) return { repo: b.repo, from: (await repoDO.anyBubble()) ?? b.repo };
+	const rep = await repoDO.repOf(b.bubble);
+	return rep ? { repo: b.repo, from: rep } : Response.json({ error: "no such bubble" }, { status: 404 });
 }
 
 async function fork(env: Env, from: string, repo: string) {
