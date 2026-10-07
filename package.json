@@ -1,0 +1,15 @@
+{
+  "name": "blingo-repo",
+  "private": true,
+  "workspaces": ["backend", "yorkle"],
+  "scripts": {
+    "test": "npm test -w backend",
+    "check": "npm run check -ws",
+    "dev": "wrangler dev -c yorkle/wrangler.jsonc -c backend/wrangler.jsonc",
+    "deploy": "npm run deploy -w backend && npm run deploy -w yorkle"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "wrangler": "^4.148.0"
+  }
+}

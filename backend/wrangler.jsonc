@@ -1,0 +1,30 @@
+{
+	"$schema": "../node_modules/wrangler/config-schema.json",
+	"name": "blingo",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-10-06",
+	"compatibility_flags": ["nodejs_compat"],
+	"observability": { "enabled": true },
+	"upload_source_maps": true,
+	"vars": { "MODEL": "claude-opus-5-5" },
+	// BLINGO_TOKEN guards the API (it mints git tokens); ANTHROPIC_API_KEY never enters the sandbox.
+	"secrets": { "required": ["BLINGO_TOKEN", "ANTHROPIC_API_KEY"] },
+	"artifacts": [{ "binding": "ARTIFACTS", "namespace": "blingo" }],
+	"containers": [
+		{
+			"class_name": "Box",
+			"scheduling_policy": "durable_object",
+			"images": { "box": { "dockerfile": "./Dockerfile" } }
+		}
+	],
+	"durable_objects": {
+		"bindings": [
+			{ "class_name": "RepoDO", "name": "REPO" },
+			{ "class_name": "Box", "name": "BOX" }
+		]
+	},
+	"exports": {
+		"RepoDO": { "type": "durable-object", "storage": "sqlite" },
+		"Box": { "type": "durable-object", "storage": "sqlite" }
+	}
+}

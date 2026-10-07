@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>yorkle</title>
+<style>
+	:root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+	body { max-width: 52rem; margin: 2rem auto; padding: 0 1rem; }
+	label { display: block; margin: .5rem 0 .2rem; font-weight: 600; }
+	input, textarea { width: 100%; box-sizing: border-box; font: inherit; padding: .4rem; }
+	textarea { min-height: 6rem; }
+	button { margin: .6rem .4rem 0 0; padding: .4rem .9rem; font: inherit; }
+	pre { white-space: pre-wrap; word-break: break-all; padding: .6rem; border: 1px solid #8884; border-radius: 4px; }
+	.huddle { border: 1px solid #8886; border-radius: 6px; padding: .5rem .8rem; margin: .6rem 0; }
+	.huddle.hidden { opacity: .55; }
+	code { font-size: .9em; }
+	.badge { display: inline-block; padding: .05rem .5rem; border-radius: 999px; font-size: .85em; font-weight: 600; color: #fff; }
+	.badge.working { background: #9a5b00; }
+	.badge.completed { background: #2e7d32; }
+	.badge.failed { background: #c62828; }
+	#agents li { margin: .3rem 0; }
+	button.file { margin: 0 .3rem 0 0; padding: 0; border: 0; background: none; color: LinkText; text-decoration: underline; cursor: pointer; }
+</style>
+</head>
+<body>
+<h1>yorkle</h1>
+
+<label for="token">API token</label>
+<input id="token" type="password" autocomplete="off">
+
+<label for="repo">Repository (blank = new repository)</label>
+<input id="repo" placeholder="r-1234abcd">
+
+<label for="huddle">Huddle to base the fork on (optional)</label>
+<input id="huddle">
+
+<label for="prompt">Prompt</label>
+<textarea id="prompt"></textarea>
+
+<button id="agent">Spawn agent</button>
+<button id="notagent">Spawn notagent</button>
+<button id="refresh">Show huddles</button>
+<button id="working">Show agents</button>
+
+<pre id="out" aria-live="polite"></pre>
+<div id="agents" aria-live="polite"></div>
+<div id="huddle-view" hidden>
+<div id="huddles"></div>
+<h2 id="viewer-title" hidden></h2>
+<pre id="viewer" hidden></pre>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+try { $("token").value = localStorage.getItem("blingo-token") ?? ""; } catch {}
+$("token").onchange = () => { try { localStorage.setItem("blingo-token", $("token").value); } catch {} };
+
+async function api(method, path, body) {
+	const res = await fetch(path, {
+		method,
+		headers: { authorization: `Bearer ${$("token").value}`, "content-type": "application/json" },
+		body: body && JSON.stringify(body),
+	});
+	const data = await res.json().catch(() => ({ error: res.statusText }));
+	if (!res.ok) throw new Error(data.error ?? res.status);
+	return data;
+}
+
+async function spawn(kind, button) {
+	button.disabled = true; // greyed out until the spawn request returns
+	$("out").textContent = "…";
+	try {
+		const body = { repo: $("repo").value || undefined, huddle: $("huddle").value || undefined, prompt: $("prompt").value };
+		const r = await api("POST", `/${kind}`, body);
+		$("repo").value = r.repo;
+		$("out").textContent = JSON.stringify(r, null, 2);
+		if (kind === "agents") watchAgents();
+	} catch (e) { $("out").textContent = String(e); }
+	finally { button.disabled = false; }
+}
+
+// Only one of the agents / huddles views is shown at a time.
+function showView(name) {
+	$("agents").hidden = name !== "agents";
+	$("huddle-view").hidden = name !== "huddles";
+	if (name !== "agents") clearTimeout(agentTimer); // stop agents auto-refresh when leaving that view
+}
+
+async function refresh() {
+	showView("huddles");
+	try {
+		const { huddles, conflicts, waiting } = await api("GET", `/repos/${encodeURIComponent($("repo").value)}`);
+		const el = $("huddles");
+		el.replaceChildren();
+		for (const h of huddles) {
+			const d = document.createElement("div");
+			d.className = "huddle" + (h.visible ? "" : " hidden");
+			const title = document.createElement("strong");
+			title.textContent = `${h.id}${h.visible ? "" : " (merging)"}`;
+			const ul = document.createElement("ul");
+			for (const m of h.members) {
+				const li = document.createElement("li");
+				li.append(`${m.name} — ${m.status} — `);
+				if (!m.files.length) li.append("(no files)");
+				for (const f of m.files) {
+					const b = document.createElement("button");
+					b.className = "file";
+					b.textContent = f;
+					b.onclick = () => showFile(m.name, f);
+					li.append(b);
+				}
+				ul.append(li);
+			}
+			d.append(title, ul);
+			el.append(d);
+		}
+		$("out").textContent = `conflicts: ${JSON.stringify(conflicts)}\nwaiting for push: ${waiting.join(", ") || "none"}`;
+	} catch (e) { $("out").textContent = String(e); }
+}
+
+const MAX_SHOWN = 200_000;
+async function showFile(fork, path) {
+	$("viewer-title").hidden = $("viewer").hidden = false;
+	$("viewer-title").textContent = `${fork}: ${path}`;
+	$("viewer").textContent = "…";
+	try {
+		const res = await fetch(`/repos/${encodeURIComponent($("repo").value)}/${encodeURIComponent(fork)}?path=${encodeURIComponent(path)}`, {
+			headers: { authorization: `Bearer ${$("token").value}` },
+		});
+		const blob = await res.blob();
+		const type = res.headers.get("content-type") ?? "";
+		if (!res.ok) $("viewer").textContent = await blob.text();
+		else if (!type.startsWith("text/") && !type.includes("json")) $("viewer").textContent = `(binary file, ${blob.size} bytes)`;
+		else {
+			const text = await blob.text();
+			$("viewer").textContent = text.length > MAX_SHOWN ? text.slice(0, MAX_SHOWN) + `\n… truncated (${blob.size} bytes total)` : text;
+		}
+		$("viewer").scrollIntoView({ behavior: "smooth", block: "nearest" });
+	} catch (e) { $("viewer").textContent = String(e); }
+}
+
+$("agent").onclick = () => spawn("agents", $("agent"));
+$("notagent").onclick = () => spawn("notagents", $("notagent"));
+$("refresh").onclick = refresh;
+// Agent run status → what the UI calls it.
+const LABEL = { running: "working", placed: "completed", failed: "failed", lost: "failed" };
+let agentTimer;
+
+// Renders this repo's agents; keeps refreshing every 10s while any is working.
+async function watchAgents() {
+	showView("agents");
+	clearTimeout(agentTimer);
+	try {
+		const { agents } = await api("GET", `/repos/${encodeURIComponent($("repo").value)}`);
+		const ul = document.createElement("ul");
+		for (const a of agents) {
+			const li = document.createElement("li");
+			const label = LABEL[a.status] ?? a.status;
+			const badge = document.createElement("span");
+			badge.className = `badge ${label}`;
+			badge.textContent = a.status === "lost" ? "failed (sandbox lost)" : label;
+			const mins = Math.round(((a.finished ?? Date.now()) - a.started) / 60000);
+			li.append(badge, ` ${a.fork} — ${mins} min — ${a.prompt.slice(0, 120)}`);
+			if (a.log) {
+				const d = document.createElement("details");
+				const sum = document.createElement("summary");
+				sum.textContent = "log";
+				const pre = document.createElement("pre");
+				pre.textContent = a.log;
+				d.append(sum, pre);
+				li.append(d);
+			}
+			ul.append(li);
+		}
+		const working = agents.filter((a) => a.status === "running").length;
+		const title = document.createElement("h2");
+		title.textContent = agents.length ? `Agents: ${working} working, ${agents.length - working} finished` : "No agents on this repository";
+		$("agents").replaceChildren(title, ...(agents.length ? [ul] : []));
+		if (working) agentTimer = setTimeout(watchAgents, 10_000);
+	} catch (e) { $("out").textContent = String(e); }
+}
+$("working").onclick = watchAgents;
+</script>
+</body>
+</html>
