@@ -37,7 +37,6 @@ browser ──► yorkle Worker ──(service binding)──► blingo Worker �
 | `agent_run(fork, prompt, started, status, finished, log)` | agent runs, kept after they finish |
 
 Some older RepoDOs also have an unused `fork.deleted` column, so inserts name their columns.
-Bubbles were once called huddles; `init()` renames a leftover `huddle` table and `fork.huddle` column.
 
 ## Flows
 

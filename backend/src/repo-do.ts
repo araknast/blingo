@@ -15,21 +15,12 @@ export class RepoDO extends DurableObject<Env> {
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
-		this.init();
-	}
-
-	private init() {
-		// Bubbles were called huddles: rename that table and column in repos created before the rename.
-		if (this.sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'huddle'").toArray().length) {
-			this.sql.exec("ALTER TABLE huddle RENAME TO bubble; ALTER TABLE fork RENAME COLUMN huddle TO bubble;");
-		}
 		// Bubble id == name of its representative fork.
 		this.sql.exec(`
 			CREATE TABLE IF NOT EXISTS bubble(id TEXT PRIMARY KEY, visible INTEGER NOT NULL DEFAULT 1, seq INTEGER NOT NULL);
 			CREATE TABLE IF NOT EXISTS fork(name TEXT PRIMARY KEY, bubble TEXT NOT NULL, status TEXT NOT NULL, files TEXT NOT NULL, diff TEXT);
 			CREATE TABLE IF NOT EXISTS conflict(k TEXT PRIMARY KEY);
 			CREATE TABLE IF NOT EXISTS watch(fork TEXT PRIMARY KEY, base TEXT NOT NULL, token TEXT NOT NULL, expires INTEGER NOT NULL);
-			DROP TABLE IF EXISTS agent; -- replaced by agent_run, which keeps finished runs
 			CREATE TABLE IF NOT EXISTS agent_run(fork TEXT PRIMARY KEY, prompt TEXT NOT NULL, started INTEGER NOT NULL,
 				status TEXT NOT NULL DEFAULT 'running', finished INTEGER, log TEXT);
 		`);
@@ -123,8 +114,7 @@ export class RepoDO extends DurableObject<Env> {
 			}
 		}
 		await this.ctx.storage.deleteAlarm();
-		await this.ctx.storage.deleteAll();
-		this.init(); // this instance stays alive, so recreate the empty tables
+		this.sql.exec("DELETE FROM bubble; DELETE FROM fork; DELETE FROM conflict; DELETE FROM watch; DELETE FROM agent_run;");
 		return deleted;
 	}
 
