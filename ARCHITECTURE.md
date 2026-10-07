@@ -41,10 +41,11 @@ Some older RepoDOs also have an unused `fork.deleted` column, so inserts name th
 
 ## Flows
 
-**Placement** (`RepoDO.place`, `PLACE_SH`). Visible bubbles are tried one at a time, in order. For
-each, a Box computes the files the fork would bring into that bubble's rep (`git diff` since their
-merge base), so history the fork carries from elsewhere counts too. The fork joins the first bubble
-none of whose files are in that set, recorded with that set, so it can always be rebased in. If
+**Placement** (`RepoDO.place`, `PLACE_SH`). One Box job checks the visible bubbles in order. For
+each, it computes the files the fork would bring into that bubble's rep (`git diff` since their
+merge base), so history the fork carries from elsewhere counts too, and stops at the first bubble
+none of whose files are in that set. The fork joins it, recorded with that set, so it can always be
+rebased in. If that bubble changed while the job ran, placement runs again. If
 none fits, it starts a new bubble as its representative, with its files = everything changed since
 the repository's starting point (the empty tree), so distance to other bubbles reflects all it
 carries. Then any visible bubbles at

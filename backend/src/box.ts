@@ -13,16 +13,27 @@ const TASK = "/workspace/task";
 const CHECK_MS = 30_000;
 export const CONFLICT = 10;
 
-// $1 fork remote, $2 a bubble rep remote (optional). Prints the files the fork would bring into
-// that rep: changed since their merge base, so history the fork carries from elsewhere counts.
-// Without $2: every file changed since the repository's starting point (for a new bubble).
+// $1 fork remote, then pairs of (bubble rep remote, that bubble's files newline-separated), in order.
+// For each bubble: the files the fork would bring into its rep = changed since their merge base, so
+// history the fork carries from elsewhere counts. Stops at the first bubble none of whose files are
+// in that set and prints its index, then the set. If none fits, prints "new", then every file
+// changed since the repository's starting point (the new bubble's files).
 // ponytail: base repos are always created empty, so "starting point" = the empty tree; diff
 // against the base repo's head instead if repos can ever be imported.
 export const PLACE_SH = `set -e
-d=$(mktemp -d); git clone -q "$1" "$d"; cd "$d"
-from=$(git hash-object -t tree /dev/null)
-if [ -n "$2" ]; then git fetch -q "$2" HEAD; from=$(git merge-base FETCH_HEAD HEAD || echo "$from"); fi
-git diff --name-only "$from" HEAD`;
+d=$(mktemp -d); git clone -q "$1" "$d"; cd "$d"; shift
+empty=$(git hash-object -t tree /dev/null)
+i=0
+while [ $# -ge 2 ]; do
+	git fetch -q "$1" HEAD
+	brings=$(git diff --name-only "$(git merge-base FETCH_HEAD HEAD || echo "$empty")" HEAD)
+	if ! printf '%s\\n' "$brings" | grep -qFxf <(printf '%s\\n' "$2" | sed '/^$/d'); then
+		echo "$i"; printf '%s\\n' "$brings"; exit 0
+	fi
+	i=$((i + 1)); shift 2
+done
+echo new
+git diff --name-only "$empty" HEAD`;
 
 // $1 rep remote (write), $2 source remote (read). Rebases source onto rep and fast-forwards rep.
 // Exit 0 + diff of source on stdout; exit ${CONFLICT} = rebase conflict; anything else = infra error.

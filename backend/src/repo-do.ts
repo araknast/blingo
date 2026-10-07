@@ -30,29 +30,24 @@ export class RepoDO extends DurableObject<Env> {
 	// ---- RPC ----
 
 	// A finished fork looks for a bubble (design: "finds a bubble to place the fork in").
-	// Candidates are checked one at a time, in order: the fork joins the first bubble none of whose
+	// One Box job checks the visible bubbles in order: the fork joins the first one none of whose
 	// files it would bring into that bubble's rep. Otherwise it starts a new bubble whose files are
 	// everything it carries since the repository's starting point.
 	async place(fork: string): Promise<string> {
-		const { url } = await authRemote(this.env, fork, "read");
-		const brings = async (rep?: string) => {
-			const args = rep ? [url, (await authRemote(this.env, rep, "read")).url] : [url];
-			const r = await this.box().sh(PLACE_SH, args);
-			if (r.exitCode !== 0) throw new Error(`placing ${fork} (${r.exitCode}): ${r.stderr}`);
-			return r.stdout.split("\n").filter(Boolean);
-		};
-		for (const candidate of this.bubbles()) {
-			if (!candidate.visible) continue;
-			const files = await brings(candidate.id);
+		const candidates = this.bubbles().filter((b) => b.visible);
+		const [self, ...reps] = await Promise.all([fork, ...candidates.map((b) => b.id)].map((n) => authRemote(this.env, n, "read")));
+		const args = candidates.flatMap((b, i) => [reps[i].url, [...b.files].join("\n")]);
+		const r = await this.box().sh(PLACE_SH, [self.url, ...args]);
+		if (r.exitCode !== 0) throw new Error(`placing ${fork} (${r.exitCode}): ${r.stderr}`);
+		const [which, ...files] = r.stdout.split("\n").filter(Boolean);
+		if (which !== "new") {
 			// Re-read after the await: the bubble may have grown, been hidden, or been absorbed.
-			const b = this.bubbles().find((h) => h.id === candidate.id);
-			if (b && fits(b, files)) {
-				this.sql.exec("INSERT INTO fork (name, bubble, status, files) VALUES (?, ?, 'pending', ?)", fork, b.id, JSON.stringify(files));
-				await this.placed();
-				return b.id;
-			}
+			const b = this.bubbles().find((h) => h.id === candidates[Number(which)].id);
+			if (!b || !fits(b, files)) return this.place(fork); // changed under us; check again
+			this.sql.exec("INSERT INTO fork (name, bubble, status, files) VALUES (?, ?, 'pending', ?)", fork, b.id, JSON.stringify(files));
+			await this.placed();
+			return b.id;
 		}
-		const files = await brings();
 		this.sql.exec("INSERT INTO bubble VALUES (?, 1, (SELECT COALESCE(MAX(seq), 0) + 1 FROM bubble))", fork);
 		this.sql.exec("INSERT INTO fork (name, bubble, status, files) VALUES (?, ?, 'rep', ?)", fork, fork, JSON.stringify(files));
 		await this.placed();
