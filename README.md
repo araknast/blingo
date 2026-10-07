@@ -65,3 +65,5 @@ All requests need `Authorization: Bearer $BLINGO_TOKEN`.
 | `GET /repos/:repo/:fork` | Kept diff of a merged fork |
 | `GET /repos/:repo/:fork?path=…` | A file as that fork sees it |
 | `DELETE /repos/:repo` | Delete the repository's git repos and all its records |
+| `POST /repos/:repo/lock {bubble}` / `…/unlock {bubble}` | Lock or unlock a bubble (locked: no bubble merges) |
+| `POST /repos/:repo/ferge {a, b}` | Ferge two conflicting bubbles → `{bubble, locked, files}` |

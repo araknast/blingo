@@ -66,6 +66,17 @@ export default {
 		if (request.method === "DELETE" && a === "repos" && b && !c) {
 			return Response.json({ deleted: await env.REPO.getByName(b).destroy(b) });
 		}
+		if (request.method === "POST" && a === "repos" && b && (c === "lock" || c === "unlock")) {
+			const { bubble } = (await request.json()) as { bubble: string };
+			const repo = env.REPO.getByName(b);
+			const ok = c === "lock" ? await repo.lock(bubble) : await repo.unlock(bubble);
+			return ok ? Response.json({ bubble, locked: c === "lock" }) : Response.json({ error: "no such bubble" }, { status: 404 });
+		}
+		if (request.method === "POST" && a === "repos" && b && c === "ferge") {
+			const body = (await request.json()) as { a: string; b: string };
+			const r = await env.REPO.getByName(b).ferge(b, body.a, body.b);
+			return "error" in r ? Response.json(r, { status: 409 }) : Response.json(r);
+		}
 		if (request.method === "GET" && a === "repos" && b && c && url.searchParams.has("path")) {
 			const from = await env.REPO.getByName(b).readFrom(c);
 			if (!from) return new Response("no such fork\n", { status: 404 });

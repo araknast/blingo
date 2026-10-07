@@ -31,6 +31,43 @@ git checkout -q --detach FETCH_HEAD
 git rebase -q "$rep" >&2 || exit ${CONFLICT}
 git push -q origin HEAD:refs/heads/main`;
 
+export const NO_CONFLICT = 11;
+
+// Ferge. $1 bubble A rep (write), $2 bubble B rep (read), $3 new locked bubble L (write, a fork of A).
+// A ← A + B with the conflicting files removed (one squashed commit, history stays linear).
+// L ← that + the conflicting files with conflict markers. Prints the conflicting files.
+// Exit ${NO_CONFLICT} = A and B no longer conflict; anything else nonzero = infra error.
+export const FERGE_SH = `set -e
+d=$(mktemp -d); m=$(mktemp -d); git clone -q "$1" "$d"; cd "$d"
+a=$(git rev-parse HEAD)
+git fetch -q "$2" HEAD; b=$(git rev-parse FETCH_HEAD)
+mt() { git merge-tree --write-tree --no-messages --allow-unrelated-histories "$@"; }
+out=$(mt --name-only "$a" "$b") && rc=0 || rc=$?
+[ "$rc" -le 1 ] || exit "$rc"
+F=$(printf '%s\\n' "$out" | tail -n +2)
+[ -n "$F" ] || exit ${NO_CONFLICT}
+# Capture each conflicting file as git leaves it mid-merge: with conflict markers.
+git -c merge.conflictStyle=merge merge -q --no-commit --no-ff --allow-unrelated-histories "$b" >/dev/null 2>&1 || true
+printf '%s\\n' "$F" | while IFS= read -r f; do
+	if [ -e "$f" ]; then mkdir -p "$m/$(dirname "$f")"; cp "$f" "$m/$f"; fi
+done
+git merge --abort 2>/dev/null || git reset -q --hard "$a"
+drop() {
+	git checkout -q --detach "$1"
+	printf '%s\\n' "$F" | git --literal-pathspecs rm -q --ignore-unmatch --pathspec-from-file=-
+	git commit -q --allow-empty -m "ferge: remove conflicting files"
+	git rev-parse HEAD
+}
+ap=$(drop "$a"); bp=$(drop "$b")
+c=$(git commit-tree "$(mt "$ap" "$bp")" -p "$ap" -m "ferge: merge $b without conflicting files")
+git push -q origin "$c:refs/heads/main"
+git checkout -q --detach "$c"
+cp -R "$m/." .
+git add -A
+git commit -q --allow-empty -m "ferge: conflicting files with conflict markers"
+git push -q "$3" HEAD:refs/heads/main
+printf '%s\\n' "$F"`;
+
 // $1 remote, $2 prompt. Runs Claude Code on a clone, commits, pushes, writes changed files.
 const AGENT_SH = `set -e
 rm -rf /workspace/repo; git clone -q "$1" /workspace/repo; cd /workspace/repo

@@ -39,3 +39,11 @@ test("nearest neighbour: min distance, skips conflicts and invisible bubbles", (
 	expect(nearestNeighbour("a", hs, new Set([conflictKey("c", "a")]))).toBe("b");
 	expect(nearestNeighbour("a", hs, new Set([conflictKey("a", "b"), conflictKey("a", "c")]))).toBeNull();
 });
+
+test("locked bubbles stay placeable but never join or get picked as neighbours", () => {
+	const locked = { ...h("l", ["x"]), locked: true };
+	expect(placeFork([locked], ["y"])).toBe("l");
+	expect(zeroDistanceJoins([h("a", ["y"]), locked])).toEqual([]);
+	expect(nearestNeighbour("a", [h("a", ["x"]), locked], new Set())).toBeNull();
+	expect(nearestNeighbour("l", [locked, h("a", ["x"])], new Set())).toBeNull();
+});

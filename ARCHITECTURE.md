@@ -32,7 +32,8 @@ browser ──► yorkle Worker ──(service binding)──► blingo Worker �
 |---|---|
 | `bubble(id, visible, seq)` | `visible = 0` while it is in a neighbour merge (hidden from placement) |
 | `fork(name, bubble, status, files, diff)` | status `rep` / `pending` / `merged` / `conflict`; `files` = changed paths (JSON); `diff` kept after merge |
-| `conflict(k)` | `"a|b"` bubble pairs whose merge failed; never retried |
+| `conflict(k)` | `"a|b"` bubble pairs whose merge failed; never retried (except by a ferge) |
+| `locked(id)` | locked bubbles: placeable, but excluded from neighbour merges and distance-0 joins |
 | `watch(fork, base, token, expires)` | notagent forks waiting for their push |
 | `agent_run(fork, prompt, started, status, finished, log)` | agent runs, kept after they finish |
 
@@ -62,6 +63,20 @@ it's done it places the fork (or deletes it on failure) and reports to `RepoDO.a
    conflict (exit 10), record the pair. Show both again and re-run zero-distance joins.
 
 Infra errors throw; the alarm retries. Only a rebase conflict counts as a conflict.
+Locked bubbles skip step 2 on both sides, but their own pending members are still merged in.
+
+**Lock / unlock** (`POST /repos/:repo/lock|unlock`). Unlocking re-runs distance-0 joins and
+wakes the merge loop.
+
+**Ferge** (`POST /repos/:repo/ferge {a, b}`, `RepoDO.ferge`, `FERGE_SH`). Only for a pair in
+`conflict`, both visible and unlocked; both are hidden while it runs. In a Box:
+1. `git merge-tree` lists the files that conflict between the two reps.
+2. A real `git merge` captures those files with conflict markers.
+3. The files are removed from both sides, and b's changes land on a's rep as one squashed commit.
+4. A new fork of a's rep gets a commit adding the marker files.
+
+Then b is absorbed into a (its rep repo deleted), the conflict row goes, and the new fork becomes
+a **locked** bubble whose files are the conflicting ones. Unlock it to let it merge back.
 
 ## Sandbox and secrets
 
@@ -75,7 +90,8 @@ Infra errors throw; the alarm retries. Only a rebase conflict counts as a confli
 
 Marked with `ponytail:` comments in the code.
 
-- One merge at a time per repository (the alarm is single-flight).
+- One merge at a time per repository (the alarm is single-flight). A ferge runs from its API
+  request, not the alarm, so a member rebase into the same rep at that moment makes one of them fail.
 - Pushes are found by polling, not Artifacts events; several pushes within one 5 s window all
   count as the one push.
 - Bubble rules are by file path only; semantic conflicts surface at rebase or not at all.

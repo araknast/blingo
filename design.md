@@ -52,6 +52,19 @@ another bubble). In this case, bubble A should be merged with bubble B.
 
 all merges should be done using a git rebase
 
+## locked bubbles
+locking a bubble prevents it from being merged into, or merging with other
+bubbles. it is still visible to agents looking to place a fork. a bubble can be
+unlocked, after which it can merge freely with other bubbles.
+
+## ferging bubbles
+if a merge fails, the only way to reconcile the contents of two bubbles is
+through a ferge. a ferge can only be done on two bubbles that have been marked
+as conflicting, and must be explicitly requested via the api. once a ferge is
+requesed, the conflicting files are deleted from their respective bubbles, the
+bubbles are merged together, and a locked bubble is created containing the
+merge conflict and conflict markers. 
+
 ## interaction
 the main method of interacting with blingo is spawning an agent to do some
 work on a fork. The user inputs a prompt and optionally a bubble tobase the
@@ -63,3 +76,4 @@ inteacts with the blingo system in the same way an agent would, except instead
 of generating code itself, it waits for a git push. Once it receives this, it
 shuts down the git sever and places the fork in a bubble in the same way an
 agent would.
+

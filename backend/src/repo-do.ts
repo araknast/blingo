@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { CHANGED_FILES_SH, CONFLICT, REBASE_SH, authRemote } from "./box";
+import { CHANGED_FILES_SH, CONFLICT, FERGE_SH, NO_CONFLICT, REBASE_SH, authRemote } from "./box";
 import { conflictKey, nearestNeighbour, placeFork, zeroDistanceJoins, type Bubble } from "./bubbles";
 
 const POLL_MS = 5_000;
@@ -20,6 +20,7 @@ export class RepoDO extends DurableObject<Env> {
 			CREATE TABLE IF NOT EXISTS bubble(id TEXT PRIMARY KEY, visible INTEGER NOT NULL DEFAULT 1, seq INTEGER NOT NULL);
 			CREATE TABLE IF NOT EXISTS fork(name TEXT PRIMARY KEY, bubble TEXT NOT NULL, status TEXT NOT NULL, files TEXT NOT NULL, diff TEXT);
 			CREATE TABLE IF NOT EXISTS conflict(k TEXT PRIMARY KEY);
+			CREATE TABLE IF NOT EXISTS locked(id TEXT PRIMARY KEY);
 			CREATE TABLE IF NOT EXISTS watch(fork TEXT PRIMARY KEY, base TEXT NOT NULL, token TEXT NOT NULL, expires INTEGER NOT NULL);
 			CREATE TABLE IF NOT EXISTS agent_run(fork TEXT PRIMARY KEY, prompt TEXT NOT NULL, started INTEGER NOT NULL,
 				status TEXT NOT NULL DEFAULT 'running', finished INTEGER, log TEXT);
@@ -53,6 +54,65 @@ export class RepoDO extends DurableObject<Env> {
 		return this.sql.exec<{ id: string }>("SELECT id FROM bubble WHERE id = ?", bubble).toArray()[0]?.id ?? null;
 	}
 
+	lock(id: string): boolean {
+		if (!this.repOf(id)) return false;
+		this.sql.exec("INSERT OR IGNORE INTO locked VALUES (?)", id);
+		return true;
+	}
+
+	async unlock(id: string): Promise<boolean> {
+		if (!this.repOf(id)) return false;
+		this.sql.exec("DELETE FROM locked WHERE id = ?", id);
+		this.joinZeroDistance();
+		await this.kick();
+		return true;
+	}
+
+	// Ferge (design.md): reconcile two conflicting bubbles. b's changes minus the conflicting files go
+	// into a; a new locked bubble holds those files with conflict markers. a and b are hidden meanwhile.
+	// ponytail: not serialized with the alarm's merges; a member rebase pushing to a mid-ferge fails one of them.
+	async ferge(repo: string, a: string, b: string): Promise<{ bubble: string; locked: string; files: string[] } | { error: string }> {
+		if (!this.sql.exec("SELECT 1 FROM conflict WHERE k = ?", conflictKey(a, b)).toArray().length) {
+			return { error: "those bubbles are not marked conflicting" };
+		}
+		const pair = this.bubbles().filter((h) => h.id === a || h.id === b);
+		if (pair.length !== 2 || pair.some((h) => !h.visible || h.locked)) {
+			return { error: "both bubbles must exist, be visible and be unlocked" };
+		}
+		const l = `${repo}-f-${crypto.randomUUID().slice(0, 8)}`;
+		let done = false;
+		this.sql.exec("UPDATE bubble SET visible = 0 WHERE id IN (?, ?)", a, b);
+		try {
+			{
+				using rep = await this.env.ARTIFACTS.get(a);
+				await rep.fork(l, { defaultBranchOnly: true });
+			}
+			const [ra, rb, rl] = await Promise.all([
+				authRemote(this.env, a, "write"),
+				authRemote(this.env, b, "read"),
+				authRemote(this.env, l, "write"),
+			]);
+			const r = await this.box().sh(FERGE_SH, [ra.url, rb.url, rl.url]);
+			if (r.exitCode === NO_CONFLICT) return { error: "those bubbles no longer conflict" };
+			if (r.exitCode !== 0) throw new Error(`ferge ${b} → ${a} failed (${r.exitCode}): ${r.stderr}`);
+			const files = r.stdout.split("\n").filter(Boolean);
+			this.absorb(a, b);
+			this.sql.exec("UPDATE fork SET status = 'merged' WHERE name = ?", b);
+			this.sql.exec("DELETE FROM conflict WHERE k = ?", conflictKey(a, b));
+			this.sql.exec("INSERT INTO bubble VALUES (?, 1, (SELECT COALESCE(MAX(seq), 0) + 1 FROM bubble))", l);
+			this.sql.exec("INSERT INTO fork (name, bubble, status, files) VALUES (?, ?, 'rep', ?)", l, l, JSON.stringify(files));
+			this.sql.exec("INSERT INTO locked VALUES (?)", l);
+			done = true;
+			await this.env.ARTIFACTS.delete(b);
+			return { bubble: a, locked: l, files };
+		} finally {
+			if (!done) await this.env.ARTIFACTS.delete(l).catch(() => false);
+			this.sql.exec("UPDATE bubble SET visible = 1 WHERE id IN (?, ?)", a, b);
+			this.joinZeroDistance();
+			await this.kick();
+		}
+	}
+
 	// Any bubble to fork when none is named (visible first, oldest first); null if the repo has none yet.
 	anyBubble(): string | null {
 		return this.sql.exec<{ id: string }>("SELECT id FROM bubble ORDER BY visible DESC, seq LIMIT 1").toArray()[0]?.id ?? null;
@@ -61,14 +121,12 @@ export class RepoDO extends DurableObject<Env> {
 	list() {
 		const forks = this.sql.exec<Fork>("SELECT name, bubble, status, files FROM fork").toArray();
 		return {
-			bubbles: this.sql
-				.exec<{ id: string; visible: number }>("SELECT id, visible FROM bubble ORDER BY seq")
-				.toArray()
-				.map((h) => ({
-					id: h.id,
-					visible: !!h.visible,
-					members: forks.filter((f) => f.bubble === h.id).map((f) => ({ ...f, files: JSON.parse(f.files) })),
-				})),
+			bubbles: this.bubbles().map((h) => ({
+				id: h.id,
+				visible: h.visible,
+				locked: !!h.locked,
+				members: forks.filter((f) => f.bubble === h.id).map((f) => ({ ...f, files: JSON.parse(f.files) })),
+			})),
 			conflicts: this.sql.exec<{ k: string }>("SELECT k FROM conflict").toArray().map((r) => r.k.split("|")),
 			waiting: this.sql.exec<{ fork: string }>("SELECT fork FROM watch").toArray().map((r) => r.fork),
 			// Running first, then the most recent finished runs.
@@ -114,7 +172,7 @@ export class RepoDO extends DurableObject<Env> {
 			}
 		}
 		await this.ctx.storage.deleteAlarm();
-		this.sql.exec("DELETE FROM bubble; DELETE FROM fork; DELETE FROM conflict; DELETE FROM watch; DELETE FROM agent_run;");
+		this.sql.exec("DELETE FROM bubble; DELETE FROM fork; DELETE FROM conflict; DELETE FROM locked; DELETE FROM watch; DELETE FROM agent_run;");
 		return deleted;
 	}
 
@@ -220,9 +278,11 @@ export class RepoDO extends DurableObject<Env> {
 			files.set(f.bubble, s);
 		}
 		return this.sql
-			.exec<{ id: string; visible: number }>("SELECT id, visible FROM bubble ORDER BY seq")
+			.exec<{ id: string; visible: number; locked: number }>(
+				"SELECT id, visible, id IN (SELECT id FROM locked) AS locked FROM bubble ORDER BY seq",
+			)
 			.toArray()
-			.map((h) => ({ id: h.id, visible: !!h.visible, files: files.get(h.id) ?? new Set() }));
+			.map((h) => ({ id: h.id, visible: !!h.visible, locked: !!h.locked, files: files.get(h.id) ?? new Set() }));
 	}
 
 	private box() {

@@ -97,7 +97,10 @@ async function refresh() {
 			const d = document.createElement("div");
 			d.className = "bubble" + (h.visible ? "" : " hidden");
 			const title = document.createElement("strong");
-			title.textContent = `${h.id}${h.visible ? "" : " (merging)"}`;
+			title.textContent = `${h.id}${h.visible ? "" : " (merging)"}${h.locked ? " (locked)" : ""}`;
+			const lock = document.createElement("button");
+			lock.textContent = h.locked ? "Unlock" : "Lock";
+			lock.onclick = () => act(h.locked ? "unlock" : "lock", { bubble: h.id }, lock);
 			const ul = document.createElement("ul");
 			for (const m of h.members) {
 				const li = document.createElement("li");
@@ -112,11 +115,40 @@ async function refresh() {
 				}
 				ul.append(li);
 			}
-			d.append(title, ul);
+			d.append(title, " ", lock, ul);
 			el.append(d);
 		}
-		$("out").textContent = `conflicts: ${JSON.stringify(conflicts)}\nwaiting for push: ${waiting.join(", ") || "none"}`;
+		if (conflicts.length) {
+			const h = document.createElement("h2");
+			h.textContent = "Conflicting bubbles";
+			const ul = document.createElement("ul");
+			for (const [a, b] of conflicts) {
+				const li = document.createElement("li");
+				const ferge = document.createElement("button");
+				ferge.textContent = "Ferge";
+				ferge.onclick = () => {
+					if (confirm(`Ferge ${a} and ${b}?\nTheir conflicting files are removed from both, the bubbles merge, and a new locked bubble holds those files with conflict markers.`)) {
+						act("ferge", { a, b }, ferge);
+					}
+				};
+				li.append(`${a} ⟷ ${b} `, ferge);
+				ul.append(li);
+			}
+			el.append(h, ul);
+		}
+		$("out").textContent = `waiting for push: ${waiting.join(", ") || "none"}`;
 	} catch (e) { $("out").textContent = String(e); }
+}
+
+// Lock / unlock / ferge, then redraw the bubbles.
+async function act(op, body, button) {
+	button.disabled = true;
+	try {
+		const r = await api("POST", `/repos/${encodeURIComponent($("repo").value)}/${op}`, body);
+		await refresh();
+		$("out").textContent = JSON.stringify(r, null, 2);
+	} catch (e) { $("out").textContent = String(e); }
+	finally { button.disabled = false; }
 }
 
 const MAX_SHOWN = 200_000;
