@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
-import { CHANGED_FILES_SH, CONFLICT, FERGE_SH, NO_CONFLICT, REBASE_SH, authRemote } from "./box";
-import { conflictKey, nearestNeighbour, placeFork, zeroDistanceJoins, type Bubble } from "./bubbles";
+import { CONFLICT, FERGE_SH, NO_CONFLICT, PLACE_SH, REBASE_SH, authRemote } from "./box";
+import { conflictKey, fits, nearestNeighbour, zeroDistanceJoins, type Bubble } from "./bubbles";
 
 const POLL_MS = 5_000;
 
@@ -30,17 +30,38 @@ export class RepoDO extends DurableObject<Env> {
 	// ---- RPC ----
 
 	// A finished fork looks for a bubble (design: "finds a bubble to place the fork in").
-	async place(fork: string, files: string[]): Promise<string> {
-		const target = placeFork(this.bubbles(), files);
-		if (target) {
-			this.sql.exec("INSERT INTO fork (name, bubble, status, files) VALUES (?, ?, 'pending', ?)", fork, target, JSON.stringify(files));
-		} else {
-			this.sql.exec("INSERT INTO bubble VALUES (?, 1, (SELECT COALESCE(MAX(seq), 0) + 1 FROM bubble))", fork);
-			this.sql.exec("INSERT INTO fork (name, bubble, status, files) VALUES (?, ?, 'rep', ?)", fork, fork, JSON.stringify(files));
+	// Candidates are checked one at a time, in order: the fork joins the first bubble none of whose
+	// files it would bring into that bubble's rep. Otherwise it starts a new bubble whose files are
+	// everything it carries since the repository's starting point.
+	async place(fork: string): Promise<string> {
+		const { url } = await authRemote(this.env, fork, "read");
+		const brings = async (rep?: string) => {
+			const args = rep ? [url, (await authRemote(this.env, rep, "read")).url] : [url];
+			const r = await this.box().sh(PLACE_SH, args);
+			if (r.exitCode !== 0) throw new Error(`placing ${fork} (${r.exitCode}): ${r.stderr}`);
+			return r.stdout.split("\n").filter(Boolean);
+		};
+		for (const candidate of this.bubbles()) {
+			if (!candidate.visible) continue;
+			const files = await brings(candidate.id);
+			// Re-read after the await: the bubble may have grown, been hidden, or been absorbed.
+			const b = this.bubbles().find((h) => h.id === candidate.id);
+			if (b && fits(b, files)) {
+				this.sql.exec("INSERT INTO fork (name, bubble, status, files) VALUES (?, ?, 'pending', ?)", fork, b.id, JSON.stringify(files));
+				await this.placed();
+				return b.id;
+			}
 		}
+		const files = await brings();
+		this.sql.exec("INSERT INTO bubble VALUES (?, 1, (SELECT COALESCE(MAX(seq), 0) + 1 FROM bubble))", fork);
+		this.sql.exec("INSERT INTO fork (name, bubble, status, files) VALUES (?, ?, 'rep', ?)", fork, fork, JSON.stringify(files));
+		await this.placed();
+		return fork;
+	}
+
+	private async placed() {
 		this.joinZeroDistance();
 		await this.kick();
-		return target ?? fork;
 	}
 
 	// Notagent: wait for one push to `fork`, then revoke its token and place it.
@@ -95,12 +116,12 @@ export class RepoDO extends DurableObject<Env> {
 			const r = await this.box().sh(FERGE_SH, [ra.url, rb.url, rl.url]);
 			if (r.exitCode === NO_CONFLICT) return { error: "those bubbles no longer conflict" };
 			if (r.exitCode !== 0) throw new Error(`ferge ${b} → ${a} failed (${r.exitCode}): ${r.stderr}`);
-			const files = r.stdout.split("\n").filter(Boolean);
+			const [files, tree] = r.stdout.split(/^==$/m).map((s) => s.split("\n").filter(Boolean));
 			this.absorb(a, b);
 			this.sql.exec("UPDATE fork SET status = 'merged' WHERE name = ?", b);
 			this.sql.exec("DELETE FROM conflict WHERE k = ?", conflictKey(a, b));
 			this.sql.exec("INSERT INTO bubble VALUES (?, 1, (SELECT COALESCE(MAX(seq), 0) + 1 FROM bubble))", l);
-			this.sql.exec("INSERT INTO fork (name, bubble, status, files) VALUES (?, ?, 'rep', ?)", l, l, JSON.stringify(files));
+			this.sql.exec("INSERT INTO fork (name, bubble, status, files) VALUES (?, ?, 'rep', ?)", l, l, JSON.stringify(tree));
 			this.sql.exec("INSERT INTO locked VALUES (?)", l);
 			done = true;
 			await this.env.ARTIFACTS.delete(b);
@@ -198,11 +219,8 @@ export class RepoDO extends DurableObject<Env> {
 			const head = (await repo.log({ limit: 1 }))[0]?.hash ?? "";
 			if (head !== w.base) {
 				await repo.revokeToken(w.token); // "shuts down the git server"
-				const { url } = await authRemote(this.env, w.fork, "read");
-				const r = await this.box().sh(CHANGED_FILES_SH, [url, w.base]);
-				if (r.exitCode !== 0) throw new Error(`changed files: ${r.stderr}`);
+				await this.place(w.fork); // may throw; the watch stays so the alarm retries
 				this.sql.exec("DELETE FROM watch WHERE fork = ?", w.fork);
-				await this.place(w.fork, r.stdout.split("\n").filter(Boolean));
 			} else if (Date.now() > w.expires) {
 				this.sql.exec("DELETE FROM watch WHERE fork = ?", w.fork);
 				await this.env.ARTIFACTS.delete(w.fork);

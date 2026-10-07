@@ -13,11 +13,16 @@ const TASK = "/workspace/task";
 const CHECK_MS = 30_000;
 export const CONFLICT = 10;
 
-// Files changed since $base (empty base = repo started empty → every file ever touched).
-const FILES_SH = `if [ -n "$base" ]; then git diff --name-only "$base" HEAD; else git log --name-only --format=; fi | sed '/^$/d' | sort -u`;
-
-// $1 remote, $2 base → changed files on stdout.
-export const CHANGED_FILES_SH = `set -e; base=$2; d=$(mktemp -d); git clone -q "$1" "$d"; cd "$d"; ${FILES_SH}`;
+// $1 fork remote, $2 a bubble rep remote (optional). Prints the files the fork would bring into
+// that rep: changed since their merge base, so history the fork carries from elsewhere counts.
+// Without $2: every file changed since the repository's starting point (for a new bubble).
+// ponytail: base repos are always created empty, so "starting point" = the empty tree; diff
+// against the base repo's head instead if repos can ever be imported.
+export const PLACE_SH = `set -e
+d=$(mktemp -d); git clone -q "$1" "$d"; cd "$d"
+from=$(git hash-object -t tree /dev/null)
+if [ -n "$2" ]; then git fetch -q "$2" HEAD; from=$(git merge-base FETCH_HEAD HEAD || echo "$from"); fi
+git diff --name-only "$from" HEAD`;
 
 // $1 rep remote (write), $2 source remote (read). Rebases source onto rep and fast-forwards rep.
 // Exit 0 + diff of source on stdout; exit ${CONFLICT} = rebase conflict; anything else = infra error.
@@ -35,7 +40,8 @@ export const NO_CONFLICT = 11;
 
 // Ferge. $1 bubble A rep (write), $2 bubble B rep (read), $3 new locked bubble L (write, a fork of A).
 // A ← A + B with the conflicting files removed (one squashed commit, history stays linear).
-// L ← that + the conflicting files with conflict markers. Prints the conflicting files.
+// L ← that + the conflicting files with conflict markers. Prints the conflicting files, a "==" line,
+// then every file in L's tree (L's file set: everything it carries since the repo's starting point).
 // Exit ${NO_CONFLICT} = A and B no longer conflict; anything else nonzero = infra error.
 export const FERGE_SH = `set -e
 d=$(mktemp -d); m=$(mktemp -d); git clone -q "$1" "$d"; cd "$d"
@@ -66,17 +72,16 @@ cp -R "$m/." .
 git add -A
 git commit -q --allow-empty -m "ferge: conflicting files with conflict markers"
 git push -q "$3" HEAD:refs/heads/main
-printf '%s\\n' "$F"`;
+printf '%s\\n' "$F" ==
+git ls-files`;
 
 // $1 remote, $2 prompt. Runs Claude Code on a clone, commits, pushes, writes changed files.
 const AGENT_SH = `set -e
 rm -rf /workspace/repo; git clone -q "$1" /workspace/repo; cd /workspace/repo
-base=$(git rev-parse -q --verify HEAD || true)
 claude --print --dangerously-skip-permissions --no-session-persistence --model "$MODEL" -- "$2"
 git add -A
 git commit -qm "$2" || true
-git push -q origin HEAD:refs/heads/main
-${FILES_SH} > ${TASK}/files`;
+git push -q origin HEAD:refs/heads/main`;
 
 // Detach from the exec so the task outlives the request; exit code lands atomically in $TASK/exit.
 const BG_SH = `setsid bash -c "$0" agent "$@" >${TASK}/log 2>&1; echo $? >${TASK}/exit.tmp && mv ${TASK}/exit.tmp ${TASK}/exit`;
@@ -188,8 +193,7 @@ export class Box extends DurableObject<Env> {
 		}
 		const log = (await this.sh(`tail -c 4000 ${TASK}/log`)).stdout;
 		if (exit.stdout.trim() !== "0") return this.finish(job, "failed", log);
-		const files = (await this.sh(`cat ${TASK}/files`)).stdout.split("\n").filter(Boolean);
-		await this.env.REPO.getByName(job.repo).place(job.fork, files);
+		await this.env.REPO.getByName(job.repo).place(job.fork);
 		await this.finish(job, "placed", log);
 	}
 

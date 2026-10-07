@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { conflictKey, distance, nearestNeighbour, placeFork, zeroDistanceJoins, type Bubble } from "../src/bubbles";
+import { conflictKey, distance, fits, nearestNeighbour, zeroDistanceJoins, type Bubble } from "../src/bubbles";
 
 const h = (id: string, files: string[], visible = true): Bubble => ({ id, files: new Set(files), visible });
 
@@ -8,16 +8,10 @@ test("distance counts shared files", () => {
 	expect(distance(h("a", ["x"]), h("b", ["z"]))).toBe(0);
 });
 
-test("disjoint fork joins first visible bubble, overlapping fork gets a new one", () => {
-	const hs = [h("a", ["x"]), h("b", ["y"])];
-	expect(placeFork(hs, ["z"])).toBe("a");
-	expect(placeFork(hs, ["x"])).toBe("b");
-	expect(placeFork(hs, ["x", "y"])).toBeNull();
-});
-
-test("invisible (merging) bubbles are skipped for placement", () => {
-	expect(placeFork([h("a", ["x"], false), h("b", ["y"])], ["z"])).toBe("b");
-	expect(placeFork([h("a", ["x"], false)], ["z"])).toBeNull();
+test("a fork fits a visible bubble whose files it doesn't bring", () => {
+	expect(fits(h("a", ["x"]), ["z"])).toBe(true);
+	expect(fits(h("a", ["x"]), ["x", "z"])).toBe(false);
+	expect(fits(h("a", ["x"], false), ["z"])).toBe(false); // merging → invisible
 });
 
 test("zero-distance bubbles are joined, using the running union", () => {
@@ -42,7 +36,7 @@ test("nearest neighbour: min distance, skips conflicts and invisible bubbles", (
 
 test("locked bubbles stay placeable but never join or get picked as neighbours", () => {
 	const locked = { ...h("l", ["x"]), locked: true };
-	expect(placeFork([locked], ["y"])).toBe("l");
+	expect(fits(locked, ["y"])).toBe(true);
 	expect(zeroDistanceJoins([h("a", ["y"]), locked])).toEqual([]);
 	expect(nearestNeighbour("a", [h("a", ["x"]), locked], new Set())).toBeNull();
 	expect(nearestNeighbour("l", [locked, h("a", ["x"])], new Set())).toBeNull();

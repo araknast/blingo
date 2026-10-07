@@ -10,9 +10,10 @@ export function distance(a: Bubble, b: Bubble): number {
 	return n;
 }
 
-// First visible bubble none of whose files the fork touches, or null → fork starts a new bubble.
-export function placeFork(bubbles: Bubble[], files: string[]): string | null {
-	return bubbles.find((h) => h.visible && files.every((f) => !h.files.has(f)))?.id ?? null;
+// Can a fork join this bubble? `brings` = files the fork changes relative to the bubble's
+// representative (since their merge base), so history the fork carries from elsewhere counts too.
+export function fits(bubble: Bubble, brings: string[]): boolean {
+	return bubble.visible && brings.every((f) => !bubble.files.has(f));
 }
 
 // Visible, unlocked bubbles at distance 0 get set-joined. Returns [into, from] pairs in the order

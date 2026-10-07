@@ -41,18 +41,23 @@ Some older RepoDOs also have an unused `fork.deleted` column, so inserts name th
 
 ## Flows
 
-**Placement** (`RepoDO.place`). A finished fork joins the first visible bubble whose files it
-doesn't touch, otherwise it starts a new bubble as its representative. Then any visible bubbles at
+**Placement** (`RepoDO.place`, `PLACE_SH`). Visible bubbles are tried one at a time, in order. For
+each, a Box computes the files the fork would bring into that bubble's rep (`git diff` since their
+merge base), so history the fork carries from elsewhere counts too. The fork joins the first bubble
+none of whose files are in that set, recorded with that set, so it can always be rebased in. If
+none fits, it starts a new bubble as its representative, with its files = everything changed since
+the repository's starting point (the empty tree), so distance to other bubbles reflects all it
+carries. Then any visible bubbles at
 distance 0 are set-joined: the absorbed bubble's members move over and its rep becomes a `pending`
 member, so its code is still rebased in.
 
 **Notagent.** `POST /notagents` forks, mints a 1-hour write token, and registers a `watch`. The
-alarm checks each watched fork's head every 5 s (`repo.log`). On change it revokes the token,
-computes changed files in a Box (`git diff --name-only`), and places the fork. Unpushed forks are
+alarm checks each watched fork's head every 5 s (`repo.log`). On change it revokes the token and
+places the fork (the watch is kept until placement succeeds). Unpushed forks are
 deleted when the token expires.
 
 **Agent.** `POST /agents` forks and calls `Box.startAgent`: clone, `claude --print …`, commit,
-push, write changed files, all detached in the container. The Box alarm checks every 30 s. When
+push, all detached in the container. The Box alarm checks every 30 s. When
 it's done it places the fork (or deletes it on failure) and reports to `RepoDO.agentDone`.
 
 **Merge loop** (`RepoDO.alarm`, one step per tick):
@@ -76,7 +81,9 @@ wakes the merge loop.
 4. A new fork of a's rep gets a commit adding the marker files.
 
 Then b is absorbed into a (its rep repo deleted), the conflict row goes, and the new fork becomes
-a **locked** bubble whose files are the conflicting ones. Unlock it to let it merge back.
+a **locked** bubble. Its file set is everything in its tree (like any new bubble); the API returns
+just the conflicting files. A fix forked from it goes wherever it fits like any fork; it doesn't
+wait for the unlock. Unlock the bubble to let it merge back.
 
 ## Sandbox and secrets
 
