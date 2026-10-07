@@ -9,7 +9,9 @@ blingo is based around repositories. each repository consists of zero or more
 bubbles (only a repository with no files can have zero bubbles). 
 
 ## bubbles
-a bubble is a set of repository forks in which no fork changes the same file. each bubble has a set representitive.
+a bubble is a set of repository forks in which no fork changes the same file.
+each bubble has a set representitive.
+
 
 each bubble also stores a set of which files have been changed by a bubble
 member. this way an agent can easily determine whether its fork can be placed
@@ -32,7 +34,7 @@ merged (set join).
 the bubble representative should constantly be merging its set members into
 itself. once a member fork is merged, it is marked as such,  and the artifact
 is deleted, but the fork is permanently considered part of the bubble, and the
-diff is kept.
+diff is kept. 
 
 if all members of a bubble have been successfully merged, the representative
 should try to merge with its nearest neighbor, determined using the distance
