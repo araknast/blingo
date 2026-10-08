@@ -6,8 +6,10 @@ Read [README.md](README.md) for setup and [ARCHITECTURE.md](ARCHITECTURE.md) bef
 
 - `backend/` — the `blingo` Worker. Bubble rules live in `src/bubbles.ts` as pure functions; keep
   them I/O-free and add a test in `test/bubbles.test.ts` when you change them.
-- `yorkle/` — the UI. One plain HTML file (`public/index.html`), no framework or build step. The
-  Worker only forwards to blingo; put API logic in the backend, not here.
+- `yorkle/` — the UI: a Svelte 5 + Vite app in `app/` (`routes/` pages, `lib/` shared parts;
+  `lib/BubbleMap.svelte` is the live map) built to `dist/`. The client calls `/api/*`; the Worker
+  (`src/index.ts`) strips `/api` and forwards to blingo. Put API logic in the backend, not here.
+  `npm run dev:ui -w yorkle` serves the app with hot reload against `npm run dev` on :8787.
 
 ## Commands (repo root)
 

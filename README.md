@@ -10,7 +10,7 @@ idea and [ARCHITECTURE.md](ARCHITECTURE.md) for how it is built.
 | Path | What |
 |---|---|
 | `backend/` | **blingo** — the Worker: API, bubble logic, merge loop, sandboxes (Durable Objects + Containers + Artifacts) |
-| `yorkle/` | **yorkle** — the web UI: static page + a tiny Worker that forwards API calls to blingo |
+| `yorkle/` | **yorkle** — the web UI: a Svelte app (live bubble map, code and commit browser) + a tiny Worker that forwards `/api/*` to blingo |
 | `design.md` | Original design sketch |
 
 npm workspaces: run `npm install` once at the root.
@@ -42,7 +42,8 @@ npm workspaces: run `npm install` once at the root.
 ```sh
 npm test            # bubble logic unit tests (backend)
 npm run check       # typecheck both projects
-npm run dev         # yorkle + blingo together; open the printed URL
+npm run dev         # builds yorkle, then runs yorkle + blingo together; open the printed URL
+npm run dev:ui -w yorkle   # with `npm run dev` running: the UI on Vite with hot reload
 ```
 
 `backend/.dev.vars` holds local secrets (`BLINGO_TOKEN=dev`). Add `--enable-containers=false` to
@@ -58,7 +59,7 @@ npm run deploy      # blingo first (yorkle binds to it), then yorkle
 ```
 
 - UI: `https://yorkle.<subdomain>.workers.dev`
-- API: same origin through yorkle, or directly at `https://blingo.<subdomain>.workers.dev`
+- API: same origin through yorkle under `/api`, or directly at `https://blingo.<subdomain>.workers.dev`
 
 ## API
 

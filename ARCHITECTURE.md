@@ -13,7 +13,8 @@ browser ──► yorkle Worker ──(service binding)──► blingo Worker �
 
 | Piece | File | Role |
 |---|---|---|
-| yorkle | `yorkle/src/index.ts`, `yorkle/public/index.html` | Serves the page; forwards every other path to blingo, so the API is same-origin |
+| yorkle | `yorkle/src/index.ts`, `yorkle/app/` | Serves the built Svelte app (unknown paths get `index.html`); forwards `/api/*` (prefix stripped) and `/verify` to blingo, so the API is same-origin |
+| Code browser | `backend/src/git.ts` | Pure tree helpers (`resolvePath`, `diffTrees`) behind `GET /repos/:r/:fork/tree`, `/log`, `/commits/:hash`, `/blob/:hash`. Unit-tested |
 | Worker | `backend/src/index.ts` | Auth (session or `BLINGO_TOKEN`), repo-ownership checks, routing, creating repos/forks, minting git tokens |
 | UsersDO | `backend/src/users-do.ts`, `backend/src/auth.ts` | One global SQLite object: accounts, pending signups, invites, sessions, repo owners |
 | Bubble rules | `backend/src/bubbles.ts` | Pure functions: `placeFork`, `distance`, `zeroDistanceJoins`, `nearestNeighbour`. Unit-tested |
@@ -138,4 +139,6 @@ Marked with `ponytail:` comments in the code.
   count as the one push.
 - Bubble rules are by file path only; semantic conflicts surface at merge or not at all.
 - Agent runs are listed per repository; there is no cross-repository list.
+- The UI polls `GET /repos/:repo` (every 2.5 s on the map); the repository list fetches one summary per repo.
+- A commit's diff is against its first parent; line diffs are computed in the browser from both blobs.
 - No rate limit on login or signup; no password reset, invite expiry or repo sharing.

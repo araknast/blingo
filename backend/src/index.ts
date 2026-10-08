@@ -1,5 +1,6 @@
 import { invalidSignup, type Signup } from "./auth";
 import { authRemote } from "./box";
+import { diffTrees, resolvePath } from "./git";
 
 export { Box, Outbound } from "./box";
 export { RepoDO } from "./repo-do";
@@ -21,9 +22,7 @@ async function canUse(env: Env, auth: Auth, repo: string) {
 // Where a new fork comes from. No repo → brand-new repository (design: "a new repository is created").
 async function source(env: Env, auth: Auth, b: Body): Promise<{ repo: string; from: string } | Response> {
 	if (!b.repo) {
-		const repo = `r-${id()}`;
-		await env.ARTIFACTS.create(repo, { setDefaultBranch: "main" });
-		await users(env).own(repo, auth.user);
+		const repo = await createRepo(env, auth);
 		return { repo, from: repo };
 	}
 	if (!(await canUse(env, auth, b.repo))) return noRepo();
@@ -32,6 +31,13 @@ async function source(env: Env, auth: Auth, b: Body): Promise<{ repo: string; fr
 	if (!b.bubble) return { repo: b.repo, from: (await repoDO.anyBubble()) ?? b.repo };
 	const rep = await repoDO.repOf(b.bubble);
 	return rep ? { repo: b.repo, from: rep } : Response.json({ error: "no such bubble" }, { status: 404 });
+}
+
+async function createRepo(env: Env, auth: Auth) {
+	const repo = `r-${id()}`;
+	await env.ARTIFACTS.create(repo, { setDefaultBranch: "main" });
+	await users(env).own(repo, auth.user);
+	return repo;
 }
 
 async function fork(env: Env, from: string, repo: string) {
@@ -72,7 +78,7 @@ async function sendVerify(env: Env, to: string, link: string) {
 }
 
 const page = (msg: string, status = 200) =>
-	new Response(`<!doctype html><meta charset="utf-8"><title>blingo</title><p>${msg}</p><p><a href="/">Log in</a></p>`, {
+	new Response(`<!doctype html><meta charset="utf-8"><title>blingo</title><p>${msg}</p><p><a href="/login">Log in</a></p>`, {
 		status,
 		headers: { "content-type": "text/html; charset=utf-8" },
 	});
@@ -88,7 +94,7 @@ async function authenticate(request: Request, env: Env): Promise<Auth | null> {
 
 async function handle(request: Request, env: Env): Promise<Response> {
 	const url = new URL(request.url);
-	const [, a, b, c] = url.pathname.split("/");
+	const [, a, b, c, d, e] = url.pathname.split("/");
 
 	// Open routes: invite-only signup, email verification, login.
 	if (request.method === "POST" && a === "signup" && !b) {
@@ -157,6 +163,40 @@ async function handle(request: Request, env: Env): Promise<Response> {
 		);
 	}
 
+	if (request.method === "POST" && a === "repos" && !b) {
+		return Response.json({ repo: await createRepo(env, auth) }, { status: 201 });
+	}
+	// Code browser: tree, log, commit and blob reads of a fork (or of the bubble a merged fork joined).
+	if (request.method === "GET" && a === "repos" && b && c && d) {
+		const from = await env.REPO.getByName(b).readFrom(c);
+		if (!from) return Response.json({ error: "no such fork" }, { status: 404 });
+		using repo = await env.ARTIFACTS.get(from);
+		const readTree = (h: string) => repo.readTree(h);
+		const q = url.searchParams;
+		if (d === "tree" && !e) {
+			const commit = (await repo.log({ ref: q.get("ref") || "main", limit: 1 }))[0];
+			if (!commit) return Response.json({ commit: null, entries: [] }); // nothing pushed yet
+			const at = await resolvePath(readTree, commit.treeHash, q.get("path") ?? "");
+			if (at?.type !== "tree") return Response.json({ error: "no such directory" }, { status: 404 });
+			return Response.json({ commit, entries: await repo.readTree(at.hash) });
+		}
+		if (d === "log" && !e) {
+			const limit = Math.min(Number(q.get("limit")) || 30, 100);
+			return Response.json(await repo.log({ ref: q.get("ref") || "main", limit, offset: Number(q.get("offset")) || 0 }));
+		}
+		if (d === "commits" && e && /^[0-9a-f]{40}$/.test(e)) {
+			const commit = await repo.readCommit(e);
+			if (!commit) return Response.json({ error: "no such commit" }, { status: 404 });
+			const parent = commit.parents[0] ? await repo.readCommit(commit.parents[0]) : null;
+			return Response.json({ commit, files: await diffTrees(readTree, parent?.treeHash ?? null, commit.treeHash) });
+		}
+		if (d === "blob" && e && /^[0-9a-f]{40}$/.test(e)) {
+			const blob = await repo.readBlob(e);
+			return blob === null ? new Response("no such blob\n", { status: 404 }) : new Response(blob);
+		}
+		return Response.json({ error: "not found" }, { status: 404 });
+	}
+
 	if (request.method === "GET" && a === "agents" && b) return Response.json(await env.BOX.getByName(b).status());
 	if (request.method === "GET" && a === "repos" && b && !c) return Response.json(await env.REPO.getByName(b).list());
 	if (request.method === "DELETE" && a === "repos" && b && !c) {
@@ -179,7 +219,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
 		const from = await env.REPO.getByName(b).readFrom(c);
 		if (!from) return new Response("no such fork\n", { status: 404 });
 		using repo = await env.ARTIFACTS.get(from);
-		const file = await repo.readFile({ ref: "main", path: url.searchParams.get("path")! });
+		const file = await repo.readFile({ ref: url.searchParams.get("ref") || "main", path: url.searchParams.get("path")! });
 		return file === null
 			? new Response("file not present\n", { status: 404 })
 			: new Response(file, { headers: { "content-type": file.type || "application/octet-stream" } });
