@@ -1,13 +1,14 @@
 <script lang="ts">
 	import { onDestroy } from "svelte";
 	import BubbleMap from "../lib/BubbleMap.svelte";
+	import ContextMenu, { type MenuItem } from "../lib/ContextMenu.svelte";
 	import Dialog from "../lib/Dialog.svelte";
 	import Shell from "../lib/Shell.svelte";
 	import { navigate } from "../lib/router.svelte";
 	import { ApiError, api, loadMe } from "../lib/session.svelte";
 	import { toast, toastError } from "../lib/toast.svelte";
 	import type { RepoState } from "../lib/types";
-	import { agentLabel, ago, copy, duration, plural, poll, short } from "../lib/util";
+	import { agentLabel, ago, copy, duration, menuGesture, plural, poll, short } from "../lib/util";
 
 	let { repo }: { repo: string } = $props();
 
@@ -27,6 +28,36 @@
 
 	const working = $derived(data?.agents.filter((a) => a.status === "running").length ?? 0);
 	const bubbleHref = (id: string) => `/repos/${repo}/b/${id}`;
+
+	// ---- Right-click menu: on a bubble, its actions; on the background, the general ones ----
+	let menu = $state<{ x: number; y: number; bubble: string | null } | null>(null);
+	// Set when a dialog was opened from a bubble's menu; the dialog then starts from that bubble.
+	let fixedBase = $state<string | null>(null);
+
+	function openAgent(bubble: string | null) {
+		fixedBase = bubble;
+		agentBase = bubble ?? "";
+		agentOpen = true;
+	}
+	function openPush(bubble: string | null) {
+		fixedBase = bubble;
+		pushBase = bubble ?? "";
+		pushOpen = true;
+	}
+	const menuItems = $derived.by((): MenuItem[] => {
+		if (!menu) return [];
+		const b = menu.bubble && data?.bubbles.find((x) => x.id === menu!.bubble);
+		if (!b) return [
+			{ label: "Start an agent", action: () => openAgent(null) },
+			{ label: "Push a fork", action: () => openPush(null) },
+		];
+		return [
+			{ label: "Start an agent from this bubble", action: () => openAgent(b.id) },
+			{ label: "Push a fork from this bubble", action: () => openPush(b.id) },
+			{ label: b.locked ? "Unlock bubble" : "Lock bubble", action: () => setLock(b.id, !b.locked) },
+			{ label: "Browse code", action: () => navigate(bubbleHref(b.id)) },
+		];
+	});
 
 	// ---- Start an agent ----
 	let agentOpen = $state(false);
@@ -52,7 +83,7 @@
 	// ---- Push a fork (notagent) ----
 	let pushOpen = $state(false);
 	let pushBase = $state("");
-	let pushed = $state<{ fork: string; push: string } | null>(null);
+	let pushed = $state<{ fork: string; clone: string; push: string } | null>(null);
 	async function createFork(e: SubmitEvent) {
 		e.preventDefault();
 		busy = true;
@@ -117,13 +148,6 @@
 </script>
 
 <Shell crumbs={[{ label: "Repositories", href: "/repos" }, { label: repo, mono: true }]} {repo} full>
-	{#snippet actions()}
-		{#if !missing}
-			<button onclick={() => (pushOpen = true)}>Push a fork</button>
-			<button class="primary" onclick={() => (agentOpen = true)}>Start agent</button>
-		{/if}
-	{/snippet}
-
 	{#if missing}
 		<div class="missing">
 			<h1>This repository isn't available</h1>
@@ -132,14 +156,14 @@
 	{:else}
 		<div class="layout">
 			<section class="stage" aria-label="Bubble map">
-				<BubbleMap {data} hrefFor={bubbleHref} onconflict={askFerge} />
+				<BubbleMap {data} hrefFor={bubbleHref} onconflict={askFerge} oncontext={(at) => (menu = at)} />
 			</section>
 
 			<aside class="rail">
 				<section>
 					<h2>Agents <span class="count">{working ? `${working} working` : ""}</span></h2>
 					{#if !data?.agents.length}
-						<p class="muted small">No agents yet. <button class="link" onclick={() => (agentOpen = true)}>Start one</button></p>
+						<p class="muted small">No agents yet. {menuGesture} the map to start one.</p>
 					{:else}
 						<ul class="agents">
 							{#each data.agents as a (a.fork)}
@@ -181,11 +205,8 @@
 							<li>
 								<span>
 									<a class="mono" href={bubbleHref(b.id)}>{short(b.id)}</a>
-									<span class="muted small">{plural(b.members.length, "fork")}{b.visible ? "" : ", merging"}</span>
+									<span class="muted small">{plural(b.members.length, "fork")}{b.visible ? "" : ", merging"}{b.locked ? ", locked" : ""}</span>
 								</span>
-								<button class="quiet small-btn" onclick={() => setLock(b.id, !b.locked)} aria-label="{b.locked ? 'Unlock' : 'Lock'} bubble {short(b.id)}">
-									{b.locked ? "Unlock" : "Lock"}
-								</button>
 							</li>
 						{/each}
 					</ul>
@@ -216,12 +237,7 @@
 			<textarea id="prompt" bind:value={prompt} required placeholder="Add a dark mode toggle to the settings page"></textarea>
 		</div>
 		<div class="field">
-			<label for="agent-base">Start from</label>
-			<select id="agent-base" bind:value={agentBase}>
-				<option value="">Any bubble</option>
-				{#each data?.bubbles ?? [] as b}<option value={b.id}>Bubble {short(b.id)}</option>{/each}
-			</select>
-			<p class="hint">The agent works on a fork of this bubble's code. When it finishes, its fork joins whichever bubble it fits.</p>
+			{@render base("agent-base", "The agent works on a fork of this bubble's code. When it finishes, its fork joins whichever bubble it fits.")}
 		</div>
 		<button class="primary" disabled={busy}>Start agent</button>
 	</form>
@@ -231,24 +247,62 @@
 	{#if !pushed}
 		<form onsubmit={createFork}>
 			<p class="intro">Get a fork to push your own commits to. Once you push, yorkle places it in a bubble like any agent's work.</p>
-			<div class="field">
-				<label for="push-base">Start from</label>
-				<select id="push-base" bind:value={pushBase}>
-					<option value="">Any bubble</option>
-					{#each data?.bubbles ?? [] as b}<option value={b.id}>Bubble {short(b.id)}</option>{/each}
-				</select>
-			</div>
+			<div class="field">{@render base("push-base")}</div>
 			<button class="primary" disabled={busy}>Create fork</button>
 		</form>
 	{:else}
-		<p class="intro">Fork <span class="mono">{short(pushed.fork)}</span> is ready. Push to it from your checkout within the hour:</p>
-		<div class="cmd">
-			<pre>{pushed.push}</pre>
-			<button onclick={() => copy(pushed!.push).then(() => toast("Push command copied"))}>Copy</button>
-		</div>
-		<p class="hint">The command holds a write token for this fork only. Only your first push counts.</p>
+		<p class="intro">Fork <span class="mono">{short(pushed.fork)}</span> is ready. Push to it within the hour.</p>
+		<ol class="steps">
+			<li>
+				<p>Clone the fork</p>
+				{@render cmd(pushed.clone, "Clone command copied")}
+			</li>
+			<li>
+				<p>Commit your changes, then push</p>
+				{@render cmd(pushed.push, "Push command copied")}
+			</li>
+		</ol>
+		<p class="hint">These commands hold a write token for this fork only. Only your first push counts.</p>
 	{/if}
 </Dialog>
+
+{#snippet cmd(text: string, done: string)}
+	<div class="cmd">
+		<pre>{text}</pre>
+		<button onclick={() => copy(text).then(() => toast(done))}>Copy</button>
+	</div>
+{/snippet}
+
+<!-- "Start from": fixed when the dialog came from a bubble's menu, otherwise a choice. -->
+{#snippet base(id: string, hint?: string)}
+	{#if fixedBase}
+		<p class="from">Starts from bubble <span class="mono">{short(fixedBase)}</span></p>
+	{:else}
+		<label for={id}>Start from</label>
+		{#if id === "agent-base"}
+			<select {id} bind:value={agentBase}>
+				<option value="">Any bubble</option>
+				{#each data?.bubbles ?? [] as b}<option value={b.id}>Bubble {short(b.id)}</option>{/each}
+			</select>
+		{:else}
+			<select {id} bind:value={pushBase}>
+				<option value="">Any bubble</option>
+				{#each data?.bubbles ?? [] as b}<option value={b.id}>Bubble {short(b.id)}</option>{/each}
+			</select>
+		{/if}
+	{/if}
+	{#if hint}<p class="hint">{hint}</p>{/if}
+{/snippet}
+
+{#if menu}
+	<ContextMenu
+		x={menu.x}
+		y={menu.y}
+		title={menu.bubble && data?.bubbles.some((b) => b.id === menu!.bubble) ? `Bubble ${short(menu.bubble)}` : undefined}
+		items={menuItems}
+		onclose={() => (menu = null)}
+	/>
+{/if}
 
 <Dialog bind:open={fergeOpen} title="Ferge these bubbles?">
 	{#if fergePair}
@@ -282,7 +336,6 @@
 	.rail h2 { font-size: 0.9375rem; margin-bottom: 0.6rem; display: flex; align-items: baseline; gap: 0.5rem; }
 	.count { font-weight: 400; color: var(--ink-3); font-size: 0.8125rem; }
 	.small { font-size: 0.8125rem; }
-	.link { background: none; border: 0; padding: 0; color: inherit; text-decoration: underline; font-size: inherit; }
 
 	.agents { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.9rem; }
 	.agent-head { display: flex; justify-content: space-between; gap: 0.5rem; align-items: center; }
@@ -298,12 +351,15 @@
 	.rows a:hover { text-decoration: underline; }
 	.rows .mono { font-size: 0.8125rem; }
 	.rows .muted { margin-left: 0.4rem; }
-	.small-btn { padding: 0.2rem 0.5rem; font-size: 0.8125rem; }
 	.danger-zone { border-bottom: 0 !important; }
 
 	.intro { margin-bottom: 1rem; color: var(--ink-2); }
 	.intro .mono { color: var(--ink); }
 	.cmd { display: flex; gap: 0.5rem; align-items: flex-start; }
+	.steps { margin: 0 0 1rem; padding-left: 1.25rem; display: grid; gap: 1rem; }
+	.steps p { font-size: 0.875rem; font-weight: 500; margin-bottom: 0.4rem; }
+	.from { font-size: 0.875rem; color: var(--ink-2); }
+	.from .mono { color: var(--ink); }
 	.cmd pre { flex: 1; margin: 0; padding: 0.7rem 0.8rem; background: var(--raised); border: 1px solid var(--line); border-radius: var(--r-sm); white-space: pre-wrap; word-break: break-all; }
 	.row { display: flex; gap: 0.5rem; }
 	.delete { background: var(--conflict); border-color: var(--conflict); color: #fff; }

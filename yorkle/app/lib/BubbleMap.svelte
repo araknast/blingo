@@ -4,17 +4,19 @@
 	import { fade } from "svelte/transition";
 	import { MAX_DOTS, dotOffset, edge, fileCount, hash, orderMembers, radius } from "./layout";
 	import type { Bubble, Member, RepoState } from "./types";
-	import { plural, short } from "./util";
+	import { menuGesture, plural, short } from "./util";
 
 	let {
 		data,
 		hrefFor,
 		onconflict,
+		oncontext,
 		demo = false,
 	}: {
 		data: RepoState | null;
 		hrefFor?: (bubble: string) => string;
 		onconflict?: (a: string, b: string) => void;
+		oncontext?: (at: { x: number; y: number; bubble: string | null }) => void;
 		demo?: boolean;
 	} = $props();
 
@@ -210,15 +212,45 @@
 	let drag: { id: string | null; x: number; y: number; moved: boolean; pointer: number } | null = null;
 	let suppressClick = false;
 
+	// ---- Context menu: right-click, Shift+F10 / Menu key, or a long press on touch ----
+	let press: ReturnType<typeof setTimeout> | undefined;
+	let pressedAt = 0;
+
+	function context(e: MouseEvent) {
+		if (demo || !oncontext) return;
+		e.preventDefault();
+		if (Date.now() - pressedAt < 1000) return; // Android also fires contextmenu after our long press
+		const bubble = (e.target as Element).closest<SVGAElement>("a.bubble")?.dataset.id ?? null;
+		let { clientX: x, clientY: y } = e;
+		if (!x && !y) {
+			// Opened from the keyboard: anchor to the focused bubble, or the map's corner.
+			const r = (e.target as Element).getBoundingClientRect();
+			[x, y] = bubble ? [r.left + r.width / 2, r.top + r.height / 2] : [r.left + 24, r.top + 24];
+		}
+		oncontext({ x, y, bubble });
+	}
+
 	function down(e: PointerEvent, id: string | null) {
 		if (demo || e.button !== 0) return;
 		drag = { id, x: e.clientX, y: e.clientY, moved: false, pointer: e.pointerId };
+		clearTimeout(press);
+		if (e.pointerType === "touch" && oncontext) {
+			const at = { x: e.clientX, y: e.clientY, bubble: id };
+			press = setTimeout(() => {
+				if (!drag || drag.moved) return;
+				drag = null;
+				suppressClick = true;
+				pressedAt = Date.now();
+				oncontext(at);
+			}, 550);
+		}
 	}
 	function move(e: PointerEvent) {
 		if (!drag || e.pointerId !== drag.pointer) return;
 		const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
 		if (!drag.moved && Math.hypot(dx, dy) < 5) return;
 		if (!drag.moved) {
+			clearTimeout(press);
 			drag.moved = true;
 			svg.setPointerCapture(e.pointerId);
 		}
@@ -238,6 +270,7 @@
 		}
 	}
 	function up(e: PointerEvent) {
+		clearTimeout(press);
 		if (!drag || e.pointerId !== drag.pointer) return;
 		if (drag.id) {
 			const n = nodes.get(drag.id);
@@ -296,12 +329,17 @@
 </script>
 
 <div class="map" class:demo bind:this={box} bind:clientWidth={w} bind:clientHeight={h}>
+	<!-- svelte-ignore a11y_no_noninteractive_tabindex (role is "application" whenever it is focusable) -->
 	<svg
 		bind:this={svg}
 		width={w}
 		height={h}
 		role={demo ? "img" : "application"}
-		aria-label={demo ? "An animated example of forks joining bubbles" : "Bubble map. Drag to pan, scroll to zoom, Tab to move between bubbles."}
+		aria-label={demo
+			? "An animated example of forks joining bubbles"
+			: "Bubble map. Drag to pan, scroll to zoom, Tab to move between bubbles. Right-click or Shift+F10 for actions."}
+		tabindex={demo ? undefined : 0}
+		oncontextmenu={context}
 		onpointerdown={(e) => down(e, null)}
 		onpointermove={move}
 		onpointerup={up}
@@ -358,6 +396,7 @@
 				<a
 					href={demo ? undefined : hrefFor?.(n.id)}
 					class="bubble"
+					data-id={n.id}
 					class:merging={!n.b.visible}
 					class:locked={n.b.locked}
 					class:hot={hovered === n.id}
@@ -404,7 +443,7 @@
 	{#if data && !data.bubbles.length && !demo}
 		<div class="empty">
 			<p>No bubbles yet.</p>
-			<p class="muted">Start an agent or push a fork. Its changes land here as the first bubble.</p>
+			<p class="muted">{menuGesture} the map to start an agent or push a fork. Its changes land here as the first bubble.</p>
 		</div>
 	{/if}
 
@@ -414,6 +453,7 @@
 			<span><i class="dot pending"></i>Waiting to merge</span>
 			<span><i class="dot merged"></i>Merged</span>
 			<span><i class="dot conflict"></i>Conflicted</span>
+			<span class="hint">Right-click for actions</span>
 		</div>
 		<div class="zoom">
 			<button aria-label="Zoom in" onclick={() => zoomBy(1.25)}>+</button>
@@ -560,6 +600,8 @@
 		max-width: calc(100% - 9rem);
 	}
 	.legend span { display: inline-flex; align-items: center; gap: 0.35rem; }
+	.legend .hint { color: var(--ink-3); padding-left: 1rem; border-left: 1px solid var(--line); }
+	svg:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 	.zoom { position: absolute; right: 1rem; top: 1rem; display: flex; gap: 2px; }
 	.zoom button { padding: 0.25rem 0.6rem; min-width: 2rem; justify-content: center; }
 

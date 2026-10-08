@@ -44,7 +44,10 @@ export function poll(fn: () => unknown, ms: number) {
 	};
 }
 
-export const firstLine = (s: string) => s.split("\n", 1)[0];
+// How to open the map's menu on this device.
+export const menuGesture = matchMedia("(pointer: coarse)").matches ? "Press and hold" : "Right-click";
+
+export const firstLine =(s: string) => s.split("\n", 1)[0];
 
 // Agent run status → what the UI calls it.
 export const agentLabel = (status: string) =>

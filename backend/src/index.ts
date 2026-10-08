@@ -158,7 +158,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
 		const { url: authed, remote, token } = await authRemote(env, name, "write", 3600);
 		await env.REPO.getByName(src.repo).watch(name, base, token.id, Date.parse(token.expiresAt));
 		return Response.json(
-			{ repo: src.repo, fork: name, remote, token: token.plaintext, push: `git push ${authed} HEAD:main` },
+			{ repo: src.repo, fork: name, remote, token: token.plaintext, clone: `git clone ${authed} ${name}`, push: `git push ${authed} HEAD:main` },
 			{ status: 201 },
 		);
 	}
