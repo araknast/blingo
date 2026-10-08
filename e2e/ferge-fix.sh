@@ -1,7 +1,7 @@
 # ferge-fix.sh: two forks conflict on a.txt → ferge → a fix forked from the ferge bubble → unlock.
 # Prints the bubbles after each step; at the end A should hold the resolved a.txt and no markers.
 . "$(dirname "$0")/env.sh"
-S=${WORK:-$(mktemp -d)}; cd "$S"; echo "work dir $S"
+S=${WORK:-$(mktemp -d)}; mkdir -p "$S" && cd "$S" || exit 1; echo "work dir $S"
 show() { api $U/repos/$R | python3 -c "
 import json,sys;d=json.load(sys.stdin)
 for b in d['bubbles']: print('  bubble',b['id'][-8:],'LOCKED' if b['locked'] else '','' if b['visible'] else 'HIDDEN',[(m['name'][-8:],m['status'],m['files']) for m in b['members']])

@@ -3,7 +3,7 @@
 # Optional: CF_ACCOUNT_ID and CONTAINER_APP_ID for container usage before/after.
 . "$(dirname "$0")/../env.sh"
 export D=${D:-${WORK:-$(mktemp -d)}}; echo "work dir $D"
-set -u; cd $D; rm -rf na w pushes.log retries.log; mkdir -p na w
+set -u; mkdir -p "$D" && cd "$D" || exit 1; rm -rf na w pushes.log retries.log; mkdir -p na w
 T0=$(date +%s); ts() { echo "[$(( $(date +%s) - T0 ))s] $*"; }
 summary() { api $U/repos/$(cat repo) | python3 -c "
 import json,sys,collections;d=json.load(sys.stdin)
