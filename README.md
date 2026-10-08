@@ -62,7 +62,7 @@ All requests need `Authorization: Bearer $BLINGO_TOKEN`. Any request can return 
 | `POST /agents {prompt, repo?, bubble?}` | Fork and run Claude Code on it. No `repo` → new repository; no `bubble` → any bubble |
 | `POST /notagents {repo?, bubble?}` | Fork and return a one-push git remote; the push gets placed |
 | `GET /agents/:fork` | One agent's sandbox status and log tail |
-| `GET /repos/:repo` | Bubbles, members, conflicts, notagents waiting, agent runs |
+| `GET /repos/:repo` | Bubbles, members, conflicts, notagents waiting for a push (`waiting`) or pushed and being placed (`placing`), agent runs |
 | `GET /repos/:repo/:fork` | Kept diff of a merged fork |
 | `GET /repos/:repo/:fork?path=…` | A file as that fork sees it |
 | `DELETE /repos/:repo` | Delete the repository's git repos and all its records |

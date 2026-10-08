@@ -34,7 +34,8 @@ browser ──► yorkle Worker ──(service binding)──► blingo Worker �
 | `fork(name, bubble, status, files, diff)` | status `rep` / `pending` / `merged` / `conflict`; `files` = changed paths (JSON); `diff` kept after merge |
 | `conflict(k)` | `"a|b"` bubble pairs whose merge failed; never retried (except by a ferge). When a bubble is absorbed, its pairs move to the bubble that absorbed it |
 | `locked(id)` | locked bubbles: placeable, but excluded from neighbour merges and distance-0 joins |
-| `watch(fork, base, token, expires)` | notagent forks waiting for their push |
+| `watch(fork, base, token, expires)` | notagent forks waiting for their push, or pushed and not yet placed |
+| `pushed(fork)` | watched forks whose push arrived; removed with the watch once placed |
 | `agent_run(fork, prompt, started, status, finished, log)` | agent runs, kept after they finish |
 
 Some older RepoDOs also have an unused `fork.deleted` column, so inserts name their columns.
@@ -53,9 +54,11 @@ distance 0 are set-joined: the absorbed bubble's members move over and its rep b
 member, so its code is still rebased in.
 
 **Notagent.** `POST /notagents` forks, mints a 1-hour write token, and registers a `watch`. The
-alarm checks each watched fork's head every 5 s (`repo.log`). On change it revokes the token and
-places the fork (the watch is kept until placement succeeds). Unpushed forks are
-deleted when the token expires.
+alarm checks each watched fork's head every 5 s (`repo.log`, all in parallel). On change it revokes
+the token and marks the fork `pushed`. Then it places every pushed fork **in parallel**: `place()`
+re-checks its chosen bubble right before inserting, so concurrent placements stay safe. The watch is
+kept until placement succeeds, so failures are retried. Unpushed forks are deleted when the token
+expires. The API reports `waiting` (no push yet) and `placing` (pushed, not yet placed) separately.
 
 **Agent.** `POST /agents` forks and calls `Box.startAgent`: clone, `claude --print …`, commit,
 push, all detached in the container. The Box alarm checks every 30 s. When

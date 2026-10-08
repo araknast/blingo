@@ -90,7 +90,7 @@ function showView(name) {
 async function refresh() {
 	showView("bubbles");
 	try {
-		const { bubbles, conflicts, waiting } = await api("GET", `/repos/${encodeURIComponent($("repo").value)}`);
+		const { bubbles, conflicts, waiting, placing } = await api("GET", `/repos/${encodeURIComponent($("repo").value)}`);
 		const el = $("bubbles");
 		el.replaceChildren();
 		for (const h of bubbles) {
@@ -136,7 +136,7 @@ async function refresh() {
 			}
 			el.append(h, ul);
 		}
-		$("out").textContent = `waiting for push: ${waiting.join(", ") || "none"}`;
+		$("out").textContent = `waiting for push: ${waiting.join(", ") || "none"}\npushed, being placed: ${placing.join(", ") || "none"}`;
 	} catch (e) { $("out").textContent = String(e); }
 }
 

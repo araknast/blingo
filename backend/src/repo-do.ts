@@ -22,6 +22,7 @@ export class RepoDO extends DurableObject<Env> {
 			CREATE TABLE IF NOT EXISTS conflict(k TEXT PRIMARY KEY);
 			CREATE TABLE IF NOT EXISTS locked(id TEXT PRIMARY KEY);
 			CREATE TABLE IF NOT EXISTS watch(fork TEXT PRIMARY KEY, base TEXT NOT NULL, token TEXT NOT NULL, expires INTEGER NOT NULL);
+			CREATE TABLE IF NOT EXISTS pushed(fork TEXT PRIMARY KEY); -- watched forks whose push arrived, not yet placed
 			CREATE TABLE IF NOT EXISTS agent_run(fork TEXT PRIMARY KEY, prompt TEXT NOT NULL, started INTEGER NOT NULL,
 				status TEXT NOT NULL DEFAULT 'running', finished INTEGER, log TEXT);
 		`);
@@ -144,7 +145,12 @@ export class RepoDO extends DurableObject<Env> {
 				members: forks.filter((f) => f.bubble === h.id).map((f) => ({ ...f, files: JSON.parse(f.files) })),
 			})),
 			conflicts: this.sql.exec<{ k: string }>("SELECT k FROM conflict").toArray().map((r) => r.k.split("|")),
-			waiting: this.sql.exec<{ fork: string }>("SELECT fork FROM watch").toArray().map((r) => r.fork),
+			// Notagent forks still waiting for their push, and pushed ones still being placed.
+			waiting: this.sql
+				.exec<{ fork: string }>("SELECT fork FROM watch WHERE fork NOT IN (SELECT fork FROM pushed)")
+				.toArray()
+				.map((r) => r.fork),
+			placing: this.sql.exec<{ fork: string }>("SELECT fork FROM pushed").toArray().map((r) => r.fork),
 			// Running first, then the most recent finished runs.
 			agents: this.sql
 				.exec<AgentRun>("SELECT * FROM agent_run ORDER BY status = 'running' DESC, started DESC LIMIT 50")
@@ -188,7 +194,7 @@ export class RepoDO extends DurableObject<Env> {
 			}
 		}
 		await this.ctx.storage.deleteAlarm();
-		this.sql.exec("DELETE FROM bubble; DELETE FROM fork; DELETE FROM conflict; DELETE FROM locked; DELETE FROM watch; DELETE FROM agent_run;");
+		this.sql.exec("DELETE FROM bubble; DELETE FROM fork; DELETE FROM conflict; DELETE FROM locked; DELETE FROM watch; DELETE FROM pushed; DELETE FROM agent_run;");
 		return deleted;
 	}
 
@@ -209,18 +215,33 @@ export class RepoDO extends DurableObject<Env> {
 	// ponytail: polling, because a per-fork Artifacts event subscription is more setup than a 5s poll.
 	// Pushes landing inside one poll window all count as "the" push.
 	private async pollWatches() {
-		for (const w of this.sql.exec<Watch>("SELECT * FROM watch").toArray()) {
-			using repo = await this.env.ARTIFACTS.get(w.fork);
-			const head = (await repo.log({ limit: 1 }))[0]?.hash ?? "";
-			if (head !== w.base) {
-				await repo.revokeToken(w.token); // "shuts down the git server"
-				await this.place(w.fork); // may throw; the watch stays so the alarm retries
-				this.sql.exec("DELETE FROM watch WHERE fork = ?", w.fork);
-			} else if (Date.now() > w.expires) {
-				this.sql.exec("DELETE FROM watch WHERE fork = ?", w.fork);
-				await this.env.ARTIFACTS.delete(w.fork);
-			}
-		}
+		const already = new Set(this.sql.exec<{ fork: string }>("SELECT fork FROM pushed").toArray().map((r) => r.fork));
+		await Promise.all(
+			this.sql.exec<Watch>("SELECT * FROM watch").toArray().filter((w) => !already.has(w.fork)).map(async (w) => {
+				using repo = await this.env.ARTIFACTS.get(w.fork);
+				const head = (await repo.log({ limit: 1 }))[0]?.hash ?? "";
+				if (head !== w.base) {
+					await repo.revokeToken(w.token); // "shuts down the git server"
+					this.sql.exec("INSERT OR IGNORE INTO pushed VALUES (?)", w.fork);
+				} else if (Date.now() > w.expires) {
+					this.sql.exec("DELETE FROM watch WHERE fork = ?", w.fork);
+					await this.env.ARTIFACTS.delete(w.fork);
+				}
+			}),
+		);
+		// Place every pushed fork at once. place() re-checks its chosen bubble right before inserting
+		// (and places again if it changed), so concurrent placements are safe. A fork's watch is kept
+		// until its placement succeeds, so the alarm retries any that fail.
+		const forks = this.sql.exec<{ fork: string }>("SELECT fork FROM pushed").toArray().map((r) => r.fork);
+		const results = await Promise.allSettled(
+			forks.map(async (fork) => {
+				await this.place(fork);
+				this.sql.exec("DELETE FROM watch WHERE fork = ?", fork);
+				this.sql.exec("DELETE FROM pushed WHERE fork = ?", fork);
+			}),
+		);
+		const failed = results.find((r) => r.status === "rejected");
+		if (failed) throw (failed as PromiseRejectedResult).reason;
 	}
 
 	// One unit of git work: merge a pending member into its rep, else merge a fully-merged bubble
