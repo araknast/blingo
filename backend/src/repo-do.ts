@@ -1,8 +1,11 @@
 import { DurableObject } from "cloudflare:workers";
-import { CONFLICT, FERGE_SH, NO_CONFLICT, PLACE_SH, REBASE_SH, authRemote } from "./box";
-import { conflictKey, fits, nearestNeighbour, renameConflicts, zeroDistanceJoins, type Bubble } from "./bubbles";
+import { FERGE_SH, MERGE_SH, NO_CONFLICT, PLACE_SH, authRemote } from "./box";
+import { conflictKey, fits, nearestNeighbour, parseMerge, renameConflicts, zeroDistanceJoins, type Bubble } from "./bubbles";
 
 const POLL_MS = 5_000;
+// A merge or ferge hides its bubbles for seconds. Longer than the alarm's own wall-clock limit means
+// the operation died (cancelled alarm, reset, deploy) without un-hiding them.
+const HIDE_LEASE_MS = 15 * 60_000;
 
 type Fork = { name: string; bubble: string; status: "rep" | "pending" | "merged" | "conflict"; files: string };
 type Watch = { fork: string; base: string; token: string; expires: number };
@@ -21,11 +24,42 @@ export class RepoDO extends DurableObject<Env> {
 			CREATE TABLE IF NOT EXISTS fork(name TEXT PRIMARY KEY, bubble TEXT NOT NULL, status TEXT NOT NULL, files TEXT NOT NULL, diff TEXT);
 			CREATE TABLE IF NOT EXISTS conflict(k TEXT PRIMARY KEY);
 			CREATE TABLE IF NOT EXISTS locked(id TEXT PRIMARY KEY);
+			CREATE TABLE IF NOT EXISTS hidden(id TEXT PRIMARY KEY, since INTEGER NOT NULL); -- lease for bubble.visible = 0
 			CREATE TABLE IF NOT EXISTS watch(fork TEXT PRIMARY KEY, base TEXT NOT NULL, token TEXT NOT NULL, expires INTEGER NOT NULL);
 			CREATE TABLE IF NOT EXISTS pushed(fork TEXT PRIMARY KEY); -- watched forks whose push arrived, not yet placed
 			CREATE TABLE IF NOT EXISTS agent_run(fork TEXT PRIMARY KEY, prompt TEXT NOT NULL, started INTEGER NOT NULL,
 				status TEXT NOT NULL DEFAULT 'running', finished INTEGER, log TEXT);
 		`);
+		// A fresh instance means any merge or ferge that hid bubbles died with the old one.
+		if (this.recoverHidden(true)) void ctx.blockConcurrencyWhile(() => this.kick());
+	}
+
+	private hide(...ids: string[]) {
+		for (const id of ids) {
+			this.sql.exec("UPDATE bubble SET visible = 0 WHERE id = ?", id);
+			this.sql.exec("INSERT OR REPLACE INTO hidden VALUES (?, ?)", id, Date.now());
+		}
+	}
+
+	private show(...ids: string[]) {
+		for (const id of ids) {
+			this.sql.exec("UPDATE bubble SET visible = 1 WHERE id = ?", id);
+			this.sql.exec("DELETE FROM hidden WHERE id = ?", id);
+		}
+	}
+
+	// Un-hide bubbles whose hiding operation died: all of them (`all`, for a fresh instance), or those
+	// past their lease or with no lease row. Returns how many were un-hidden.
+	private recoverHidden(all = false): number {
+		const cutoff = all ? Number.MAX_SAFE_INTEGER : Date.now() - HIDE_LEASE_MS;
+		const stuck = this.sql
+			.exec<{ id: string }>("SELECT id FROM bubble WHERE visible = 0 AND id NOT IN (SELECT id FROM hidden WHERE since > ?)", cutoff)
+			.toArray()
+			.map((r) => r.id);
+		this.show(...stuck);
+		this.sql.exec("DELETE FROM hidden WHERE id NOT IN (SELECT id FROM bubble WHERE visible = 0)");
+		if (stuck.length) this.joinZeroDistance();
+		return stuck.length;
 	}
 
 	// ---- RPC ----
@@ -89,6 +123,7 @@ export class RepoDO extends DurableObject<Env> {
 	// into a; a new locked bubble holds those files with conflict markers. a and b are hidden meanwhile.
 	// ponytail: not serialized with the alarm's merges; a member rebase pushing to a mid-ferge fails one of them.
 	async ferge(repo: string, a: string, b: string): Promise<{ bubble: string; locked: string; files: string[] } | { error: string }> {
+		this.recoverHidden();
 		if (!this.sql.exec("SELECT 1 FROM conflict WHERE k = ?", conflictKey(a, b)).toArray().length) {
 			return { error: "those bubbles are not marked conflicting" };
 		}
@@ -98,7 +133,7 @@ export class RepoDO extends DurableObject<Env> {
 		}
 		const l = `${repo}-f-${crypto.randomUUID().slice(0, 8)}`;
 		let done = false;
-		this.sql.exec("UPDATE bubble SET visible = 0 WHERE id IN (?, ?)", a, b);
+		this.hide(a, b);
 		try {
 			{
 				using rep = await this.env.ARTIFACTS.get(a);
@@ -124,7 +159,7 @@ export class RepoDO extends DurableObject<Env> {
 			return { bubble: a, locked: l, files };
 		} finally {
 			if (!done) await this.env.ARTIFACTS.delete(l).catch(() => false);
-			this.sql.exec("UPDATE bubble SET visible = 1 WHERE id IN (?, ?)", a, b);
+			this.show(a, b);
 			this.joinZeroDistance();
 			await this.kick();
 		}
@@ -194,18 +229,23 @@ export class RepoDO extends DurableObject<Env> {
 			}
 		}
 		await this.ctx.storage.deleteAlarm();
-		this.sql.exec("DELETE FROM bubble; DELETE FROM fork; DELETE FROM conflict; DELETE FROM locked; DELETE FROM watch; DELETE FROM pushed; DELETE FROM agent_run;");
+		this.sql.exec("DELETE FROM bubble; DELETE FROM fork; DELETE FROM conflict; DELETE FROM locked; DELETE FROM hidden; DELETE FROM watch; DELETE FROM pushed; DELETE FROM agent_run;");
 		return deleted;
 	}
 
 	// ---- representative loop ----
 
+	// Placement and merging run together: place() re-checks its bubble before inserting, members
+	// placed during a merge batch wait for the next one, and neighbour merges hide both bubbles
+	// before their await, so placement skips them.
 	async alarm(): Promise<void> {
-		await this.pollWatches();
-		const worked = await this.mergeStep();
+		this.recoverHidden();
+		const [placing, merging] = await Promise.allSettled([this.pollWatches(), this.mergeStep()]);
+		const worked = merging.status === "fulfilled" && merging.value;
 		const watching = this.sql.exec("SELECT 1 FROM watch").toArray().length > 0;
 		if (worked) await this.ctx.storage.setAlarm(Date.now() + 1_000);
 		else if (watching) await this.ctx.storage.setAlarm(Date.now() + POLL_MS);
+		for (const r of [placing, merging]) if (r.status === "rejected") throw r.reason;
 	}
 
 	private async kick() {
@@ -244,18 +284,36 @@ export class RepoDO extends DurableObject<Env> {
 		if (failed) throw (failed as PromiseRejectedResult).reason;
 	}
 
-	// One unit of git work: merge a pending member into its rep, else merge a fully-merged bubble
-	// with its nearest neighbour. Returns whether anything was attempted.
+	// One unit of git work: merge every visible bubble's pending members into its rep (one merge
+	// commit per bubble, all bubbles in parallel), else merge one bubble with its nearest neighbour.
+	// Returns whether anything was attempted.
 	private async mergeStep(): Promise<boolean> {
 		const bubbles = this.bubbles();
-		for (const h of bubbles.filter((h) => h.visible)) {
-			const pending = this.sql
-				.exec<{ name: string }>("SELECT name FROM fork WHERE bubble = ? AND status = 'pending' LIMIT 1", h.id)
-				.toArray()[0];
-			if (!pending) continue;
-			const r = await this.rebase(h.id, pending.name);
-			this.sql.exec("UPDATE fork SET status = ?, diff = ? WHERE name = ?", r.ok ? "merged" : "conflict", r.diff, pending.name);
-			if (r.ok) await this.env.ARTIFACTS.delete(pending.name);
+		const batches = bubbles
+			.filter((h) => h.visible)
+			.map((h) => ({
+				id: h.id,
+				members: this.sql
+					.exec<{ name: string }>("SELECT name FROM fork WHERE bubble = ? AND status = 'pending' LIMIT 50", h.id)
+					.toArray()
+					.map((r) => r.name),
+			}))
+			.filter((b) => b.members.length);
+		if (batches.length) {
+			const done = await Promise.allSettled(
+				batches.map(async (b) => {
+					const results = await this.merge(b.id, b.members);
+					await Promise.all(
+						b.members.map(async (name, i) => {
+							const r = results[i];
+							this.sql.exec("UPDATE fork SET status = ?, diff = ? WHERE name = ?", r.ok ? "merged" : "conflict", r.diff, name);
+							if (r.ok) await this.env.ARTIFACTS.delete(name);
+						}),
+					);
+				}),
+			);
+			const failed = done.find((r) => r.status === "rejected");
+			if (failed) throw (failed as PromiseRejectedResult).reason;
 			return true;
 		}
 
@@ -264,9 +322,10 @@ export class RepoDO extends DurableObject<Env> {
 			const nb = nearestNeighbour(h.id, bubbles, conflicts);
 			if (!nb) continue;
 			// Both invisible to placement while the merge runs.
-			this.sql.exec("UPDATE bubble SET visible = 0 WHERE id IN (?, ?)", h.id, nb);
+			// ponytail: one neighbour merge at a time per repo; pairs of disjoint bubbles could run in parallel.
+			this.hide(h.id, nb);
 			try {
-				const r = await this.rebase(h.id, nb);
+				const [r] = await this.merge(h.id, [nb]);
 				if (r.ok) {
 					this.absorb(h.id, nb);
 					this.sql.exec("UPDATE fork SET status = 'merged', diff = ? WHERE name = ?", r.diff, nb);
@@ -275,7 +334,7 @@ export class RepoDO extends DurableObject<Env> {
 					this.sql.exec("INSERT OR IGNORE INTO conflict VALUES (?)", conflictKey(h.id, nb));
 				}
 			} finally {
-				this.sql.exec("UPDATE bubble SET visible = 1 WHERE id IN (?, ?)", h.id, nb);
+				this.show(h.id, nb);
 			}
 			this.joinZeroDistance(); // a bubble that just became visible may be at distance 0 to another
 			return true;
@@ -283,13 +342,16 @@ export class RepoDO extends DurableObject<Env> {
 		return false;
 	}
 
-	// Rebase `src` onto rep `into` in the sandbox. Conflict → ok:false; infra error → throws (alarm retries).
-	private async rebase(into: string, src: string): Promise<{ ok: boolean; diff: string | null }> {
-		const [rep, from] = await Promise.all([authRemote(this.env, into, "write"), authRemote(this.env, src, "read")]);
-		const r = await this.box().sh(REBASE_SH, [rep.url, from.url]);
-		if (r.exitCode === 0) return { ok: true, diff: r.stdout };
-		if (r.exitCode === CONFLICT) return { ok: false, diff: r.stdout };
-		throw new Error(`rebase ${src} → ${into} failed (${r.exitCode}): ${r.stderr}`);
+	// Merge `srcs` into rep `into` in the sandbox; results in source order. A conflicting source →
+	// ok:false (the rest still merge); infra error → throws (alarm retries).
+	private async merge(into: string, srcs: string[]): Promise<{ ok: boolean; diff: string }[]> {
+		const [rep, ...from] = await Promise.all([authRemote(this.env, into, "write"), ...srcs.map((n) => authRemote(this.env, n, "read"))]);
+		const r = await this.box().sh(MERGE_SH, [rep.url, ...from.map((f) => f.url)]);
+		const results = parseMerge(r.stdout);
+		if (r.exitCode !== 0 || results.length !== srcs.length) {
+			throw new Error(`merge into ${into} failed (${r.exitCode}): ${r.stderr}`);
+		}
+		return results;
 	}
 
 	// Set-join: `from`'s members move into `into`; `from`'s rep becomes a pending member so its

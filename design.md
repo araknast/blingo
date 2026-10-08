@@ -52,8 +52,6 @@ a scenario may occur where bubble A has been created, then bubble B
 with distance 0 becomes visible to it (i.e. bubble B failed to merge with
 another bubble). In this case, bubble A should be merged with bubble B.
 
-all merges should be done using a git rebase
-
 ## locked bubbles
 locking a bubble prevents it from being merged into, or merging with other
 bubbles. it is still visible to agents looking to place a fork. a bubble can be

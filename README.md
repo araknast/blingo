@@ -2,7 +2,7 @@
 
 Agent-based change control on Cloudflare. Agents (or a human, through a "notagent") work on
 forks of a repository; blingo groups finished forks into **bubbles** of forks that touch disjoint
-files, and a background loop rebases everything back together. See [design.md](design.md) for the
+files, and a background loop merges everything back together. See [design.md](design.md) for the
 idea and [ARCHITECTURE.md](ARCHITECTURE.md) for how it is built.
 
 ## Layout

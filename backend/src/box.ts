@@ -11,7 +11,6 @@ const GIT_ID = {
 };
 const TASK = "/workspace/task";
 const CHECK_MS = 30_000;
-export const CONFLICT = 10;
 
 // $1 fork remote, then pairs of (bubble rep remote, that bubble's files newline-separated), in order.
 // For each bubble: the files the fork would bring into its rep = changed since their merge base, so
@@ -35,17 +34,32 @@ done
 echo new
 git diff --name-only "$empty" HEAD`;
 
-// $1 rep remote (write), $2 source remote (read). Rebases source onto rep and fast-forwards rep.
-// Exit 0 + diff of source on stdout; exit ${CONFLICT} = rebase conflict; anything else = infra error.
-export const REBASE_SH = `set -e
-d=$(mktemp -d); git clone -q "$1" "$d"; cd "$d"
-rep=$(git rev-parse HEAD)
-git fetch -q "$2" HEAD
-mb=$(git merge-base "$rep" FETCH_HEAD || git hash-object -t tree /dev/null)
-git diff "$mb" FETCH_HEAD
-git checkout -q --detach FETCH_HEAD
-git rebase -q "$rep" >&2 || exit ${CONFLICT}
-git push -q origin HEAD:refs/heads/main`;
+// $1 rep remote (write), then source remotes (read): a bubble's pending members, or one neighbour
+// bubble's rep. Merges them all into the rep with one merge commit (an octopus when there are
+// several). If that fails, merges them one at a time so a source that conflicts doesn't block the
+// rest. Pushes once. Prints "== <i> ok|conflict" then that source's diff, per source, in order.
+// Exit 0 even with conflicts; anything else = infra error.
+export const MERGE_SH = `set -e
+d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
+git clone -q "$1" "$d"; cd "$d"; rep=$(git rev-parse HEAD); shift
+n=0; for src in "$@"; do git fetch -q "$src" "+HEAD:refs/m/$n"; n=$((n + 1)); done
+merge() { msg=$1; shift; git merge -q --no-ff --no-edit --allow-unrelated-histories -m "$msg" "$@" >&2; }
+st=()
+if merge "merge $n forks" $(seq -f 'refs/m/%g' 0 $((n - 1))); then
+	for i in $(seq 0 $((n - 1))); do st[$i]=ok; done
+else
+	git merge --abort 2>/dev/null || true; git reset -q --hard "$rep"
+	for i in $(seq 0 $((n - 1))); do
+		if merge "merge fork" "refs/m/$i"; then st[$i]=ok
+		else git merge --abort 2>/dev/null || git reset -q --hard HEAD; st[$i]=conflict; fi
+	done
+fi
+[ "$(git rev-parse HEAD)" = "$rep" ] || git push -q origin HEAD:refs/heads/main
+empty=$(git hash-object -t tree /dev/null)
+for i in $(seq 0 $((n - 1))); do
+	echo "== $i \${st[$i]}"
+	git diff "$(git merge-base "$rep" "refs/m/$i" || echo "$empty")" "refs/m/$i"
+done`;
 
 export const NO_CONFLICT = 11;
 

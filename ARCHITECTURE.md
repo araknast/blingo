@@ -34,6 +34,7 @@ browser ──► yorkle Worker ──(service binding)──► blingo Worker �
 | `fork(name, bubble, status, files, diff)` | status `rep` / `pending` / `merged` / `conflict`; `files` = changed paths (JSON); `diff` kept after merge |
 | `conflict(k)` | `"a|b"` bubble pairs whose merge failed; never retried (except by a ferge). When a bubble is absorbed, its pairs move to the bubble that absorbed it |
 | `locked(id)` | locked bubbles: placeable, but excluded from neighbour merges and distance-0 joins |
+| `hidden(id, since)` | lease for a bubble hidden by a running merge or ferge (see Merge loop) |
 | `watch(fork, base, token, expires)` | notagent forks waiting for their push, or pushed and not yet placed |
 | `pushed(fork)` | watched forks whose push arrived; removed with the watch once placed |
 | `agent_run(fork, prompt, started, status, finished, log)` | agent runs, kept after they finish |
@@ -46,12 +47,12 @@ Some older RepoDOs also have an unused `fork.deleted` column, so inserts name th
 each, it computes the files the fork would bring into that bubble's rep (`git diff` since their
 merge base), so history the fork carries from elsewhere counts too, and stops at the first bubble
 none of whose files are in that set. The fork joins it, recorded with that set, so it can always be
-rebased in. If that bubble changed while the job ran, placement runs again. If
+merged in. If that bubble changed while the job ran, placement runs again. If
 none fits, it starts a new bubble as its representative, with its files = everything changed since
 the repository's starting point (the empty tree), so distance to other bubbles reflects all it
 carries. Then any visible bubbles at
 distance 0 are set-joined: the absorbed bubble's members move over and its rep becomes a `pending`
-member, so its code is still rebased in.
+member, so its code is still merged in.
 
 **Notagent.** `POST /notagents` forks, mints a 1-hour write token, and registers a `watch`. The
 alarm checks each watched fork's head every 5 s (`repo.log`, all in parallel). On change it revokes
@@ -64,14 +65,25 @@ expires. The API reports `waiting` (no push yet) and `placing` (pushed, not yet 
 push, all detached in the container. The Box alarm checks every 30 s. When
 it's done it places the fork (or deletes it on failure) and reports to `RepoDO.agentDone`.
 
-**Merge loop** (`RepoDO.alarm`, one step per tick):
-1. If any visible bubble has a `pending` member → rebase it onto the rep (`REBASE_SH`), mark it
-   `merged`, keep its diff, delete its repo.
-2. Else pick a visible bubble and its nearest non-conflicting neighbour; hide both; rebase the
-   neighbour's rep onto this rep. On success, join the sets and delete the neighbour's rep; on
-   conflict (exit 10), record the pair. Show both again and re-run zero-distance joins.
+**Merge loop** (`RepoDO.alarm`, one step per tick, running **concurrently with placement**):
+1. Every visible bubble with `pending` members merges all of them (up to 50) into its rep in one
+   `MERGE_SH` job: a single merge commit, an octopus when there are several. If that fails, the
+   job merges them one at a time, so only the members that conflict are marked `conflict`; the
+   rest become `merged`, with their diffs kept and their repos deleted. All such bubbles run in
+   parallel.
+2. Else pick a visible bubble and its nearest non-conflicting neighbour; hide both; merge the
+   neighbour's rep into this rep with a merge commit. On success, join the sets and delete the
+   neighbour's rep; on conflict, record the pair. Show both again and re-run zero-distance joins.
 
-Infra errors throw; the alarm retries. Only a rebase conflict counts as a conflict.
+Running alongside placement is safe: `place()` re-checks its bubble before inserting, members
+placed during a batch wait for the next one, and step 2 hides both bubbles before its git work.
+Infra errors throw; the alarm retries. Only a merge conflict counts as a conflict.
+
+**Hidden bubbles are leased.** Hiding records the time in `hidden(id, since)`. If the operation
+dies first (cancelled alarm, reset, deploy), its bubbles would stay hidden, blocking merges and
+ferges on them. So every alarm run and every ferge first un-hides bubbles hidden for over 15 min
+(the alarm's own wall-clock limit; real merges take seconds). A fresh object instance un-hides all
+of them, since nothing from the old instance is still running.
 Locked bubbles skip step 2 on both sides, but their own pending members are still merged in.
 
 **Lock / unlock** (`POST /repos/:repo/lock|unlock`). Unlocking re-runs distance-0 joins and
@@ -102,9 +114,9 @@ bubble with their conflict markers. Unlock the bubble to let it merge back.
 
 Marked with `ponytail:` comments in the code.
 
-- One merge at a time per repository (the alarm is single-flight). A ferge runs from its API
-  request, not the alarm, so a member rebase into the same rep at that moment makes one of them fail.
+- Neighbour merges run one at a time per repository. A ferge runs from its API request, not the
+  alarm, so a member merge into the same rep at that moment makes one of them fail.
 - Pushes are found by polling, not Artifacts events; several pushes within one 5 s window all
   count as the one push.
-- Bubble rules are by file path only; semantic conflicts surface at rebase or not at all.
+- Bubble rules are by file path only; semantic conflicts surface at merge or not at all.
 - Agent runs are listed per repository; there is no cross-repository list.

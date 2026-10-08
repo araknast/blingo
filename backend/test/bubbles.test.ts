@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { conflictKey, distance, fits, nearestNeighbour, renameConflicts, zeroDistanceJoins, type Bubble } from "../src/bubbles";
+import { conflictKey, distance, fits, nearestNeighbour, parseMerge, renameConflicts, zeroDistanceJoins, type Bubble } from "../src/bubbles";
 
 const h = (id: string, files: string[], visible = true): Bubble => ({ id, files: new Set(files), visible });
 
@@ -46,4 +46,13 @@ test("conflicts of an absorbed bubble move to the bubble that absorbed it", () =
 	const keys = [conflictKey("a", "c"), conflictKey("a", "b"), conflictKey("b", "c"), conflictKey("d", "e")];
 	// c absorbed into b: a|c → a|b (already there), b|c disappears, d|e untouched.
 	expect(renameConflicts(keys, "c", "b").sort()).toEqual([conflictKey("a", "b"), conflictKey("d", "e")].sort());
+});
+
+test("parseMerge reads each source's status and diff in order", () => {
+	const out = "== 0 ok\ndiff --git a/x b/x\n+x\n== 1 conflict\ndiff --git a/y b/y\n-y\n== 2 ok\n";
+	expect(parseMerge(out)).toEqual([
+		{ ok: true, diff: "diff --git a/x b/x\n+x\n" },
+		{ ok: false, diff: "diff --git a/y b/y\n-y\n" },
+		{ ok: true, diff: "" },
+	]);
 });

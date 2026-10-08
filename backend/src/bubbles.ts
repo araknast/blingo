@@ -60,3 +60,15 @@ export function nearestNeighbour(id: string, bubbles: Bubble[], conflicts: Set<s
 	return best?.id ?? null;
 }
 
+
+// Parses MERGE_SH output: per source, in order, a "== <i> ok|conflict" line then its diff.
+export function parseMerge(out: string): { ok: boolean; diff: string }[] {
+	return out
+		.split(/^== \d+ /m)
+		.slice(1)
+		.map((part) => {
+			const nl = part.indexOf("\n");
+			const status = nl < 0 ? part : part.slice(0, nl);
+			return { ok: status.trim() === "ok", diff: nl < 0 ? "" : part.slice(nl + 1) };
+		});
+}
