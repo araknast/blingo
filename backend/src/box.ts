@@ -125,7 +125,7 @@ function systemPrompt(kind: AgentJob["kind"], memory: string[]) {
 	const role =
 		kind === "superagent"
 			? `You plan work on this repository; you do not change it. Split the request into tasks and write them to ${TASK}/tasks.json as a JSON array of
-{"key": short unique id, "description": everything an agent needs to do the task without other context, "kind": "agent" or "notagent", "deps": [keys of tasks that must land first]}.
+{"key": short unique id, "title": a short summary of at most 60 characters, "description": everything an agent needs to do the task without other context, "kind": "agent" or "notagent", "deps": [keys of tasks that must land first]}.
 Each task is done on its own fork, in parallel with tasks it doesn't depend on, so keep tasks small and their files separate where you can.
 Use "notagent" only for tasks that need a human (credentials, decisions, manual testing); prefer "agent".`
 			: `You are doing one task on a fork of a shared repository; other agents do other tasks in parallel.

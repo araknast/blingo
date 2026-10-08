@@ -42,7 +42,7 @@
 			<li><a href="/repos" aria-current={route.path === "/repos" ? "page" : undefined}>Repositories</a></li>
 			{#if repo}
 				<li class="repo-nav">
-					<a href="/repos/{repo}" class="mono" aria-current={route.path === `/repos/${repo}` ? "page" : undefined}>{repo}</a>
+					<a href="/repos/{repo}" class="mono" aria-current={here(`/repos/${repo}`) ? "page" : undefined}>{repo}</a>
 				</li>
 			{/if}
 		</ul>

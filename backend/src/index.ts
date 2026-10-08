@@ -1,6 +1,7 @@
 import { invalidSignup, type Signup } from "./auth";
 import { authRemote } from "./box";
 import { diffTrees, resolvePath } from "./git";
+import { shortTitle } from "./tasks";
 
 export { Box, Outbound } from "./box";
 export { RepoDO } from "./repo-do";
@@ -8,7 +9,7 @@ export { UsersDO } from "./users-do";
 
 const id = () => crypto.randomUUID().slice(0, 8);
 
-type Body = { prompt?: string; description?: string; repo?: string; bubble?: string };
+type Body = { prompt?: string; title?: string; description?: string; repo?: string; bubble?: string };
 type Auth = { user: string; admin: boolean };
 
 const users = (env: Env) => env.USERS.getByName("users");
@@ -138,7 +139,10 @@ async function handle(request: Request, env: Env): Promise<Response> {
 		if (src instanceof Response) return src;
 		const repoDO = env.REPO.getByName(src.repo);
 		const kind = a === "agents" ? "agent" : "notagent";
-		const [task] = await repoDO.addTasks(src.repo, [{ description, kind, deps: [], bubble: src.bubble }]);
+		const title = shortTitle(body.title?.trim() || description);
+		const added = await repoDO.addTasks(src.repo, [{ title, description, kind, deps: [], bubble: src.bubble }]);
+		if ("error" in added) return Response.json(added, { status: 400 });
+		const [task] = added.ids;
 		if (a === "notagents") {
 			const r = await repoDO.takeTask(task);
 			return "error" in r ? Response.json(r, { status: 409 }) : Response.json(r, { status: 201 });
@@ -210,6 +214,20 @@ async function handle(request: Request, env: Env): Promise<Response> {
 		const repo = env.REPO.getByName(b);
 		const ok = c === "lock" ? await repo.lock(bubble) : await repo.unlock(bubble);
 		return ok ? Response.json({ bubble, locked: c === "lock" }) : Response.json({ error: "no such bubble" }, { status: 404 });
+	}
+	// One task, as an issue tracker files it: an agent task starts once ready; a human one waits to be taken.
+	if (request.method === "POST" && a === "repos" && b && c === "tasks" && !d) {
+		const t = (await request.json()) as { title?: string; description?: string; kind?: string; deps?: unknown; bubble?: string };
+		const title = t.title?.trim() ? shortTitle(t.title) : "";
+		const description = t.description?.trim() ?? "";
+		const deps = t.deps ?? [];
+		if (!title) return Response.json({ error: "title required" }, { status: 400 });
+		if (t.kind !== "agent" && t.kind !== "notagent") return Response.json({ error: "kind must be agent or notagent" }, { status: 400 });
+		if (!Array.isArray(deps) || deps.some((x) => typeof x !== "string")) return Response.json({ error: "deps must be task ids" }, { status: 400 });
+		const repoDO = env.REPO.getByName(b);
+		if (t.bubble && !(await repoDO.repOf(t.bubble))) return Response.json({ error: "no such bubble" }, { status: 404 });
+		const added = await repoDO.addTasks(b, [{ title, description: description || title, kind: t.kind, deps, bubble: t.bubble ?? null }]);
+		return "error" in added ? Response.json(added, { status: 400 }) : Response.json({ task: added.ids[0] }, { status: 201 });
 	}
 	if (request.method === "POST" && a === "repos" && b && c === "tasks" && d && (e === "take" || e === "retry")) {
 		const repoDO = env.REPO.getByName(b);

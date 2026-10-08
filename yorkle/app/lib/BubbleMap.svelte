@@ -653,10 +653,6 @@
 	}
 	.chip .prompt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 	.chip .mono { font-size: 0.75rem; }
-	.pulse { animation: pulse 1.6s ease-in-out infinite; }
-	@keyframes pulse { 50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--working) 25%, transparent); } }
-	.dot.placing.pulse { animation-name: pulse-grey; }
-	@keyframes pulse-grey { 50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--ink-3) 25%, transparent); } }
 
 	@media (max-width: 768px) {
 		.legend { display: none; }

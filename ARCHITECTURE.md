@@ -40,7 +40,7 @@ browser ──► yorkle Worker ──(service binding)──► blingo Worker �
 | `watch(fork, base, token, expires)` | notagent forks waiting for their push, or pushed and not yet placed |
 | `pushed(fork)` | watched forks whose push arrived; removed with the watch once placed |
 | `agent_run(fork, prompt, started, status, finished, log)` | agent and superagent runs (`-s-` ids), kept after they finish |
-| `task(id, description, kind, status, bubble, fork, base_head, explanation, superagent, created, finished)` | tasks: `kind` agent / notagent; `status` open / in-progress / completed / failed; `bubble` = where it should start, then where it did |
+| `task(id, title, description, kind, status, bubble, fork, base_head, explanation, superagent, created, finished)` | tasks: a short `title` (≤ 60 chars); `kind` agent / notagent; `status` open / in-progress / completed / failed; `bubble` = where it should start, then where it did. Listed in `rowid` (creation) order. `title` was added in place: objects from before it get the column and titles from their descriptions on startup |
 | `task_dep(task, dep)` | task dependencies |
 | `memory(id, text, author, created)` | memory items, given to every agent and superagent |
 | `owed(locked, into)` | ferge debt: locked bubble `locked` still owes its conflicting files to bubble `into` |
@@ -79,7 +79,13 @@ distance 0 are set-joined: the absorbed bubble's members move over and its rep b
 member, so its code is still merged in.
 
 **Tasks** (`backend/src/tasks.ts` rules, `RepoDO.schedule`). Every agent and notagent belongs to a
-task. `POST /agents` and `POST /notagents` add a one-task batch; a superagent adds a whole plan.
+task. `POST /agents` and `POST /notagents` add a one-task batch and start it; `POST /repos/:r/tasks
+{title, description, kind, deps?, bubble?}` files one the way an issue tracker does (a human task
+waits to be taken); a superagent adds a whole plan. Every task has a short title: given, or
+`shortTitle` of the description (first line, ≤ 60 chars at a word). A dep names a task in the same
+batch by key, or an existing task by id. Agents get `# title` then the description as their prompt.
+In yorkle, tasks are the repository's **Tasks** tab (`/repos/:r/tasks`, `/repos/:r/tasks/:id`),
+an issue tracker beside the Map tab.
 `schedule()` runs from `addTasks`, `retryTask` and every alarm. It starts each `ready` agent task:
 it forks the task's bubble, records the fork's head as `base_head` and starts the agent. It marks the
 task `in-progress` before any await, so concurrent calls don't double-start it. A failed start
@@ -101,7 +107,7 @@ L's merge.
 
 **Superagent** (`POST /superagents {repo?, bubble?, prompt}`, `SUPER_SH`). Runs Claude Code in its
 own Box on a **read-only** clone. Its system prompt asks for a JSON plan
-`[{key, description, kind, deps}]` in `/workspace/task/tasks.json`. The Box alarm checks it with
+`[{key, title, description, kind, deps}]` in `/workspace/task/tasks.json`. The Box alarm checks it with
 `validatePlan` (keys unique, deps known, no cycle, ≤ 30 tasks) and calls `addTasks`. Nothing is
 placed.
 

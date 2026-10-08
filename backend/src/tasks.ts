@@ -58,10 +58,20 @@ export function renameOwed(rows: Owed[], from: string, into: string): Owed[] {
 	return [...out.values()];
 }
 
-export type PlanItem = { key: string; description: string; kind: TaskKind; deps: string[] };
+// A short title: the first non-empty line, cut at a word boundary (with "…") if over `max` characters.
+export function shortTitle(text: string, max = 60): string {
+	const line = text.split("\n").map((l) => l.replace(/^#+\s*/, "").trim()).find(Boolean) ?? "";
+	if (line.length <= max) return line;
+	const cut = line.slice(0, max - 1);
+	const space = cut.lastIndexOf(" ");
+	return `${(space > max / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
+}
+
+export type PlanItem = { key: string; title: string; description: string; kind: TaskKind; deps: string[] };
 export const MAX_PLAN = 30;
 
-// Checks a superagent's plan: [{key, description, kind, deps}], deps by key within the plan, acyclic.
+// Checks a superagent's plan: [{key, title, description, kind, deps}], deps by key within the plan,
+// acyclic. Long titles are shortened rather than rejected.
 export function validatePlan(raw: unknown): { items: PlanItem[] } | { error: string } {
 	if (!Array.isArray(raw) || !raw.length) return { error: "plan must be a non-empty array" };
 	if (raw.length > MAX_PLAN) return { error: `plan has more than ${MAX_PLAN} tasks` };
@@ -69,11 +79,12 @@ export function validatePlan(raw: unknown): { items: PlanItem[] } | { error: str
 	for (const x of raw as Record<string, unknown>[]) {
 		const key = typeof x?.key === "string" ? x.key.trim() : "";
 		const description = typeof x?.description === "string" ? x.description.trim() : "";
-		if (!key || !description) return { error: "every task needs a key and a description" };
+		const title = typeof x?.title === "string" ? shortTitle(x.title) : "";
+		if (!key || !title || !description) return { error: "every task needs a key, a title and a description" };
 		if (x.kind !== "agent" && x.kind !== "notagent") return { error: `task ${key}: kind must be agent or notagent` };
 		const deps = x.deps ?? [];
 		if (!Array.isArray(deps) || deps.some((d) => typeof d !== "string")) return { error: `task ${key}: deps must be keys` };
-		items.push({ key, description, kind: x.kind, deps: [...new Set(deps as string[])] });
+		items.push({ key, title, description, kind: x.kind, deps: [...new Set(deps as string[])] });
 	}
 	const keys = new Set(items.map((i) => i.key));
 	if (keys.size !== items.length) return { error: "task keys must be unique" };

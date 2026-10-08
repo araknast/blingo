@@ -9,6 +9,7 @@ export type AgentRun = { fork: string; prompt: string; started: number; status: 
 export type TaskStatus = "open" | "in-progress" | "completed" | "failed";
 export type Task = {
 	id: string;
+	title: string;
 	description: string;
 	kind: "agent" | "notagent";
 	status: TaskStatus;

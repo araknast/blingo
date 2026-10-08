@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { explanation, ready, renameOwed, validatePlan, type ForkState, type TaskState } from "../src/tasks";
+import { explanation, ready, renameOwed, shortTitle, validatePlan, type ForkState, type TaskState } from "../src/tasks";
 
 const t = (id: string, status: TaskState["status"], deps: string[] = [], fork: string | null = null, bubble: string | null = null): TaskState => ({
 	id,
@@ -47,27 +47,41 @@ test("ferge debt is paid when the locked bubble reaches the bubble it owes, eith
 	expect(renameOwed([{ locked: "L", into: "A" }, { locked: "M", into: "A" }], "M", "L")).toEqual([{ locked: "L", into: "A" }]);
 });
 
-test("validatePlan checks keys, kinds, deps and cycles", () => {
+test("validatePlan checks keys, titles, kinds, deps and cycles", () => {
 	const ok = validatePlan([
-		{ key: "a", description: "do a", kind: "agent" },
-		{ key: "b", description: "do b", kind: "notagent", deps: ["a", "a"] },
+		{ key: "a", title: "A", description: "do a", kind: "agent" },
+		{ key: "b", title: "B", description: "do b", kind: "notagent", deps: ["a", "a"] },
 	]);
 	expect(ok).toEqual({
 		items: [
-			{ key: "a", description: "do a", kind: "agent", deps: [] },
-			{ key: "b", description: "do b", kind: "notagent", deps: ["a"] },
+			{ key: "a", title: "A", description: "do a", kind: "agent", deps: [] },
+			{ key: "b", title: "B", description: "do b", kind: "notagent", deps: ["a"] },
 		],
 	});
 	expect(validatePlan([])).toHaveProperty("error");
-	expect(validatePlan([{ key: "a", description: "x", kind: "robot" }])).toHaveProperty("error");
-	expect(validatePlan([{ key: "a", description: "", kind: "agent" }])).toHaveProperty("error");
-	expect(validatePlan([{ key: "a", description: "x", kind: "agent", deps: ["z"] }])).toHaveProperty("error");
+	expect(validatePlan([{ key: "a", title: "A", description: "x", kind: "robot" }])).toHaveProperty("error");
+	expect(validatePlan([{ key: "a", title: "A", description: "", kind: "agent" }])).toHaveProperty("error");
+	expect(validatePlan([{ key: "a", description: "x", kind: "agent" }])).toHaveProperty("error"); // no title
+	expect(validatePlan([{ key: "a", title: "A", description: "x", kind: "agent", deps: ["z"] }])).toHaveProperty("error");
 	expect(
 		validatePlan([
-			{ key: "a", description: "x", kind: "agent", deps: ["b"] },
-			{ key: "b", description: "y", kind: "agent", deps: ["a"] },
+			{ key: "a", title: "A", description: "x", kind: "agent", deps: ["b"] },
+			{ key: "b", title: "B", description: "y", kind: "agent", deps: ["a"] },
 		]),
 	).toEqual({ error: "dependency cycle among a, b" });
+	// a long title is shortened, not rejected
+	const long = validatePlan([{ key: "a", title: "word ".repeat(30), description: "x", kind: "agent" }]);
+	expect("items" in long && long.items[0].title.length).toBeLessThanOrEqual(60);
+});
+
+test("shortTitle takes the first line and cuts long ones at a word", () => {
+	expect(shortTitle("Fix login\n\nmore detail")).toBe("Fix login");
+	expect(shortTitle("\n# Add dark mode\nbody")).toBe("Add dark mode");
+	const t = shortTitle("Add a dark mode toggle to the settings page and remember the choice per user");
+	expect(t).toBe("Add a dark mode toggle to the settings page and remember…");
+	expect(t.length).toBeLessThanOrEqual(60);
+	expect(shortTitle("x".repeat(100)).length).toBe(60); // no space: hard cut
+	expect(shortTitle("")).toBe("");
 });
 
 test("explanation stops at the fork's starting commit", () => {

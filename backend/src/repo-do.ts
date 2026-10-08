@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { FERGE_SH, MERGE_SH, NO_CONFLICT, PLACE_SH, authRemote, forkRepo, headOf } from "./box";
 import { conflictKey, fits, nearestNeighbour, parseMerge, renameConflicts, zeroDistanceJoins, type Bubble } from "./bubbles";
-import { explanation, ready, renameOwed, type Owed, type PlanItem, type TaskState } from "./tasks";
+import { explanation, ready, renameOwed, shortTitle, type Owed, type PlanItem, type TaskState } from "./tasks";
 
 const POLL_MS = 5_000;
 // A merge or ferge hides its bubbles for seconds. Longer than the alarm's own wall-clock limit means
@@ -12,6 +12,7 @@ type Fork = { name: string; bubble: string; status: "rep" | "pending" | "merged"
 type Watch = { fork: string; base: string; token: string; expires: number };
 type AgentRun = { fork: string; prompt: string; started: number; status: string; finished: number | null; log: string | null };
 type TaskRow = TaskState & {
+	title: string;
 	description: string;
 	kind: "agent" | "notagent";
 	base_head: string | null;
@@ -44,12 +45,19 @@ export class RepoDO extends DurableObject<Env> {
 			-- bubble: where an open task without deps starts (NULL = any); once started, where it did.
 			CREATE TABLE IF NOT EXISTS task(id TEXT PRIMARY KEY, description TEXT NOT NULL, kind TEXT NOT NULL,
 				status TEXT NOT NULL DEFAULT 'open', bubble TEXT, fork TEXT, base_head TEXT, explanation TEXT,
-				superagent TEXT, created INTEGER NOT NULL, finished INTEGER);
+				superagent TEXT, created INTEGER NOT NULL, finished INTEGER, title TEXT NOT NULL DEFAULT '');
 			CREATE TABLE IF NOT EXISTS task_dep(task TEXT NOT NULL, dep TEXT NOT NULL, PRIMARY KEY (task, dep));
 			CREATE TABLE IF NOT EXISTS memory(id TEXT PRIMARY KEY, text TEXT NOT NULL, author TEXT NOT NULL, created INTEGER NOT NULL);
 			-- a ferge's locked bubble still owes its conflicting files to bubble "into"
 			CREATE TABLE IF NOT EXISTS owed(locked TEXT NOT NULL, "into" TEXT NOT NULL, PRIMARY KEY (locked, "into"));
 		`);
+		// Tasks from before titles: add the column in place and title them from their descriptions.
+		if (!this.sql.exec("SELECT 1 FROM pragma_table_info('task') WHERE name = 'title'").toArray().length) {
+			this.sql.exec("ALTER TABLE task ADD COLUMN title TEXT NOT NULL DEFAULT ''");
+			for (const t of this.sql.exec<{ id: string; description: string }>("SELECT id, description FROM task").toArray()) {
+				this.sql.exec("UPDATE task SET title = ? WHERE id = ?", shortTitle(t.description), t.id);
+			}
+		}
 		// A fresh instance means any merge or ferge that hid bubbles died with the old one.
 		if (this.recoverHidden(true)) void ctx.blockConcurrencyWhile(() => this.kick());
 	}
@@ -134,26 +142,31 @@ export class RepoDO extends DurableObject<Env> {
 
 	// ---- tasks and memory (tasktracker.md) ----
 
-	// Adds tasks (one superagent plan, or one task from the API); deps name keys within the batch.
-	// Returns their ids in order. `repo` is remembered so the alarm can start agents.
-	async addTasks(repo: string, items: NewTask[], superagent: string | null = null): Promise<string[]> {
-		this.ctx.storage.kv.put("repo", repo);
+	// Adds tasks (one superagent plan, or one task from the API). A dep names a key within the batch,
+	// else an existing task's id. Returns their ids in order. `repo` is remembered so the alarm can
+	// start agents.
+	async addTasks(repo: string, items: NewTask[], superagent: string | null = null): Promise<{ ids: string[] } | { error: string }> {
 		const ids = new Map(items.map((i, n) => [i.key ?? String(n), `t-${crypto.randomUUID().slice(0, 8)}`]));
+		const dep = (d: string) => ids.get(d) ?? (this.sql.exec("SELECT 1 FROM task WHERE id = ?", d).toArray().length ? d : null);
+		const unknown = items.flatMap((i) => i.deps).find((d) => !dep(d));
+		if (unknown) return { error: `no such task: ${unknown}` };
+		this.ctx.storage.kv.put("repo", repo);
 		items.forEach((i, n) => {
 			const id = ids.get(i.key ?? String(n))!;
 			this.sql.exec(
-				"INSERT INTO task (id, description, kind, bubble, superagent, created) VALUES (?, ?, ?, ?, ?, ?)",
+				"INSERT INTO task (id, title, description, kind, bubble, superagent, created) VALUES (?, ?, ?, ?, ?, ?, ?)",
 				id,
+				i.title,
 				i.description,
 				i.kind,
 				i.bubble ?? null,
 				superagent,
 				Date.now(),
 			);
-			for (const d of i.deps) this.sql.exec("INSERT OR IGNORE INTO task_dep (task, dep) VALUES (?, ?)", id, ids.get(d));
+			for (const d of i.deps) this.sql.exec("INSERT OR IGNORE INTO task_dep (task, dep) VALUES (?, ?)", id, dep(d));
 		});
 		await this.schedule();
-		return [...ids.values()];
+		return { ids: [...ids.values()] };
 	}
 
 	task(id: string) {
@@ -208,7 +221,7 @@ export class RepoDO extends DurableObject<Env> {
 		for (const d of this.sql.exec<{ task: string; dep: string }>("SELECT task, dep FROM task_dep").toArray()) {
 			deps.set(d.task, [...(deps.get(d.task) ?? []), d.dep]);
 		}
-		return this.sql.exec<Omit<TaskRow, "deps">>("SELECT * FROM task ORDER BY created, id").toArray().map((t) => ({ ...t, deps: deps.get(t.id) ?? [] }));
+		return this.sql.exec<Omit<TaskRow, "deps">>("SELECT * FROM task ORDER BY rowid" /* insertion order: a plan stays in its order */).toArray().map((t) => ({ ...t, deps: deps.get(t.id) ?? [] }));
 	}
 
 	// Open tasks that may start now → bubble to fork (null = base repo).
@@ -238,8 +251,9 @@ export class RepoDO extends DurableObject<Env> {
 					const base = await headOf(this.env, fork);
 					this.sql.exec("UPDATE task SET fork = ?, base_head = ? WHERE id = ?", fork, base, t.id);
 					const { url: remote } = await authRemote(this.env, fork, "write", 3 * 3600);
-					await this.env.BOX.getByName(fork).startAgent({ repo, fork, remote, prompt: t.description, kind: "agent", memory });
-					this.agentStarted(fork, t.description);
+					const prompt = `# ${t.title}\n\n${t.description}`;
+					await this.env.BOX.getByName(fork).startAgent({ repo, fork, remote, prompt, kind: "agent", memory });
+					this.agentStarted(fork, t.title);
 				} catch (e) {
 					console.error(`starting task ${t.id}`, e);
 					const fork = this.task(t.id)?.fork;

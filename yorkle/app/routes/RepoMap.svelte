@@ -3,12 +3,15 @@
 	import BubbleMap from "../lib/BubbleMap.svelte";
 	import ContextMenu, { type MenuItem } from "../lib/ContextMenu.svelte";
 	import Dialog from "../lib/Dialog.svelte";
+	import ForkCommands from "../lib/ForkCommands.svelte";
+	import RepoTabs from "../lib/RepoTabs.svelte";
 	import Shell from "../lib/Shell.svelte";
+	import SuperagentDialog from "../lib/SuperagentDialog.svelte";
 	import { navigate } from "../lib/router.svelte";
 	import { ApiError, api, loadMe } from "../lib/session.svelte";
 	import { toast, toastError } from "../lib/toast.svelte";
 	import type { RepoState } from "../lib/types";
-	import { agentLabel, ago, copy, duration, menuGesture, plural, poll, short } from "../lib/util";
+	import { agentLabel, ago, duration, menuGesture, plural, poll, short } from "../lib/util";
 
 	let { repo }: { repo: string } = $props();
 
@@ -63,6 +66,7 @@
 
 	// ---- Start an agent ----
 	let agentOpen = $state(false);
+	let agentTitle = $state("");
 	let prompt = $state("");
 	let agentBase = $state("");
 	let busy = $state(false);
@@ -70,10 +74,10 @@
 		e.preventDefault();
 		busy = true;
 		try {
-			await api("POST", "/agents", { repo, prompt, bubble: agentBase || undefined });
+			await api("POST", "/agents", { repo, title: agentTitle, prompt, bubble: agentBase || undefined });
 			agentOpen = false;
-			prompt = "";
-			toast("Agent started. It appears in the dock until its fork lands in a bubble.");
+			agentTitle = prompt = "";
+			toast("Agent started. Its task is on the Tasks tab.");
 			refresh();
 		} catch (err) {
 			toastError(err);
@@ -84,40 +88,23 @@
 
 	// ---- Superagent: plans a prompt into tasks ----
 	let superOpen = $state(false);
-	let superPrompt = $state("");
-	let superBase = $state("");
 	function openSuper(bubble: string | null) {
 		fixedBase = bubble;
-		superBase = bubble ?? "";
 		superOpen = true;
 	}
-	async function startSuper(e: SubmitEvent) {
-		e.preventDefault();
-		busy = true;
-		try {
-			await api("POST", "/superagents", { repo, prompt: superPrompt, bubble: superBase || undefined });
-			superOpen = false;
-			superPrompt = "";
-			toast("Superagent started. Its tasks appear here when it finishes planning.");
-			refresh();
-		} catch (err) {
-			toastError(err);
-		} finally {
-			busy = false;
-		}
-	}
 
-	// ---- Push a fork (notagent), new or for an open task ----
+	// ---- Push a fork (notagent) ----
 	let pushOpen = $state(false);
 	let pushBase = $state("");
+	let pushTitle = $state("");
 	let pushDescription = $state("");
 	let pushed = $state<{ fork: string; clone: string; push: string } | null>(null);
 	async function createFork(e: SubmitEvent) {
 		e.preventDefault();
 		busy = true;
 		try {
-			pushed = await api("POST", "/notagents", { repo, description: pushDescription, bubble: pushBase || undefined });
-			pushDescription = "";
+			pushed = await api("POST", "/notagents", { repo, title: pushTitle, description: pushDescription || pushTitle, bubble: pushBase || undefined });
+			pushTitle = pushDescription = "";
 			refresh();
 		} catch (err) {
 			toastError(err);
@@ -126,35 +113,7 @@
 		}
 	}
 
-	// ---- Tasks and memory ----
-	async function takeTask(id: string) {
-		try {
-			pushed = await api("POST", `/repos/${repo}/tasks/${id}/take`);
-			pushOpen = true;
-			refresh();
-		} catch (err) {
-			toastError(err);
-		}
-	}
-	async function retryTask(id: string) {
-		try {
-			await api("POST", `/repos/${repo}/tasks/${id}/retry`);
-			refresh();
-		} catch (err) {
-			toastError(err);
-		}
-	}
-	const taskGroups = $derived.by(() => {
-		const t = data?.tasks ?? [];
-		return [
-			{ label: "In progress", tasks: t.filter((x) => x.status === "in-progress") },
-			{ label: "Open", tasks: t.filter((x) => x.status === "open") },
-			{ label: "Failed", tasks: t.filter((x) => x.status === "failed") },
-			{ label: "Completed", tasks: t.filter((x) => x.status === "completed").reverse() },
-		].filter((g) => g.tasks.length);
-	});
-	const taskText = (id: string) => data?.tasks.find((t) => t.id === id)?.description ?? id;
-
+	// ---- Memory ----
 	let note = $state("");
 	async function addNote(e: SubmitEvent) {
 		e.preventDefault();
@@ -232,6 +191,8 @@
 			<p>It doesn't exist, or it belongs to someone else. <a href="/repos">Go to your repositories</a>.</p>
 		</div>
 	{:else}
+		<div class="page">
+		<RepoTabs {repo} current="map" open={data?.tasks.filter((t) => t.status !== "completed").length} />
 		<div class="layout">
 			<section class="stage" aria-label="Bubble map">
 				<BubbleMap {data} hrefFor={bubbleHref} onconflict={askFerge} oncontext={(at) => (menu = at)} />
@@ -259,41 +220,6 @@
 						</ul>
 					{/if}
 				</section>
-
-				{#if data?.tasks.length}
-					<section>
-						<h2>Tasks <span class="count">{data.tasks.filter((t) => t.status === "completed").length} of {data.tasks.length} done</span></h2>
-						{#each taskGroups as g (g.label)}
-							<h3>{g.label}</h3>
-							<ul class="tasks">
-								{#each g.tasks as t (t.id)}
-									<li>
-										<details>
-											<summary>
-												<span class="kind">{t.kind === "agent" ? "Agent" : "Human"}</span>
-												{t.description}
-											</summary>
-											{#if t.deps.length}
-												<p class="muted small">After: {t.deps.map(taskText).join("; ")}</p>
-											{/if}
-											{#if t.explanation}<pre>{t.explanation}</pre>{/if}
-											{#if t.bubble && t.status !== "open"}
-												<p class="muted small">Started from bubble <a class="mono" href={bubbleHref(t.bubble)}>{short(t.bubble)}</a></p>
-											{/if}
-										</details>
-										{#if t.status === "open" && !t.ready}
-											<p class="muted small">Waiting for its dependencies to merge into one bubble</p>
-										{:else if t.status === "open" && t.kind === "notagent"}
-											<button onclick={() => takeTask(t.id)}>Take</button>
-										{:else if t.status === "failed"}
-											<button onclick={() => retryTask(t.id)}>Retry</button>
-										{/if}
-									</li>
-								{/each}
-							</ul>
-						{/each}
-					</section>
-				{/if}
 
 				{#if data?.conflicts.length}
 					<section>
@@ -357,11 +283,16 @@
 				</section>
 			</aside>
 		</div>
+		</div>
 	{/if}
 </Shell>
 
 <Dialog bind:open={agentOpen} title="Start an agent">
 	<form onsubmit={startAgent}>
+		<div class="field">
+			<label for="agent-title">Title</label>
+			<input id="agent-title" bind:value={agentTitle} required maxlength="60" placeholder="Add a dark mode toggle" />
+		</div>
 		<div class="field">
 			<label for="prompt">What should it do?</label>
 			<textarea id="prompt" bind:value={prompt} required placeholder="Add a dark mode toggle to the settings page"></textarea>
@@ -373,52 +304,27 @@
 	</form>
 </Dialog>
 
-<Dialog bind:open={superOpen} title="Plan tasks with a superagent">
-	<form onsubmit={startSuper}>
-		<div class="field">
-			<label for="super-prompt">What should get done?</label>
-			<textarea id="super-prompt" bind:value={superPrompt} required placeholder="Add user accounts: signup, login and a profile page"></textarea>
-		</div>
-		<div class="field">
-			{@render base("super-base", "The superagent reads this bubble's code and splits the work into tasks, for agents or for you. Each starts once the tasks it depends on have landed.")}
-		</div>
-		<button class="primary" disabled={busy}>Plan tasks</button>
-	</form>
-</Dialog>
+<SuperagentDialog bind:open={superOpen} {repo} bubbles={data?.bubbles ?? []} {fixedBase} onstarted={refresh} />
 
 <Dialog bind:open={pushOpen} title="Push a fork" wide>
 	{#if !pushed}
 		<form onsubmit={createFork}>
 			<p class="intro">Get a fork to push your own commits to. Once you push, yorkle places it in a bubble like any agent's work.</p>
 			<div class="field">
-				<label for="push-description">What will you change?</label>
-				<input id="push-description" bind:value={pushDescription} required placeholder="Fix the login redirect" />
+				<label for="push-title">Title</label>
+				<input id="push-title" bind:value={pushTitle} required maxlength="60" placeholder="Fix the login redirect" />
+			</div>
+			<div class="field">
+				<label for="push-description">Description <span class="muted">(optional)</span></label>
+				<textarea id="push-description" bind:value={pushDescription} placeholder="What you'll change and why"></textarea>
 			</div>
 			<div class="field">{@render base("push-base")}</div>
 			<button class="primary" disabled={busy}>Create fork</button>
 		</form>
 	{:else}
-		<p class="intro">Fork <span class="mono">{short(pushed.fork)}</span> is ready. Push to it within the hour.</p>
-		<ol class="steps">
-			<li>
-				<p>Clone the fork</p>
-				{@render cmd(pushed.clone, "Clone command copied")}
-			</li>
-			<li>
-				<p>Commit your changes, then push</p>
-				{@render cmd(pushed.push, "Push command copied")}
-			</li>
-		</ol>
-		<p class="hint">These commands hold a write token for this fork only. Only your first push counts.</p>
+		<ForkCommands {pushed} />
 	{/if}
 </Dialog>
-
-{#snippet cmd(text: string, done: string)}
-	<div class="cmd">
-		<pre>{text}</pre>
-		<button onclick={() => copy(text).then(() => toast(done))}>Copy</button>
-	</div>
-{/snippet}
 
 <!-- "Start from": fixed when the dialog came from a bubble's menu, otherwise a choice. -->
 {#snippet base(id: string, hint?: string)}
@@ -428,11 +334,6 @@
 		<label for={id}>Start from</label>
 		{#if id === "agent-base"}
 			<select {id} bind:value={agentBase}>
-				<option value="">Any bubble</option>
-				{#each data?.bubbles ?? [] as b}<option value={b.id}>Bubble {short(b.id)}</option>{/each}
-			</select>
-		{:else if id === "super-base"}
-			<select {id} bind:value={superBase}>
 				<option value="">Any bubble</option>
 				{#each data?.bubbles ?? [] as b}<option value={b.id}>Bubble {short(b.id)}</option>{/each}
 			</select>
@@ -481,7 +382,8 @@
 </Dialog>
 
 <style>
-	.layout { display: grid; grid-template-columns: 1fr 320px; height: 100%; min-height: 0; }
+	.page { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+	.layout { display: grid; grid-template-columns: 1fr 320px; flex: 1; min-height: 0; }
 	.stage { min-width: 0; min-height: 0; position: relative; }
 	.rail { border-left: 1px solid var(--line); background: var(--paper); overflow-y: auto; min-height: 0; }
 	.rail section { padding: 1.1rem 1.25rem; border-bottom: 1px solid var(--line-2); }
@@ -505,12 +407,6 @@
 	.rows .muted { margin-left: 0.4rem; }
 	.danger-zone { border-bottom: 0 !important; }
 
-	.rail h3 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-3); margin: 0.8rem 0 0.4rem; }
-	.tasks { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.6rem; }
-	.tasks li { font-size: 0.875rem; display: grid; gap: 0.3rem; justify-items: start; }
-	.tasks details { margin: 0; width: 100%; }
-	.tasks summary { color: var(--ink); }
-	.tasks details p { margin-top: 0.3rem; }
 	.kind { font-size: 0.6875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-3); margin-right: 0.25rem; }
 	.notes li { align-items: flex-start; }
 	.notes li span { padding-top: 0.35rem; overflow-wrap: anywhere; }
@@ -519,18 +415,15 @@
 
 	.intro { margin-bottom: 1rem; color: var(--ink-2); }
 	.intro .mono { color: var(--ink); }
-	.cmd { display: flex; gap: 0.5rem; align-items: flex-start; }
-	.steps { margin: 0 0 1rem; padding-left: 1.25rem; display: grid; gap: 1rem; }
-	.steps p { font-size: 0.875rem; font-weight: 500; margin-bottom: 0.4rem; }
 	.from { font-size: 0.875rem; color: var(--ink-2); }
 	.from .mono { color: var(--ink); }
-	.cmd pre { flex: 1; margin: 0; padding: 0.7rem 0.8rem; background: var(--raised); border: 1px solid var(--line); border-radius: var(--r-sm); white-space: pre-wrap; word-break: break-all; }
 	.row { display: flex; gap: 0.5rem; }
 	.delete { background: var(--conflict); border-color: var(--conflict); color: #fff; }
 	.missing { padding: 2rem clamp(1rem, 3vw, 2.5rem); }
 	.missing p { margin-top: 0.75rem; color: var(--ink-2); }
 
 	@media (max-width: 900px) {
+		.page { height: auto; }
 		.layout { grid-template-columns: 1fr; grid-template-rows: 62vh auto; height: auto; }
 		.rail { border-left: 0; border-top: 1px solid var(--line); overflow: visible; }
 	}

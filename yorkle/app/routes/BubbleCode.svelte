@@ -98,19 +98,4 @@
 	.id { font-size: 1.375rem; font-weight: 400; letter-spacing: -0.02em; }
 	.meta { font-size: 0.875rem; display: flex; gap: 0.5rem; align-items: center; margin-top: 0.15rem; }
 	.tag { font-size: 0.75rem; padding: 0.05rem 0.45rem; border-radius: 999px; background: var(--line-2); color: var(--ink-2); }
-	.tabs { display: flex; gap: 0.25rem; border-bottom: 1px solid var(--line); margin-bottom: 1.25rem; overflow-x: auto; }
-	.tabs a {
-		padding: 0.55rem 0.85rem;
-		text-decoration: none;
-		color: var(--ink-2);
-		font-size: 0.9375rem;
-		font-weight: 500;
-		border-bottom: 2px solid transparent;
-		margin-bottom: -1px;
-		white-space: nowrap;
-	}
-	.tabs a:hover { color: var(--ink); }
-	.tabs a[aria-current="page"] { color: var(--ink); border-bottom-color: var(--harbor); }
-	@media (prefers-color-scheme: dark) { .tabs a[aria-current="page"] { border-bottom-color: var(--teal); } }
-	.n { font-size: 0.75rem; padding: 0 0.4rem; border-radius: 999px; background: var(--line-2); margin-left: 0.25rem; }
 </style>

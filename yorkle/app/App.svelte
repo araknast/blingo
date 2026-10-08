@@ -8,6 +8,7 @@
 	import Repos from "./routes/Repos.svelte";
 	import RepoMap from "./routes/RepoMap.svelte";
 	import BubbleCode from "./routes/BubbleCode.svelte";
+	import Tasks from "./routes/Tasks.svelte";
 	import NotFound from "./routes/NotFound.svelte";
 
 	loadMe();
@@ -26,6 +27,8 @@
 		let m;
 		if ((m = match("/repos/:repo/b/:bubble/*", path))) return { page: "bubble", params: m };
 		if ((m = match("/repos/:repo/b/:bubble", path))) return { page: "bubble", params: { ...m, "*": "" } };
+		if ((m = match("/repos/:repo/tasks/:id", path))) return { page: "tasks", params: m };
+		if ((m = match("/repos/:repo/tasks", path))) return { page: "tasks", params: m };
 		if ((m = match("/repos/:repo", path))) return { page: "repo", params: m };
 		if (path === "/repos") return { page: "repos", params: {} };
 		return { page: path, params: {} };
@@ -40,6 +43,7 @@
 		{/if}
 	{:else if view.page === "repos"}<Repos />
 	{:else if view.page === "repo"}{#key view.params.repo}<RepoMap repo={view.params.repo} />{/key}
+	{:else if view.page === "tasks"}{#key view.params.repo}<Tasks repo={view.params.repo} id={view.params.id} />{/key}
 	{:else if view.page === "bubble"}
 		{#key view.params.repo + "/" + view.params.bubble}
 			<BubbleCode repo={view.params.repo} bubble={view.params.bubble} rest={view.params["*"]} />
