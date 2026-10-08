@@ -32,7 +32,7 @@ browser ──► yorkle Worker ──(service binding)──► blingo Worker �
 |---|---|
 | `bubble(id, visible, seq)` | `visible = 0` while it is in a neighbour merge (hidden from placement) |
 | `fork(name, bubble, status, files, diff)` | status `rep` / `pending` / `merged` / `conflict`; `files` = changed paths (JSON); `diff` kept after merge |
-| `conflict(k)` | `"a|b"` bubble pairs whose merge failed; never retried (except by a ferge) |
+| `conflict(k)` | `"a|b"` bubble pairs whose merge failed; never retried (except by a ferge). When a bubble is absorbed, its pairs move to the bubble that absorbed it |
 | `locked(id)` | locked bubbles: placeable, but excluded from neighbour merges and distance-0 joins |
 | `watch(fork, base, token, expires)` | notagent forks waiting for their push |
 | `agent_run(fork, prompt, started, status, finished, log)` | agent runs, kept after they finish |
@@ -84,7 +84,8 @@ wakes the merge loop.
 Then b is absorbed into a (its rep repo deleted), the conflict row goes, and the new fork becomes
 a **locked** bubble. Its file set is everything in its tree (like any new bubble); the API returns
 just the conflicting files. A fix forked from it goes wherever it fits like any fork; it doesn't
-wait for the unlock. Unlock the bubble to let it merge back.
+wait for the unlock, so it must resolve **every** conflicting file: any it misses reach the main
+bubble with their conflict markers. Unlock the bubble to let it merge back.
 
 ## Sandbox and secrets
 

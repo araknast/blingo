@@ -54,7 +54,8 @@ npm run deploy      # blingo first (yorkle binds to it), then yorkle
 
 ## API
 
-All requests need `Authorization: Bearer $BLINGO_TOKEN`.
+All requests need `Authorization: Bearer $BLINGO_TOKEN`. Any request can return `503` with
+`Retry-After` when Artifacts fails transiently (e.g. many parallel forks); retry it.
 
 | Method & path | Does |
 |---|---|

@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { CONFLICT, FERGE_SH, NO_CONFLICT, PLACE_SH, REBASE_SH, authRemote } from "./box";
-import { conflictKey, fits, nearestNeighbour, zeroDistanceJoins, type Bubble } from "./bubbles";
+import { conflictKey, fits, nearestNeighbour, renameConflicts, zeroDistanceJoins, type Bubble } from "./bubbles";
 
 const POLL_MS = 5_000;
 
@@ -277,6 +277,10 @@ export class RepoDO extends DurableObject<Env> {
 		this.sql.exec("UPDATE fork SET bubble = ? WHERE bubble = ?", into, from);
 		this.sql.exec("UPDATE fork SET status = 'pending' WHERE name = ? AND status = 'rep'", from);
 		this.sql.exec("DELETE FROM bubble WHERE id = ?", from);
+		// Its conflicts carry over, so they stay ferge-able and aren't rediscovered by a wasted rebase.
+		const keys = this.sql.exec<{ k: string }>("SELECT k FROM conflict").toArray().map((r) => r.k);
+		this.sql.exec("DELETE FROM conflict");
+		for (const k of renameConflicts(keys, from, into)) this.sql.exec("INSERT INTO conflict VALUES (?)", k);
 	}
 
 	private joinZeroDistance() {

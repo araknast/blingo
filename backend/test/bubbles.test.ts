@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { conflictKey, distance, fits, nearestNeighbour, zeroDistanceJoins, type Bubble } from "../src/bubbles";
+import { conflictKey, distance, fits, nearestNeighbour, renameConflicts, zeroDistanceJoins, type Bubble } from "../src/bubbles";
 
 const h = (id: string, files: string[], visible = true): Bubble => ({ id, files: new Set(files), visible });
 
@@ -40,4 +40,10 @@ test("locked bubbles stay placeable but never join or get picked as neighbours",
 	expect(zeroDistanceJoins([h("a", ["y"]), locked])).toEqual([]);
 	expect(nearestNeighbour("a", [h("a", ["x"]), locked], new Set())).toBeNull();
 	expect(nearestNeighbour("l", [locked, h("a", ["x"])], new Set())).toBeNull();
+});
+
+test("conflicts of an absorbed bubble move to the bubble that absorbed it", () => {
+	const keys = [conflictKey("a", "c"), conflictKey("a", "b"), conflictKey("b", "c"), conflictKey("d", "e")];
+	// c absorbed into b: a|c → a|b (already there), b|c disappears, d|e untouched.
+	expect(renameConflicts(keys, "c", "b").sort()).toEqual([conflictKey("a", "b"), conflictKey("d", "e")].sort());
 });

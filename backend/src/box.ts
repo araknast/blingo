@@ -76,7 +76,8 @@ drop() {
 	git rev-parse HEAD
 }
 ap=$(drop "$a"); bp=$(drop "$b")
-c=$(git commit-tree "$(mt "$ap" "$bp")" -p "$ap" -m "ferge: merge $b without conflicting files")
+t=$(mt "$ap" "$bp") # its own assignment, so set -e catches a failed merge
+c=$(git commit-tree "$t" -p "$ap" -m "ferge: merge $b without conflicting files")
 git push -q origin "$c:refs/heads/main"
 git checkout -q --detach "$c"
 cp -R "$m/." .

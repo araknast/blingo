@@ -35,6 +35,17 @@ export function zeroDistanceJoins(bubbles: Bubble[]): [string, string][] {
 
 export const conflictKey = (a: string, b: string) => (a < b ? `${a}|${b}` : `${b}|${a}`);
 
+// Bubble `from` was absorbed into `into`: its conflicts now belong to `into`. A pair of the two
+// themselves disappears, and pairs that become identical collapse.
+export function renameConflicts(keys: string[], from: string, into: string): string[] {
+	const out = new Set<string>();
+	for (const k of keys) {
+		const [a, b] = k.split("|").map((x) => (x === from ? into : x));
+		if (a !== b) out.add(conflictKey(a, b));
+	}
+	return [...out];
+}
+
 // Nearest visible, unlocked, non-conflicting neighbour of `id` (ties → earliest), or null.
 export function nearestNeighbour(id: string, bubbles: Bubble[], conflicts: Set<string>): string | null {
 	const self = bubbles.find((h) => h.id === id);
