@@ -1,4 +1,5 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
+import { validatePlan } from "./tasks";
 
 // Containers re-sign intercepted HTTPS with this CA; git/node/curl must trust it.
 const CA = "/etc/cloudflare/certs/cloudflare-containers-ca.crt";
@@ -101,19 +102,56 @@ git push -q "$3" HEAD:refs/heads/main
 printf '%s\\n' "$F" ==
 git ls-files`;
 
-// $1 remote, $2 prompt. Runs Claude Code on a clone, commits, pushes, writes changed files.
+// $1 remote, $2 prompt, $3 system prompt (memory items + how to leave notes). Runs Claude Code on a
+// clone, commits, pushes. Notes for future agents land in $TASK/memory, outside the repo.
 const AGENT_SH = `set -e
 rm -rf /workspace/repo; git clone -q "$1" /workspace/repo; cd /workspace/repo
-claude --print --dangerously-skip-permissions --no-session-persistence --model "$MODEL" -- "$2"
+claude --print --dangerously-skip-permissions --no-session-persistence --model "$MODEL" --append-system-prompt "$3" -- "$2"
 git add -A
 git commit -qm "$2" || true
 git push -q origin HEAD:refs/heads/main`;
+
+// Superagent: same args, but a read-only clone and nothing is pushed; its plan is $TASK/tasks.json.
+const SUPER_SH = `set -e
+rm -rf /workspace/repo; git clone -q "$1" /workspace/repo; cd /workspace/repo
+claude --print --dangerously-skip-permissions --no-session-persistence --model "$MODEL" --append-system-prompt "$3" -- "$2"
+test -s ${TASK}/tasks.json`;
+
+const NOTES = `To leave a note for every future agent on this repository, append it as one line to ${TASK}/memory.
+Only note durable, repository-wide facts (conventions, gotchas, decisions), not progress on your own task.`;
+
+// ponytail: every memory item goes into every prompt; select or summarize them if the list grows long.
+function systemPrompt(kind: AgentJob["kind"], memory: string[]) {
+	const role =
+		kind === "superagent"
+			? `You plan work on this repository; you do not change it. Split the request into tasks and write them to ${TASK}/tasks.json as a JSON array of
+{"key": short unique id, "description": everything an agent needs to do the task without other context, "kind": "agent" or "notagent", "deps": [keys of tasks that must land first]}.
+Each task is done on its own fork, in parallel with tasks it doesn't depend on, so keep tasks small and their files separate where you can.
+Use "notagent" only for tasks that need a human (credentials, decisions, manual testing); prefer "agent".`
+			: `You are doing one task on a fork of a shared repository; other agents do other tasks in parallel.
+Commit your work with messages that explain what you did and why: they become the task's record.`;
+	const mem = memory.length ? `\n\nNotes from earlier agents on this repository:\n${memory.map((m) => `- ${m}`).join("\n")}` : "";
+	return `${role}\n\n${NOTES}${mem}`;
+}
 
 // Detach from the exec so the task outlives the request; exit code lands atomically in $TASK/exit.
 const BG_SH = `setsid bash -c "$0" agent "$@" >${TASK}/log 2>&1; echo $? >${TASK}/exit.tmp && mv ${TASK}/exit.tmp ${TASK}/exit`;
 
 export type Run = { exitCode: number; stdout: string; stderr: string };
-export type AgentJob = { repo: string; fork: string; remote: string; prompt: string };
+// kind "superagent": `fork` is only the run's id (no fork exists) and `remote` is read-only.
+export type AgentJob = { repo: string; fork: string; remote: string; prompt: string; kind?: "agent" | "superagent"; memory?: string[] };
+
+export async function headOf(env: Env, name: string) {
+	using repo = await env.ARTIFACTS.get(name);
+	return (await repo.log({ limit: 1 }))[0]?.hash ?? "";
+}
+
+export async function forkRepo(env: Env, from: string, repo: string) {
+	const name = `${repo}-f-${crypto.randomUUID().slice(0, 8)}`;
+	using src = await env.ARTIFACTS.get(from);
+	await src.fork(name, { defaultBranchOnly: true });
+	return name;
+}
 
 // Embeds a short-lived repo token in the remote URL (scoped to that one repo).
 export async function authRemote(env: Env, name: string, scope: "read" | "write", ttl = 900) {
@@ -186,7 +224,8 @@ export class Box extends DurableObject<Env> {
 	async startAgent(job: AgentJob): Promise<void> {
 		await this.start();
 		await this.sh(`rm -rf ${TASK} && mkdir -p ${TASK}`);
-		await this.container.exec(["bash", "-c", BG_SH, AGENT_SH, job.remote, job.prompt], {
+		const script = job.kind === "superagent" ? SUPER_SH : AGENT_SH;
+		await this.container.exec(["bash", "-c", BG_SH, script, job.remote, job.prompt, systemPrompt(job.kind, job.memory ?? [])], {
 			cwd: "/workspace",
 			env: {
 				...TRUST,
@@ -199,7 +238,7 @@ export class Box extends DurableObject<Env> {
 			stdout: "ignore",
 			stderr: "ignore",
 		});
-		this.ctx.storage.kv.put("job", { ...job, remote: "" }); // don't persist the token
+		this.ctx.storage.kv.put("job", { ...job, remote: "", memory: [] }); // don't persist the token
 		this.ctx.storage.kv.put("status", "running");
 		await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
 	}
@@ -219,12 +258,26 @@ export class Box extends DurableObject<Env> {
 		}
 		const log = (await this.sh(`tail -c 4000 ${TASK}/log`)).stdout;
 		if (exit.stdout.trim() !== "0") return this.finish(job, "failed", log);
-		await this.env.REPO.getByName(job.repo).place(job.fork);
-		await this.finish(job, "placed", log);
+		const repo = this.env.REPO.getByName(job.repo);
+		if (job.kind === "superagent") {
+			let plan: ReturnType<typeof validatePlan>;
+			try {
+				plan = validatePlan(JSON.parse((await this.sh(`cat ${TASK}/tasks.json`)).stdout));
+			} catch {
+				plan = { error: "tasks.json is not JSON" };
+			}
+			if ("error" in plan) return this.finish(job, "failed", `${log}\nplan rejected: ${plan.error}`);
+			await repo.addTasks(job.repo, plan.items, job.fork);
+		} else await repo.place(job.fork);
+		// Notes the agent left for future agents (capped: they all go into every prompt).
+		const notes = (await this.sh(`head -c 20000 ${TASK}/memory 2>/dev/null || true`)).stdout;
+		const items = notes.split("\n").map((l) => l.trim().slice(0, 500)).filter(Boolean).slice(0, 10);
+		if (items.length) await repo.addMemory(items, job.fork);
+		await this.finish(job, job.kind === "superagent" ? "planned" : "placed", log);
 	}
 
 	private async finish(job: AgentJob, status: string, log: string) {
-		if (status !== "placed") await this.env.ARTIFACTS.delete(job.fork);
+		if (status !== "placed" && job.kind !== "superagent") await this.env.ARTIFACTS.delete(job.fork);
 		this.ctx.storage.kv.delete("job");
 		await this.env.REPO.getByName(job.repo).agentDone(job.fork, status, log);
 		this.ctx.storage.kv.put("status", status);

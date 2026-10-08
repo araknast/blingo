@@ -6,12 +6,30 @@ export type MemberStatus = "rep" | "pending" | "merged" | "conflict";
 export type Member = { name: string; bubble: string; status: MemberStatus; files: string[] };
 export type Bubble = { id: string; visible: number | boolean; locked: boolean; members: Member[] };
 export type AgentRun = { fork: string; prompt: string; started: number; status: string; finished: number | null; log: string | null };
+export type TaskStatus = "open" | "in-progress" | "completed" | "failed";
+export type Task = {
+	id: string;
+	description: string;
+	kind: "agent" | "notagent";
+	status: TaskStatus;
+	bubble: string | null;
+	fork: string | null;
+	deps: string[];
+	explanation: string | null;
+	superagent: string | null;
+	created: number;
+	finished: number | null;
+	ready: boolean;
+};
+export type MemoryItem = { id: string; text: string; author: string; created: number };
 export type RepoState = {
 	bubbles: Bubble[];
 	conflicts: [string, string][];
 	waiting: string[];
 	placing: string[];
 	agents: AgentRun[];
+	tasks: Task[];
+	memory: MemoryItem[];
 };
 
 export type Commit = {

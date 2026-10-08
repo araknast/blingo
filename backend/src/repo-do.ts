@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
-import { FERGE_SH, MERGE_SH, NO_CONFLICT, PLACE_SH, authRemote } from "./box";
+import { FERGE_SH, MERGE_SH, NO_CONFLICT, PLACE_SH, authRemote, forkRepo, headOf } from "./box";
 import { conflictKey, fits, nearestNeighbour, parseMerge, renameConflicts, zeroDistanceJoins, type Bubble } from "./bubbles";
+import { explanation, ready, renameOwed, type Owed, type PlanItem, type TaskState } from "./tasks";
 
 const POLL_MS = 5_000;
 // A merge or ferge hides its bubbles for seconds. Longer than the alarm's own wall-clock limit means
@@ -10,6 +11,17 @@ const HIDE_LEASE_MS = 15 * 60_000;
 type Fork = { name: string; bubble: string; status: "rep" | "pending" | "merged" | "conflict"; files: string };
 type Watch = { fork: string; base: string; token: string; expires: number };
 type AgentRun = { fork: string; prompt: string; started: number; status: string; finished: number | null; log: string | null };
+type TaskRow = TaskState & {
+	description: string;
+	kind: "agent" | "notagent";
+	base_head: string | null;
+	explanation: string | null;
+	superagent: string | null;
+	created: number;
+	finished: number | null;
+};
+// A task to add: a superagent's plan item (deps by key within the batch), or one from the API.
+export type NewTask = Omit<PlanItem, "key"> & { key?: string; bubble?: string | null };
 
 // One per blingo repository. All placement and merging for the repo is serialized here.
 // ponytail: one merge at a time per repo (alarm is single-flight); per-bubble parallelism if it gets slow.
@@ -29,6 +41,14 @@ export class RepoDO extends DurableObject<Env> {
 			CREATE TABLE IF NOT EXISTS pushed(fork TEXT PRIMARY KEY); -- watched forks whose push arrived, not yet placed
 			CREATE TABLE IF NOT EXISTS agent_run(fork TEXT PRIMARY KEY, prompt TEXT NOT NULL, started INTEGER NOT NULL,
 				status TEXT NOT NULL DEFAULT 'running', finished INTEGER, log TEXT);
+			-- bubble: where an open task without deps starts (NULL = any); once started, where it did.
+			CREATE TABLE IF NOT EXISTS task(id TEXT PRIMARY KEY, description TEXT NOT NULL, kind TEXT NOT NULL,
+				status TEXT NOT NULL DEFAULT 'open', bubble TEXT, fork TEXT, base_head TEXT, explanation TEXT,
+				superagent TEXT, created INTEGER NOT NULL, finished INTEGER);
+			CREATE TABLE IF NOT EXISTS task_dep(task TEXT NOT NULL, dep TEXT NOT NULL, PRIMARY KEY (task, dep));
+			CREATE TABLE IF NOT EXISTS memory(id TEXT PRIMARY KEY, text TEXT NOT NULL, author TEXT NOT NULL, created INTEGER NOT NULL);
+			-- a ferge's locked bubble still owes its conflicting files to bubble "into"
+			CREATE TABLE IF NOT EXISTS owed(locked TEXT NOT NULL, "into" TEXT NOT NULL, PRIMARY KEY (locked, "into"));
 		`);
 		// A fresh instance means any merge or ferge that hid bubbles died with the old one.
 		if (this.recoverHidden(true)) void ctx.blockConcurrencyWhile(() => this.kick());
@@ -68,7 +88,19 @@ export class RepoDO extends DurableObject<Env> {
 	// One Box job checks the visible bubbles in order: the fork joins the first one none of whose
 	// files it would bring into that bubble's rep. Otherwise it starts a new bubble whose files are
 	// everything it carries since the repository's starting point.
+	// A task's fork being placed completes the task, explained by the fork's commit messages (read
+	// now: a merged fork's repo is deleted).
 	async place(fork: string): Promise<string> {
+		const t = this.sql.exec<{ base_head: string | null }>("SELECT base_head FROM task WHERE fork = ? AND status = 'in-progress'", fork).toArray()[0];
+		let why: string | null = null;
+		if (t) {
+			using repo = await this.env.ARTIFACTS.get(fork);
+			why = explanation(await repo.log({ limit: 100 }), t.base_head ?? "");
+		}
+		return this.placeIn(fork, why);
+	}
+
+	private async placeIn(fork: string, why: string | null): Promise<string> {
 		const candidates = this.bubbles().filter((b) => b.visible);
 		const [self, ...reps] = await Promise.all([fork, ...candidates.map((b) => b.id)].map((n) => authRemote(this.env, n, "read")));
 		const args = candidates.flatMap((b, i) => [reps[i].url, [...b.files].join("\n")]);
@@ -78,26 +110,145 @@ export class RepoDO extends DurableObject<Env> {
 		if (which !== "new") {
 			// Re-read after the await: the bubble may have grown, been hidden, or been absorbed.
 			const b = this.bubbles().find((h) => h.id === candidates[Number(which)].id);
-			if (!b || !fits(b, files)) return this.place(fork); // changed under us; check again
+			if (!b || !fits(b, files)) return this.placeIn(fork, why); // changed under us; check again
 			this.sql.exec("INSERT INTO fork (name, bubble, status, files) VALUES (?, ?, 'pending', ?)", fork, b.id, JSON.stringify(files));
-			await this.placed();
+			await this.placed(fork, why);
 			return b.id;
 		}
 		this.sql.exec("INSERT INTO bubble VALUES (?, 1, (SELECT COALESCE(MAX(seq), 0) + 1 FROM bubble))", fork);
 		this.sql.exec("INSERT INTO fork (name, bubble, status, files) VALUES (?, ?, 'rep', ?)", fork, fork, JSON.stringify(files));
-		await this.placed();
+		await this.placed(fork, why);
 		return fork;
 	}
 
-	private async placed() {
+	private async placed(fork: string, why: string | null) {
+		this.sql.exec(
+			"UPDATE task SET status = 'completed', explanation = ?, finished = ? WHERE fork = ? AND status = 'in-progress'",
+			why,
+			Date.now(),
+			fork,
+		);
 		this.joinZeroDistance();
-		await this.kick();
+		await this.kick(); // the alarm schedules tasks this unblocks, once their deps are merged
 	}
 
-	// Notagent: wait for one push to `fork`, then revoke its token and place it.
-	async watch(fork: string, base: string, token: string, expires: number): Promise<void> {
-		this.sql.exec("INSERT INTO watch VALUES (?, ?, ?, ?)", fork, base, token, expires);
-		await this.kick();
+	// ---- tasks and memory (tasktracker.md) ----
+
+	// Adds tasks (one superagent plan, or one task from the API); deps name keys within the batch.
+	// Returns their ids in order. `repo` is remembered so the alarm can start agents.
+	async addTasks(repo: string, items: NewTask[], superagent: string | null = null): Promise<string[]> {
+		this.ctx.storage.kv.put("repo", repo);
+		const ids = new Map(items.map((i, n) => [i.key ?? String(n), `t-${crypto.randomUUID().slice(0, 8)}`]));
+		items.forEach((i, n) => {
+			const id = ids.get(i.key ?? String(n))!;
+			this.sql.exec(
+				"INSERT INTO task (id, description, kind, bubble, superagent, created) VALUES (?, ?, ?, ?, ?, ?)",
+				id,
+				i.description,
+				i.kind,
+				i.bubble ?? null,
+				superagent,
+				Date.now(),
+			);
+			for (const d of i.deps) this.sql.exec("INSERT OR IGNORE INTO task_dep (task, dep) VALUES (?, ?)", id, ids.get(d));
+		});
+		await this.schedule();
+		return [...ids.values()];
+	}
+
+	task(id: string) {
+		return this.sql.exec<Omit<TaskRow, "deps">>("SELECT * FROM task WHERE id = ?", id).toArray()[0] ?? null;
+	}
+
+	async retryTask(id: string): Promise<boolean> {
+		const n = this.sql.exec("UPDATE task SET status = 'open', fork = NULL, finished = NULL WHERE id = ? AND status = 'failed'", id).rowsWritten;
+		if (n) await this.schedule();
+		return n > 0;
+	}
+
+	// A human takes an open notagent task: it gets a fork with a 1-hour push token. The task is back
+	// to open if nothing is pushed in time.
+	async takeTask(id: string) {
+		const t = this.task(id);
+		if (!t || t.kind !== "notagent" || t.status !== "open") return { error: "that task isn't an open notagent task" };
+		const from = this.startable().get(id);
+		if (from === undefined) return { error: "that task is waiting for its dependencies to merge" };
+		const repo = this.ctx.storage.kv.get<string>("repo")!;
+		this.sql.exec("UPDATE task SET status = 'in-progress', bubble = ? WHERE id = ?", from, id);
+		try {
+			const fork = await forkRepo(this.env, from ?? repo, repo);
+			const base = await headOf(this.env, fork);
+			const { url: authed, remote, token } = await authRemote(this.env, fork, "write", 3600);
+			this.sql.exec("UPDATE task SET fork = ?, base_head = ? WHERE id = ?", fork, base, id);
+			this.sql.exec("INSERT INTO watch VALUES (?, ?, ?, ?)", fork, base, token.id, Date.parse(token.expiresAt));
+			await this.kick();
+			return { repo, task: id, fork, remote, token: token.plaintext, clone: `git clone ${authed} ${fork}`, push: `git push ${authed} HEAD:main` };
+		} catch (e) {
+			this.sql.exec("UPDATE task SET status = 'open', fork = NULL WHERE id = ? AND status = 'in-progress'", id);
+			throw e;
+		}
+	}
+
+	async addMemory(texts: string[], author: string) {
+		for (const text of texts) {
+			this.sql.exec("INSERT INTO memory VALUES (?, ?, ?, ?)", `m-${crypto.randomUUID().slice(0, 8)}`, text, author, Date.now());
+		}
+	}
+
+	deleteMemory(id: string): boolean {
+		return this.sql.exec("DELETE FROM memory WHERE id = ?", id).rowsWritten > 0;
+	}
+
+	memories(): string[] {
+		return this.sql.exec<{ text: string }>("SELECT text FROM memory ORDER BY created").toArray().map((r) => r.text);
+	}
+
+	private tasks(): TaskRow[] {
+		const deps = new Map<string, string[]>();
+		for (const d of this.sql.exec<{ task: string; dep: string }>("SELECT task, dep FROM task_dep").toArray()) {
+			deps.set(d.task, [...(deps.get(d.task) ?? []), d.dep]);
+		}
+		return this.sql.exec<Omit<TaskRow, "deps">>("SELECT * FROM task ORDER BY created, id").toArray().map((t) => ({ ...t, deps: deps.get(t.id) ?? [] }));
+	}
+
+	// Open tasks that may start now → bubble to fork (null = base repo).
+	private startable() {
+		return ready(
+			this.tasks(),
+			this.sql.exec<{ name: string; bubble: string; status: string }>("SELECT name, bubble, status FROM fork").toArray(),
+			this.bubbles(),
+			this.sql.exec<Owed>('SELECT locked, "into" FROM owed').toArray(),
+			this.anyBubble(),
+		);
+	}
+
+	// Starts every ready agent task. Marked in-progress before the first await, so concurrent calls
+	// don't start one twice; a start that fails goes back to open for the next call.
+	private async schedule() {
+		const repo = this.ctx.storage.kv.get<string>("repo");
+		if (!repo) return;
+		const memory = this.memories();
+		const from = this.startable();
+		const go = this.tasks().filter((t) => t.kind === "agent" && from.has(t.id));
+		for (const t of go) this.sql.exec("UPDATE task SET status = 'in-progress', bubble = ? WHERE id = ?", from.get(t.id), t.id);
+		await Promise.all(
+			go.map(async (t) => {
+				try {
+					const fork = await forkRepo(this.env, from.get(t.id) ?? repo, repo);
+					const base = await headOf(this.env, fork);
+					this.sql.exec("UPDATE task SET fork = ?, base_head = ? WHERE id = ?", fork, base, t.id);
+					const { url: remote } = await authRemote(this.env, fork, "write", 3 * 3600);
+					await this.env.BOX.getByName(fork).startAgent({ repo, fork, remote, prompt: t.description, kind: "agent", memory });
+					this.agentStarted(fork, t.description);
+				} catch (e) {
+					console.error(`starting task ${t.id}`, e);
+					const fork = this.task(t.id)?.fork;
+					if (fork) await this.env.ARTIFACTS.delete(fork).catch(() => false);
+					this.sql.exec("UPDATE task SET status = 'open', fork = NULL WHERE id = ?", t.id);
+					if ((await this.ctx.storage.getAlarm()) === null) await this.ctx.storage.setAlarm(Date.now() + 30_000); // retry
+				}
+			}),
+		);
 	}
 
 	// Source repo to fork from: a bubble's representative.
@@ -154,6 +305,7 @@ export class RepoDO extends DurableObject<Env> {
 			this.sql.exec("INSERT INTO bubble VALUES (?, 1, (SELECT COALESCE(MAX(seq), 0) + 1 FROM bubble))", l);
 			this.sql.exec("INSERT INTO fork (name, bubble, status, files) VALUES (?, ?, 'rep', ?)", l, l, JSON.stringify(tree));
 			this.sql.exec("INSERT INTO locked VALUES (?)", l);
+			this.sql.exec('INSERT OR IGNORE INTO owed (locked, "into") VALUES (?, ?)', l, a); // a lacks those files until l merges back
 			done = true;
 			await this.env.ARTIFACTS.delete(b);
 			return { bubble: a, locked: l, files };
@@ -172,6 +324,7 @@ export class RepoDO extends DurableObject<Env> {
 
 	list() {
 		const forks = this.sql.exec<Fork>("SELECT name, bubble, status, files FROM fork").toArray();
+		const startable = this.startable();
 		return {
 			bubbles: this.bubbles().map((h) => ({
 				id: h.id,
@@ -190,6 +343,9 @@ export class RepoDO extends DurableObject<Env> {
 			agents: this.sql
 				.exec<AgentRun>("SELECT * FROM agent_run ORDER BY status = 'running' DESC, started DESC LIMIT 50")
 				.toArray(),
+			// `ready`: open and its deps have landed together, so it starts (agent) or can be taken (notagent).
+			tasks: this.tasks().map(({ base_head, ...t }) => ({ ...t, ready: startable.has(t.id) })),
+			memory: this.sql.exec("SELECT * FROM memory ORDER BY created").toArray(),
 		};
 	}
 
@@ -200,6 +356,9 @@ export class RepoDO extends DurableObject<Env> {
 
 	agentDone(fork: string, status: string, log: string) {
 		this.sql.exec("UPDATE agent_run SET status = ?, finished = ?, log = ? WHERE fork = ?", status, Date.now(), log, fork);
+		if (status === "failed" || status === "lost") {
+			this.sql.exec("UPDATE task SET status = 'failed', finished = ? WHERE fork = ? AND status = 'in-progress'", Date.now(), fork);
+		}
 	}
 
 	// Repo holding `fork`'s version of its files: its own, or its bubble rep once merged (and deleted).
@@ -229,7 +388,8 @@ export class RepoDO extends DurableObject<Env> {
 			}
 		}
 		await this.ctx.storage.deleteAlarm();
-		this.sql.exec("DELETE FROM bubble; DELETE FROM fork; DELETE FROM conflict; DELETE FROM locked; DELETE FROM hidden; DELETE FROM watch; DELETE FROM pushed; DELETE FROM agent_run;");
+		this.sql.exec("DELETE FROM bubble; DELETE FROM fork; DELETE FROM conflict; DELETE FROM locked; DELETE FROM hidden; DELETE FROM watch; DELETE FROM pushed; DELETE FROM agent_run; DELETE FROM task; DELETE FROM task_dep; DELETE FROM memory; DELETE FROM owed;");
+		this.ctx.storage.kv.delete("repo");
 		return deleted;
 	}
 
@@ -241,6 +401,7 @@ export class RepoDO extends DurableObject<Env> {
 	async alarm(): Promise<void> {
 		this.recoverHidden();
 		const [placing, merging] = await Promise.allSettled([this.pollWatches(), this.mergeStep()]);
+		await this.schedule(); // tasks whose deps just landed together in one bubble
 		const worked = merging.status === "fulfilled" && merging.value;
 		const watching = this.sql.exec("SELECT 1 FROM watch").toArray().length > 0;
 		if (worked) await this.ctx.storage.setAlarm(Date.now() + 1_000);
@@ -265,6 +426,8 @@ export class RepoDO extends DurableObject<Env> {
 					this.sql.exec("INSERT OR IGNORE INTO pushed VALUES (?)", w.fork);
 				} else if (Date.now() > w.expires) {
 					this.sql.exec("DELETE FROM watch WHERE fork = ?", w.fork);
+					// Nothing was pushed, so no work is lost: the task can be taken again.
+					this.sql.exec("UPDATE task SET status = 'open', fork = NULL, base_head = NULL WHERE fork = ? AND status = 'in-progress'", w.fork);
 					await this.env.ARTIFACTS.delete(w.fork);
 				}
 			}),
@@ -364,6 +527,9 @@ export class RepoDO extends DurableObject<Env> {
 		const keys = this.sql.exec<{ k: string }>("SELECT k FROM conflict").toArray().map((r) => r.k);
 		this.sql.exec("DELETE FROM conflict");
 		for (const k of renameConflicts(keys, from, into)) this.sql.exec("INSERT INTO conflict VALUES (?)", k);
+		const owed = renameOwed(this.sql.exec<Owed>('SELECT locked, "into" FROM owed').toArray(), from, into);
+		this.sql.exec("DELETE FROM owed");
+		for (const o of owed) this.sql.exec('INSERT INTO owed (locked, "into") VALUES (?, ?)', o.locked, o.into);
 	}
 
 	private joinZeroDistance() {

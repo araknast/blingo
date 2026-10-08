@@ -8,7 +8,7 @@ export { UsersDO } from "./users-do";
 
 const id = () => crypto.randomUUID().slice(0, 8);
 
-type Body = { prompt?: string; repo?: string; bubble?: string };
+type Body = { prompt?: string; description?: string; repo?: string; bubble?: string };
 type Auth = { user: string; admin: boolean };
 
 const users = (env: Env) => env.USERS.getByName("users");
@@ -19,18 +19,14 @@ async function canUse(env: Env, auth: Auth, repo: string) {
 	return auth.admin || (await users(env).ownerOf(repo)) === auth.user;
 }
 
-// Where a new fork comes from. No repo → brand-new repository (design: "a new repository is created").
-async function source(env: Env, auth: Auth, b: Body): Promise<{ repo: string; from: string } | Response> {
-	if (!b.repo) {
-		const repo = await createRepo(env, auth);
-		return { repo, from: repo };
-	}
+// Where new work starts. No repo → brand-new repository (design: "a new repository is created").
+// bubble null = any bubble (the base repo only while the repository has none).
+async function source(env: Env, auth: Auth, b: Body): Promise<{ repo: string; bubble: string | null } | Response> {
+	if (!b.repo) return { repo: await createRepo(env, auth), bubble: null };
 	if (!(await canUse(env, auth, b.repo))) return noRepo();
-	const repoDO = env.REPO.getByName(b.repo);
-	// No bubble named → any bubble; the base repo only while the repository has none.
-	if (!b.bubble) return { repo: b.repo, from: (await repoDO.anyBubble()) ?? b.repo };
-	const rep = await repoDO.repOf(b.bubble);
-	return rep ? { repo: b.repo, from: rep } : Response.json({ error: "no such bubble" }, { status: 404 });
+	if (!b.bubble) return { repo: b.repo, bubble: null };
+	const rep = await env.REPO.getByName(b.repo).repOf(b.bubble);
+	return rep ? { repo: b.repo, bubble: rep } : Response.json({ error: "no such bubble" }, { status: 404 });
 }
 
 async function createRepo(env: Env, auth: Auth) {
@@ -38,13 +34,6 @@ async function createRepo(env: Env, auth: Auth) {
 	await env.ARTIFACTS.create(repo, { setDefaultBranch: "main" });
 	await users(env).own(repo, auth.user);
 	return repo;
-}
-
-async function fork(env: Env, from: string, repo: string) {
-	const name = `${repo}-f-${id()}`;
-	using src = await env.ARTIFACTS.get(from);
-	await src.fork(name, { defaultBranchOnly: true });
-	return name;
 }
 
 export default {
@@ -137,30 +126,42 @@ async function handle(request: Request, env: Env): Promise<Response> {
 	}
 	// Repository routes: the repo is the path segment, or the prefix of a fork name.
 	if (a === "repos" && b && !(await canUse(env, auth, b))) return noRepo();
-	if (a === "agents" && b && !(await canUse(env, auth, b.split("-f-")[0]))) return noRepo();
+	// Agent runs are forks (-f-) or superagent runs (-s-) of a repo.
+	if (a === "agents" && b && !(await canUse(env, auth, b.split(/-[fs]-/)[0]))) return noRepo();
 
+	// Every agent and notagent belongs to a task: these add a one-task batch and start it now.
 	if (request.method === "POST" && (a === "agents" || a === "notagents") && !b) {
 		const body = (await request.json()) as Body;
-		if (a === "agents" && !body.prompt) return Response.json({ error: "prompt required" }, { status: 400 });
+		const description = (a === "agents" ? body.prompt : body.description)?.trim();
+		if (!description) return Response.json({ error: a === "agents" ? "prompt required" : "description required" }, { status: 400 });
 		const src = await source(env, auth, body);
 		if (src instanceof Response) return src;
-		const name = await fork(env, src.from, src.repo);
-
-		if (a === "agents") {
-			const { url: remote } = await authRemote(env, name, "write", 3 * 3600);
-			await env.BOX.getByName(name).startAgent({ repo: src.repo, fork: name, remote, prompt: body.prompt! });
-			await env.REPO.getByName(src.repo).agentStarted(name, body.prompt!);
-			return Response.json({ repo: src.repo, fork: name }, { status: 202 });
+		const repoDO = env.REPO.getByName(src.repo);
+		const kind = a === "agents" ? "agent" : "notagent";
+		const [task] = await repoDO.addTasks(src.repo, [{ description, kind, deps: [], bubble: src.bubble }]);
+		if (a === "notagents") {
+			const r = await repoDO.takeTask(task);
+			return "error" in r ? Response.json(r, { status: 409 }) : Response.json(r, { status: 201 });
 		}
+		// fork null: the start failed and the task is queued; RepoDO retries it.
+		return Response.json({ repo: src.repo, task, fork: (await repoDO.task(task))?.fork ?? null }, { status: 202 });
+	}
 
-		using repo = await env.ARTIFACTS.get(name);
-		const base = (await repo.log({ limit: 1 }))[0]?.hash ?? "";
-		const { url: authed, remote, token } = await authRemote(env, name, "write", 3600);
-		await env.REPO.getByName(src.repo).watch(name, base, token.id, Date.parse(token.expiresAt));
-		return Response.json(
-			{ repo: src.repo, fork: name, remote, token: token.plaintext, clone: `git clone ${authed} ${name}`, push: `git push ${authed} HEAD:main` },
-			{ status: 201 },
-		);
+	// Superagent: plans a prompt into tasks on a read-only clone; the tasks appear when it finishes.
+	if (request.method === "POST" && a === "superagents" && !b) {
+		const body = (await request.json()) as Body;
+		const prompt = body.prompt?.trim();
+		if (!prompt) return Response.json({ error: "prompt required" }, { status: 400 });
+		const src = await source(env, auth, body);
+		if (src instanceof Response) return src;
+		const repoDO = env.REPO.getByName(src.repo);
+		const run = `${src.repo}-s-${id()}`;
+		const from = src.bubble ?? (await repoDO.anyBubble()) ?? src.repo;
+		const { url: remote } = await authRemote(env, from, "read", 3 * 3600);
+		const memory = await repoDO.memories();
+		await env.BOX.getByName(run).startAgent({ repo: src.repo, fork: run, remote, prompt, kind: "superagent", memory });
+		await repoDO.agentStarted(run, prompt);
+		return Response.json({ repo: src.repo, superagent: run }, { status: 202 });
 	}
 
 	if (request.method === "POST" && a === "repos" && !b) {
@@ -209,6 +210,25 @@ async function handle(request: Request, env: Env): Promise<Response> {
 		const repo = env.REPO.getByName(b);
 		const ok = c === "lock" ? await repo.lock(bubble) : await repo.unlock(bubble);
 		return ok ? Response.json({ bubble, locked: c === "lock" }) : Response.json({ error: "no such bubble" }, { status: 404 });
+	}
+	if (request.method === "POST" && a === "repos" && b && c === "tasks" && d && (e === "take" || e === "retry")) {
+		const repoDO = env.REPO.getByName(b);
+		if (e === "retry") {
+			return (await repoDO.retryTask(d)) ? Response.json({ task: d }) : Response.json({ error: "that task hasn't failed" }, { status: 409 });
+		}
+		const r = await repoDO.takeTask(d);
+		return "error" in r ? Response.json(r, { status: 409 }) : Response.json(r, { status: 201 });
+	}
+	if (request.method === "POST" && a === "repos" && b && c === "memory" && !d) {
+		const { text } = (await request.json()) as { text?: string };
+		if (!text?.trim()) return Response.json({ error: "text required" }, { status: 400 });
+		await env.REPO.getByName(b).addMemory([text.trim()], auth.user);
+		return Response.json({ ok: true }, { status: 201 });
+	}
+	if (request.method === "DELETE" && a === "repos" && b && c === "memory" && d) {
+		return (await env.REPO.getByName(b).deleteMemory(d))
+			? Response.json({ ok: true })
+			: Response.json({ error: "no such memory item" }, { status: 404 });
 	}
 	if (request.method === "POST" && a === "repos" && b && c === "ferge") {
 		const body = (await request.json()) as { a: string; b: string };

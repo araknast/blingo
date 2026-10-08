@@ -49,10 +49,12 @@
 		const b = menu.bubble && data?.bubbles.find((x) => x.id === menu!.bubble);
 		if (!b) return [
 			{ label: "Start an agent", action: () => openAgent(null) },
+			{ label: "Plan tasks with a superagent", action: () => openSuper(null) },
 			{ label: "Push a fork", action: () => openPush(null) },
 		];
 		return [
 			{ label: "Start an agent from this bubble", action: () => openAgent(b.id) },
+			{ label: "Plan tasks from this bubble", action: () => openSuper(b.id) },
 			{ label: "Push a fork from this bubble", action: () => openPush(b.id) },
 			{ label: b.locked ? "Unlock bubble" : "Lock bubble", action: () => setLock(b.id, !b.locked) },
 			{ label: "Browse code", action: () => navigate(bubbleHref(b.id)) },
@@ -80,20 +82,96 @@
 		}
 	}
 
-	// ---- Push a fork (notagent) ----
-	let pushOpen = $state(false);
-	let pushBase = $state("");
-	let pushed = $state<{ fork: string; clone: string; push: string } | null>(null);
-	async function createFork(e: SubmitEvent) {
+	// ---- Superagent: plans a prompt into tasks ----
+	let superOpen = $state(false);
+	let superPrompt = $state("");
+	let superBase = $state("");
+	function openSuper(bubble: string | null) {
+		fixedBase = bubble;
+		superBase = bubble ?? "";
+		superOpen = true;
+	}
+	async function startSuper(e: SubmitEvent) {
 		e.preventDefault();
 		busy = true;
 		try {
-			pushed = await api("POST", "/notagents", { repo, bubble: pushBase || undefined });
+			await api("POST", "/superagents", { repo, prompt: superPrompt, bubble: superBase || undefined });
+			superOpen = false;
+			superPrompt = "";
+			toast("Superagent started. Its tasks appear here when it finishes planning.");
 			refresh();
 		} catch (err) {
 			toastError(err);
 		} finally {
 			busy = false;
+		}
+	}
+
+	// ---- Push a fork (notagent), new or for an open task ----
+	let pushOpen = $state(false);
+	let pushBase = $state("");
+	let pushDescription = $state("");
+	let pushed = $state<{ fork: string; clone: string; push: string } | null>(null);
+	async function createFork(e: SubmitEvent) {
+		e.preventDefault();
+		busy = true;
+		try {
+			pushed = await api("POST", "/notagents", { repo, description: pushDescription, bubble: pushBase || undefined });
+			pushDescription = "";
+			refresh();
+		} catch (err) {
+			toastError(err);
+		} finally {
+			busy = false;
+		}
+	}
+
+	// ---- Tasks and memory ----
+	async function takeTask(id: string) {
+		try {
+			pushed = await api("POST", `/repos/${repo}/tasks/${id}/take`);
+			pushOpen = true;
+			refresh();
+		} catch (err) {
+			toastError(err);
+		}
+	}
+	async function retryTask(id: string) {
+		try {
+			await api("POST", `/repos/${repo}/tasks/${id}/retry`);
+			refresh();
+		} catch (err) {
+			toastError(err);
+		}
+	}
+	const taskGroups = $derived.by(() => {
+		const t = data?.tasks ?? [];
+		return [
+			{ label: "In progress", tasks: t.filter((x) => x.status === "in-progress") },
+			{ label: "Open", tasks: t.filter((x) => x.status === "open") },
+			{ label: "Failed", tasks: t.filter((x) => x.status === "failed") },
+			{ label: "Completed", tasks: t.filter((x) => x.status === "completed").reverse() },
+		].filter((g) => g.tasks.length);
+	});
+	const taskText = (id: string) => data?.tasks.find((t) => t.id === id)?.description ?? id;
+
+	let note = $state("");
+	async function addNote(e: SubmitEvent) {
+		e.preventDefault();
+		try {
+			await api("POST", `/repos/${repo}/memory`, { text: note });
+			note = "";
+			refresh();
+		} catch (err) {
+			toastError(err);
+		}
+	}
+	async function deleteNote(id: string) {
+		try {
+			await api("DELETE", `/repos/${repo}/memory/${id}`);
+			refresh();
+		} catch (err) {
+			toastError(err);
 		}
 	}
 	$effect(() => {
@@ -172,7 +250,7 @@
 										<span class="status {a.status}"><i class="dot {a.status === 'running' ? 'working pulse' : a.status === 'placed' ? 'merged' : 'conflict'}"></i>{agentLabel(a.status)}</span>
 										<span class="muted small">{a.finished ? `took ${duration(a.finished - a.started)}` : `started ${ago(a.started)}`}</span>
 									</div>
-									<p class="prompt">{a.prompt}</p>
+									<p class="prompt">{#if a.fork.includes("-s-")}<span class="kind">Superagent</span> {/if}{a.prompt}</p>
 									{#if a.log}
 										<details><summary>Log</summary><pre>{a.log}</pre></details>
 									{/if}
@@ -181,6 +259,41 @@
 						</ul>
 					{/if}
 				</section>
+
+				{#if data?.tasks.length}
+					<section>
+						<h2>Tasks <span class="count">{data.tasks.filter((t) => t.status === "completed").length} of {data.tasks.length} done</span></h2>
+						{#each taskGroups as g (g.label)}
+							<h3>{g.label}</h3>
+							<ul class="tasks">
+								{#each g.tasks as t (t.id)}
+									<li>
+										<details>
+											<summary>
+												<span class="kind">{t.kind === "agent" ? "Agent" : "Human"}</span>
+												{t.description}
+											</summary>
+											{#if t.deps.length}
+												<p class="muted small">After: {t.deps.map(taskText).join("; ")}</p>
+											{/if}
+											{#if t.explanation}<pre>{t.explanation}</pre>{/if}
+											{#if t.bubble && t.status !== "open"}
+												<p class="muted small">Started from bubble <a class="mono" href={bubbleHref(t.bubble)}>{short(t.bubble)}</a></p>
+											{/if}
+										</details>
+										{#if t.status === "open" && !t.ready}
+											<p class="muted small">Waiting for its dependencies to merge into one bubble</p>
+										{:else if t.status === "open" && t.kind === "notagent"}
+											<button onclick={() => takeTask(t.id)}>Take</button>
+										{:else if t.status === "failed"}
+											<button onclick={() => retryTask(t.id)}>Retry</button>
+										{/if}
+									</li>
+								{/each}
+							</ul>
+						{/each}
+					</section>
+				{/if}
 
 				{#if data?.conflicts.length}
 					<section>
@@ -222,6 +335,23 @@
 					</section>
 				{/if}
 
+				<section>
+					<h2>Memory <span class="count">{data?.memory.length || ""}</span></h2>
+					<p class="muted small">Every agent working on this repository reads these notes, and can add its own.</p>
+					<ul class="rows notes">
+						{#each data?.memory ?? [] as m (m.id)}
+							<li>
+								<span>{m.text}</span>
+								<button class="quiet" aria-label="Delete note" onclick={() => deleteNote(m.id)}>×</button>
+							</li>
+						{/each}
+					</ul>
+					<form class="add-note" onsubmit={addNote}>
+						<input aria-label="New note" bind:value={note} placeholder="Add a note for agents" required />
+						<button>Add</button>
+					</form>
+				</section>
+
 				<section class="danger-zone">
 					<button class="quiet danger" onclick={() => (deleteOpen = true)}>Delete repository</button>
 				</section>
@@ -243,10 +373,27 @@
 	</form>
 </Dialog>
 
+<Dialog bind:open={superOpen} title="Plan tasks with a superagent">
+	<form onsubmit={startSuper}>
+		<div class="field">
+			<label for="super-prompt">What should get done?</label>
+			<textarea id="super-prompt" bind:value={superPrompt} required placeholder="Add user accounts: signup, login and a profile page"></textarea>
+		</div>
+		<div class="field">
+			{@render base("super-base", "The superagent reads this bubble's code and splits the work into tasks, for agents or for you. Each starts once the tasks it depends on have landed.")}
+		</div>
+		<button class="primary" disabled={busy}>Plan tasks</button>
+	</form>
+</Dialog>
+
 <Dialog bind:open={pushOpen} title="Push a fork" wide>
 	{#if !pushed}
 		<form onsubmit={createFork}>
 			<p class="intro">Get a fork to push your own commits to. Once you push, yorkle places it in a bubble like any agent's work.</p>
+			<div class="field">
+				<label for="push-description">What will you change?</label>
+				<input id="push-description" bind:value={pushDescription} required placeholder="Fix the login redirect" />
+			</div>
 			<div class="field">{@render base("push-base")}</div>
 			<button class="primary" disabled={busy}>Create fork</button>
 		</form>
@@ -281,6 +428,11 @@
 		<label for={id}>Start from</label>
 		{#if id === "agent-base"}
 			<select {id} bind:value={agentBase}>
+				<option value="">Any bubble</option>
+				{#each data?.bubbles ?? [] as b}<option value={b.id}>Bubble {short(b.id)}</option>{/each}
+			</select>
+		{:else if id === "super-base"}
+			<select {id} bind:value={superBase}>
 				<option value="">Any bubble</option>
 				{#each data?.bubbles ?? [] as b}<option value={b.id}>Bubble {short(b.id)}</option>{/each}
 			</select>
@@ -352,6 +504,18 @@
 	.rows .mono { font-size: 0.8125rem; }
 	.rows .muted { margin-left: 0.4rem; }
 	.danger-zone { border-bottom: 0 !important; }
+
+	.rail h3 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-3); margin: 0.8rem 0 0.4rem; }
+	.tasks { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.6rem; }
+	.tasks li { font-size: 0.875rem; display: grid; gap: 0.3rem; justify-items: start; }
+	.tasks details { margin: 0; width: 100%; }
+	.tasks summary { color: var(--ink); }
+	.tasks details p { margin-top: 0.3rem; }
+	.kind { font-size: 0.6875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-3); margin-right: 0.25rem; }
+	.notes li { align-items: flex-start; }
+	.notes li span { padding-top: 0.35rem; overflow-wrap: anywhere; }
+	.add-note { display: flex; gap: 0.4rem; margin-top: 0.6rem; }
+	.add-note input { flex: 1; min-width: 0; }
 
 	.intro { margin-bottom: 1rem; color: var(--ink-2); }
 	.intro .mono { color: var(--ink); }

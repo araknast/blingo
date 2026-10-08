@@ -51,4 +51,4 @@ export const firstLine =(s: string) => s.split("\n", 1)[0];
 
 // Agent run status → what the UI calls it.
 export const agentLabel = (status: string) =>
-	({ running: "Working", placed: "Done", failed: "Failed", lost: "Failed: sandbox lost" })[status] ?? status;
+	({ running: "Working", placed: "Done", planned: "Tasks added", failed: "Failed", lost: "Failed: sandbox lost" })[status] ?? status;

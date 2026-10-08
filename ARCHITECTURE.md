@@ -39,7 +39,13 @@ browser ──► yorkle Worker ──(service binding)──► blingo Worker �
 | `hidden(id, since)` | lease for a bubble hidden by a running merge or ferge (see Merge loop) |
 | `watch(fork, base, token, expires)` | notagent forks waiting for their push, or pushed and not yet placed |
 | `pushed(fork)` | watched forks whose push arrived; removed with the watch once placed |
-| `agent_run(fork, prompt, started, status, finished, log)` | agent runs, kept after they finish |
+| `agent_run(fork, prompt, started, status, finished, log)` | agent and superagent runs (`-s-` ids), kept after they finish |
+| `task(id, description, kind, status, bubble, fork, base_head, explanation, superagent, created, finished)` | tasks: `kind` agent / notagent; `status` open / in-progress / completed / failed; `bubble` = where it should start, then where it did |
+| `task_dep(task, dep)` | task dependencies |
+| `memory(id, text, author, created)` | memory items, given to every agent and superagent |
+| `owed(locked, into)` | ferge debt: locked bubble `locked` still owes its conflicting files to bubble `into` |
+
+The repository's name is kept in the object's KV (`repo`), set by `addTasks`, so the alarm can start agents.
 
 Some older RepoDOs also have an unused `fork.deleted` column, so inserts name their columns.
 
@@ -72,6 +78,39 @@ carries. Then any visible bubbles at
 distance 0 are set-joined: the absorbed bubble's members move over and its rep becomes a `pending`
 member, so its code is still merged in.
 
+**Tasks** (`backend/src/tasks.ts` rules, `RepoDO.schedule`). Every agent and notagent belongs to a
+task. `POST /agents` and `POST /notagents` add a one-task batch; a superagent adds a whole plan.
+`schedule()` runs from `addTasks`, `retryTask` and every alarm. It starts each `ready` agent task:
+it forks the task's bubble, records the fork's head as `base_head` and starts the agent. It marks the
+task `in-progress` before any await, so concurrent calls don't double-start it. A failed start
+goes back to `open` and retries on a 30 s alarm. An open notagent task waits for a human:
+`POST /repos/:r/tasks/:id/take` runs the notagent setup below. If the push token expires unused,
+the task is `open` again. When a task's fork is placed, the task is `completed` and its
+`explanation` is the fork's commit messages down to `base_head`. These are read before placement,
+since a merged fork's repo is deleted. An agent run that fails marks its task `failed`, and
+`POST …/retry` reopens it.
+
+A task with dependencies is `ready` when every dependency is completed **and one visible bubble
+holds all their forks fully merged**. Each fork is `merged` or that bubble's rep, the bubble has
+no `pending` members, and nothing is `owed` to it. (After an absorb, the absorbed members read
+`merged` while the absorbed rep that carries them is still `pending`.) The task forks that
+bubble. A ferge leaves bubble a without the conflicting files, so it records `owed(L, a)`. In
+`absorb`, `renameOwed` follows renames and drops the debt once L and a end up in one bubble,
+whichever absorbed which. So a dependent task waits through the ferge, the fix, the unlock and
+L's merge.
+
+**Superagent** (`POST /superagents {repo?, bubble?, prompt}`, `SUPER_SH`). Runs Claude Code in its
+own Box on a **read-only** clone. Its system prompt asks for a JSON plan
+`[{key, description, kind, deps}]` in `/workspace/task/tasks.json`. The Box alarm checks it with
+`validatePlan` (keys unique, deps known, no cycle, ≤ 30 tasks) and calls `addTasks`. Nothing is
+placed.
+
+**Memory.** Agents and superagents get the repo's memory items through `--append-system-prompt`
+(never written into the repo). They add items by appending lines to `/workspace/task/memory`,
+outside the clone. The Box alarm reads at most 10 lines of ≤ 500 chars after a successful run. So
+there's no new egress and no API access from the sandbox. Humans manage memory through
+`POST /repos/:r/memory {text}` and `DELETE /repos/:r/memory/:id`.
+
 **Notagent.** `POST /notagents` forks, mints a 1-hour write token, and registers a `watch`. The
 alarm checks each watched fork's head every 5 s (`repo.log`, all in parallel). On change it revokes
 the token and marks the fork `pushed`. Then it places every pushed fork **in parallel**: `place()`
@@ -79,7 +118,7 @@ re-checks its chosen bubble right before inserting, so concurrent placements sta
 kept until placement succeeds, so failures are retried. Unpushed forks are deleted when the token
 expires. The API reports `waiting` (no push yet) and `placing` (pushed, not yet placed) separately.
 
-**Agent.** `POST /agents` forks and calls `Box.startAgent`: clone, `claude --print …`, commit,
+**Agent.** `RepoDO.schedule` forks and calls `Box.startAgent`: clone, `claude --print …`, commit,
 push, all detached in the container. The Box alarm checks every 30 s. When
 it's done it places the fork (or deletes it on failure) and reports to `RepoDO.agentDone`.
 
@@ -139,6 +178,9 @@ Marked with `ponytail:` comments in the code.
   count as the one push.
 - Bubble rules are by file path only; semantic conflicts surface at merge or not at all.
 - Agent runs are listed per repository; there is no cross-repository list.
+- A dependent task waits indefinitely while its dependencies sit in conflicting bubbles (until a
+  ferge and its fix land), or while a dependency's fork is in member `conflict`.
+- Tasks can't be edited or deleted after creation. Every memory item goes into every prompt.
 - The UI polls `GET /repos/:repo` (every 2.5 s on the map); the repository list fetches one summary per repo.
 - A commit's diff is against its first parent; line diffs are computed in the browser from both blobs.
 - No rate limit on login or signup; no password reset, invite expiry or repo sharing.
