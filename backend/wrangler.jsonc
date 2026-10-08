@@ -6,7 +6,9 @@
 	"compatibility_flags": ["nodejs_compat"],
 	"observability": { "enabled": true },
 	"upload_source_maps": true,
-	"vars": { "MODEL": "claude-opus-5-5" },
+	"vars": { "MODEL": "claude-opus-5-5", "ADMIN_USERNAME": "admin", "EMAIL_FROM": "noreply@blingo.breakdance.cc" },
+	// Verification mail; the sender domain must be onboarded to Cloudflare Email Sending.
+	"send_email": [{ "name": "EMAIL" }],
 	// BLINGO_TOKEN guards the API (it mints git tokens); ANTHROPIC_API_KEY never enters the sandbox.
 	"secrets": { "required": ["BLINGO_TOKEN", "ANTHROPIC_API_KEY"] },
 	"artifacts": [{ "binding": "ARTIFACTS", "namespace": "blingo" }],
@@ -20,11 +22,13 @@
 	"durable_objects": {
 		"bindings": [
 			{ "class_name": "RepoDO", "name": "REPO" },
-			{ "class_name": "Box", "name": "BOX" }
+			{ "class_name": "Box", "name": "BOX" },
+			{ "class_name": "UsersDO", "name": "USERS" }
 		]
 	},
 	"exports": {
 		"RepoDO": { "type": "durable-object", "storage": "sqlite" },
-		"Box": { "type": "durable-object", "storage": "sqlite" }
+		"Box": { "type": "durable-object", "storage": "sqlite" },
+		"UsersDO": { "type": "durable-object", "storage": "sqlite" }
 	}
 }

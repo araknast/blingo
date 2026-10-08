@@ -1,19 +1,32 @@
+import { invalidSignup, type Signup } from "./auth";
 import { authRemote } from "./box";
 
 export { Box, Outbound } from "./box";
 export { RepoDO } from "./repo-do";
+export { UsersDO } from "./users-do";
 
 const id = () => crypto.randomUUID().slice(0, 8);
 
 type Body = { prompt?: string; repo?: string; bubble?: string };
+type Auth = { user: string; admin: boolean };
+
+const users = (env: Env) => env.USERS.getByName("users");
+const noRepo = () => Response.json({ error: "no such repository" }, { status: 404 });
+
+// Owner-only: other users get the same 404 as a missing repo. Unowned (pre-users) repos are admin-only.
+async function canUse(env: Env, auth: Auth, repo: string) {
+	return auth.admin || (await users(env).ownerOf(repo)) === auth.user;
+}
 
 // Where a new fork comes from. No repo → brand-new repository (design: "a new repository is created").
-async function source(env: Env, b: Body): Promise<{ repo: string; from: string } | Response> {
+async function source(env: Env, auth: Auth, b: Body): Promise<{ repo: string; from: string } | Response> {
 	if (!b.repo) {
 		const repo = `r-${id()}`;
 		await env.ARTIFACTS.create(repo, { setDefaultBranch: "main" });
+		await users(env).own(repo, auth.user);
 		return { repo, from: repo };
 	}
+	if (!(await canUse(env, auth, b.repo))) return noRepo();
 	const repoDO = env.REPO.getByName(b.repo);
 	// No bubble named → any bubble; the base repo only while the repository has none.
 	if (!b.bubble) return { repo: b.repo, from: (await repoDO.anyBubble()) ?? b.repo };
@@ -42,18 +55,88 @@ export default {
 	},
 } satisfies ExportedHandler<Env>;
 
-async function handle(request: Request, env: Env): Promise<Response> {
-	// The API mints git tokens, so it is never open.
-	if (request.headers.get("authorization") !== `Bearer ${env.BLINGO_TOKEN}`) {
-		return Response.json({ error: "unauthorized" }, { status: 401 });
+async function sendVerify(env: Env, to: string, link: string) {
+	try {
+		await env.EMAIL.send({
+			to,
+			from: { email: env.EMAIL_FROM, name: "blingo" },
+			subject: "Verify your blingo account",
+			text: `Open this link to create your blingo account (valid 24 hours):\n\n${link}\n`,
+			html: `<p>Open this link to create your blingo account (valid 24 hours):</p><p><a href="${link}">${link}</a></p>`,
+		});
+		return true;
+	} catch (e) {
+		console.error("verification email failed", e, link); // the link in the log lets local dev continue
+		return false;
 	}
+}
+
+const page = (msg: string, status = 200) =>
+	new Response(`<!doctype html><meta charset="utf-8"><title>blingo</title><p>${msg}</p><p><a href="/">Log in</a></p>`, {
+		status,
+		headers: { "content-type": "text/html; charset=utf-8" },
+	});
+
+// Bearer is a session token, or BLINGO_TOKEN, which acts as the admin account (bootstrap and scripts).
+async function authenticate(request: Request, env: Env): Promise<Auth | null> {
+	const token = request.headers.get("authorization")?.match(/^Bearer (.+)$/)?.[1];
+	if (!token) return null;
+	if (token === env.BLINGO_TOKEN) return { user: env.ADMIN_USERNAME, admin: true };
+	const user = await users(env).whoami(token);
+	return user ? { user, admin: user === env.ADMIN_USERNAME } : null;
+}
+
+async function handle(request: Request, env: Env): Promise<Response> {
 	const url = new URL(request.url);
 	const [, a, b, c] = url.pathname.split("/");
+
+	// Open routes: invite-only signup, email verification, login.
+	if (request.method === "POST" && a === "signup" && !b) {
+		const s = (await request.json()) as Partial<Signup>;
+		const bad = invalidSignup(s);
+		if (bad) return Response.json({ error: bad }, { status: 400 });
+		const r = await users(env).signup(s as Signup);
+		if ("error" in r) return Response.json(r, { status: 409 });
+		const sent = await sendVerify(env, s.email!, `${url.origin}/verify?token=${r.token}`);
+		return sent
+			? Response.json({ sent: true }, { status: 202 })
+			: Response.json({ error: "could not send verification email" }, { status: 502 });
+	}
+	if (request.method === "GET" && a === "verify" && !b) {
+		const r = await users(env).verify(url.searchParams.get("token") ?? "");
+		return "error" in r ? page(`Verification failed: ${r.error}.`, 400) : page(`Account <b>${r.username}</b> created.`);
+	}
+	if (request.method === "POST" && a === "login" && !b) {
+		const { username, password } = (await request.json()) as { username?: string; password?: string };
+		const token = typeof username === "string" && typeof password === "string" && (await users(env).login(username, password));
+		return token
+			? Response.json({ token, username, admin: username === env.ADMIN_USERNAME })
+			: Response.json({ error: "wrong username or password" }, { status: 401 });
+	}
+
+	// Everything else mints git tokens or starts paid runs, so it is never open.
+	const auth = await authenticate(request, env);
+	if (!auth) return Response.json({ error: "unauthorized" }, { status: 401 });
+
+	if (request.method === "GET" && a === "me" && !b) {
+		return Response.json({ username: auth.user, admin: auth.admin, repos: await users(env).reposOf(auth.user) });
+	}
+	if (request.method === "POST" && a === "logout" && !b) {
+		await users(env).logout(request.headers.get("authorization")!.slice("Bearer ".length));
+		return Response.json({ ok: true });
+	}
+	if (request.method === "POST" && a === "invites" && !b) {
+		if (!auth.admin) return Response.json({ error: "admin only" }, { status: 403 });
+		return Response.json({ code: await users(env).mintInvite() }, { status: 201 });
+	}
+	// Repository routes: the repo is the path segment, or the prefix of a fork name.
+	if (a === "repos" && b && !(await canUse(env, auth, b))) return noRepo();
+	if (a === "agents" && b && !(await canUse(env, auth, b.split("-f-")[0]))) return noRepo();
 
 	if (request.method === "POST" && (a === "agents" || a === "notagents") && !b) {
 		const body = (await request.json()) as Body;
 		if (a === "agents" && !body.prompt) return Response.json({ error: "prompt required" }, { status: 400 });
-		const src = await source(env, body);
+		const src = await source(env, auth, body);
 		if (src instanceof Response) return src;
 		const name = await fork(env, src.from, src.repo);
 
@@ -77,7 +160,9 @@ async function handle(request: Request, env: Env): Promise<Response> {
 	if (request.method === "GET" && a === "agents" && b) return Response.json(await env.BOX.getByName(b).status());
 	if (request.method === "GET" && a === "repos" && b && !c) return Response.json(await env.REPO.getByName(b).list());
 	if (request.method === "DELETE" && a === "repos" && b && !c) {
-		return Response.json({ deleted: await env.REPO.getByName(b).destroy(b) });
+		const deleted = await env.REPO.getByName(b).destroy(b);
+		await users(env).disown(b);
+		return Response.json({ deleted });
 	}
 	if (request.method === "POST" && a === "repos" && b && (c === "lock" || c === "unlock")) {
 		const { bubble } = (await request.json()) as { bubble: string };

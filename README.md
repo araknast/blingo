@@ -26,7 +26,15 @@ npm workspaces: run `npm install` once at the root.
    npx wrangler secret put BLINGO_TOKEN
    npx wrangler secret put ANTHROPIC_API_KEY
    ```
-4. Docker with buildx (needed to build the sandbox image). On Debian's `docker.io` 20.10, install
+4. Verification email: onboard the sender domain to Cloudflare Email Sending
+   (`npx wrangler email sending enable blingo.breakdance.cc`). The sender (`EMAIL_FROM`) and the
+   admin's username (`ADMIN_USERNAME`) are vars in `backend/wrangler.jsonc`.
+5. After deploying, create the admin account: mint the first invite with the API token, then sign
+   up as `ADMIN_USERNAME` in the UI (before anyone else can take that name):
+   ```sh
+   curl -X POST -H "authorization: Bearer $BLINGO_TOKEN" https://blingo.<subdomain>.workers.dev/invites
+   ```
+6. Docker with buildx (needed to build the sandbox image). On Debian's `docker.io` 20.10, install
    `docker-buildx-plugin` from Docker's apt repo and run `docker buildx install`.
 
 ## Develop
@@ -54,11 +62,21 @@ npm run deploy      # blingo first (yorkle binds to it), then yorkle
 
 ## API
 
-All requests need `Authorization: Bearer $BLINGO_TOKEN`. Any request can return `503` with
+Signup is invite-only: `POST /signup` emails a link, and the account exists only once
+`GET /verify` is opened. Every other request needs `Authorization: Bearer <token>`: a session
+token from `POST /login`, or `$BLINGO_TOKEN`, which acts as the admin account. Each repository
+belongs to the user who created it; other users get `404` for it (the admin sees all). Repositories
+created before users existed have no owner, so only the admin can reach them. Any request can return `503` with
 `Retry-After` when Artifacts fails transiently (e.g. many parallel forks); retry it.
 
 | Method & path | Does |
 |---|---|
+| `POST /signup {invite, username, email, password}` | No auth. Emails a verification link (valid 24 h) |
+| `GET /verify?token=…` | No auth. Creates the account and spends the invite |
+| `POST /login {username, password}` → `{token, username, admin}` | No auth. Session token valid 30 days |
+| `POST /logout` | End this session |
+| `GET /me` | `{username, admin, repos}` |
+| `POST /invites` → `{code}` | Admin only. A single-use invite code |
 | `POST /agents {prompt, repo?, bubble?}` | Fork and run Claude Code on it. No `repo` → new repository; no `bubble` → any bubble |
 | `POST /notagents {repo?, bubble?}` | Fork and return a one-push git remote; the push gets placed |
 | `GET /agents/:fork` | One agent's sandbox status and log tail |

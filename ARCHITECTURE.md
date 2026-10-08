@@ -14,7 +14,8 @@ browser ──► yorkle Worker ──(service binding)──► blingo Worker �
 | Piece | File | Role |
 |---|---|---|
 | yorkle | `yorkle/src/index.ts`, `yorkle/public/index.html` | Serves the page; forwards every other path to blingo, so the API is same-origin |
-| Worker | `backend/src/index.ts` | Bearer-token check, routing, creating repos/forks, minting git tokens |
+| Worker | `backend/src/index.ts` | Auth (session or `BLINGO_TOKEN`), repo-ownership checks, routing, creating repos/forks, minting git tokens |
+| UsersDO | `backend/src/users-do.ts`, `backend/src/auth.ts` | One global SQLite object: accounts, pending signups, invites, sessions, repo owners |
 | Bubble rules | `backend/src/bubbles.ts` | Pure functions: `placeFork`, `distance`, `zeroDistanceJoins`, `nearestNeighbour`. Unit-tested |
 | RepoDO | `backend/src/repo-do.ts` | SQLite state for one repository; serializes placement and merging; alarm = representative loop |
 | Box | `backend/src/box.ts` | Container sandbox. Runs git scripts for RepoDO and Claude Code for agents. `Outbound` limits its egress |
@@ -41,7 +42,23 @@ browser ──► yorkle Worker ──(service binding)──► blingo Worker �
 
 Some older RepoDOs also have an unused `fork.deleted` column, so inserts name their columns.
 
+## UsersDO tables
+
+| Table | Holds |
+|---|---|
+| `user(name, email, hash, salt, created)` | verified accounts; PBKDF2-SHA256 password hashes |
+| `pending(token, name, email, hash, salt, invite, expires)` | signups waiting for their emailed link (24 h) |
+| `invite(code, created, used_by)` | single-use codes minted by the admin |
+| `session(token, name, expires)` | 30-day bearer tokens |
+| `repo(name, owner)` | who created each repository |
+
 ## Flows
+
+**Signup.** `POST /signup` checks the invite is unused and the name and email are free, stores a
+`pending` row and emails `/verify?token=…` via the `EMAIL` (`send_email`) binding. `GET /verify`
+re-checks all three (another signup on the same invite may have won), then creates the user,
+spends the invite and drops the competing pending rows. The admin is whichever user is named
+`ADMIN_USERNAME`; `BLINGO_TOKEN` also acts as that account, which is how the first invite is made.
 
 **Placement** (`RepoDO.place`, `PLACE_SH`). One Box job checks the visible bubbles in order. For
 each, it computes the files the fork would bring into that bubble's rep (`git diff` since their
@@ -108,7 +125,8 @@ bubble with their conflict markers. Unlock the bubble to let it merge back.
   `*.artifacts.cloudflare.net`, and adds `ANTHROPIC_API_KEY` to `api.anthropic.com` requests, so
   the key never enters the sandbox.
 - Git auth is a short-lived, per-repo Artifacts token embedded in the remote URL.
-- `BLINGO_TOKEN` guards the whole API, because it mints push tokens and starts paid runs.
+- The API (apart from signup, verify, login) needs a session token or `BLINGO_TOKEN`, because it
+  mints push tokens and starts paid runs. Repository routes also check the caller owns the repo.
 
 ## Known limits
 
@@ -120,3 +138,4 @@ Marked with `ponytail:` comments in the code.
   count as the one push.
 - Bubble rules are by file path only; semantic conflicts surface at merge or not at all.
 - Agent runs are listed per repository; there is no cross-repository list.
+- No rate limit on login or signup; no password reset, invite expiry or repo sharing.

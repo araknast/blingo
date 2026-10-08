@@ -20,17 +20,51 @@
 	.badge.completed { background: #2e7d32; }
 	.badge.failed { background: #c62828; }
 	#agents li { margin: .3rem 0; }
+	form, details { margin: .4rem 0; }
+	summary { cursor: pointer; }
 	button.file { margin: 0 .3rem 0 0; padding: 0; border: 0; background: none; color: LinkText; text-decoration: underline; cursor: pointer; }
 </style>
 </head>
 <body>
 <h1>yorkle</h1>
 
-<label for="token">API token</label>
-<input id="token" type="password" autocomplete="off">
+<section id="signed-out">
+<form id="login">
+	<label for="login-user">Username</label>
+	<input id="login-user" autocomplete="username" required>
+	<label for="login-pass">Password</label>
+	<input id="login-pass" type="password" autocomplete="current-password" required>
+	<button>Log in</button>
+</form>
+<details>
+	<summary>Sign up with an invite</summary>
+	<form id="signup">
+		<label for="su-invite">Invite code</label>
+		<input id="su-invite" required>
+		<label for="su-user">Username</label>
+		<input id="su-user" autocomplete="username" pattern="[a-z0-9_\-]{2,32}" required>
+		<label for="su-email">Email</label>
+		<input id="su-email" type="email" autocomplete="email" required>
+		<label for="su-pass">Password (8+ characters)</label>
+		<input id="su-pass" type="password" autocomplete="new-password" minlength="8" required>
+		<button>Sign up</button>
+	</form>
+</details>
+<details>
+	<summary>API token</summary>
+	<label for="token">API token</label>
+	<input id="token" type="password" autocomplete="off">
+</details>
+</section>
+<section id="signed-in" hidden>
+	<span id="whoami"></span>
+	<button id="logout">Log out</button>
+	<button id="invite" hidden>New invite</button>
+</section>
 
 <label for="repo">Repository (blank = new repository)</label>
-<input id="repo" placeholder="r-1234abcd">
+<input id="repo" placeholder="r-1234abcd" list="my-repos">
+<datalist id="my-repos"></datalist>
 
 <label for="bubble">Bubble to base the fork on (optional)</label>
 <input id="bubble">
@@ -53,8 +87,53 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
+// The bearer (a session token, or a pasted API token) lives in #token and localStorage.
+function setToken(t) {
+	$("token").value = t;
+	try { localStorage.setItem("blingo-token", t); } catch {}
+	whoami();
+}
 try { $("token").value = localStorage.getItem("blingo-token") ?? ""; } catch {}
-$("token").onchange = () => { try { localStorage.setItem("blingo-token", $("token").value); } catch {} };
+$("token").onchange = () => setToken($("token").value);
+
+async function whoami() {
+	let me = null;
+	if ($("token").value) try { me = await api("GET", "/me"); } catch {}
+	$("signed-out").hidden = !!me;
+	$("signed-in").hidden = !me;
+	if (!me) return;
+	$("whoami").textContent = `Logged in as ${me.username}${me.admin ? " (admin)" : ""}`;
+	$("invite").hidden = !me.admin;
+	$("my-repos").replaceChildren(...me.repos.map((r) => new Option(r)));
+}
+
+$("login").onsubmit = async (e) => {
+	e.preventDefault();
+	try {
+		const r = await api("POST", "/login", { username: $("login-user").value, password: $("login-pass").value });
+		$("login-pass").value = "";
+		$("out").textContent = "";
+		setToken(r.token);
+	} catch (err) { $("out").textContent = String(err); }
+};
+$("signup").onsubmit = async (e) => {
+	e.preventDefault();
+	try {
+		await api("POST", "/signup", {
+			invite: $("su-invite").value, username: $("su-user").value, email: $("su-email").value, password: $("su-pass").value,
+		});
+		$("su-pass").value = "";
+		$("out").textContent = `Check ${$("su-email").value} for a link to create your account.`;
+	} catch (err) { $("out").textContent = String(err); }
+};
+$("logout").onclick = async () => {
+	try { await api("POST", "/logout"); } catch {}
+	setToken("");
+};
+$("invite").onclick = async () => {
+	try { $("out").textContent = `Invite code: ${(await api("POST", "/invites")).code}`; }
+	catch (err) { $("out").textContent = String(err); }
+};
 
 async function api(method, path, body) {
 	const res = await fetch(path, {
@@ -73,6 +152,7 @@ async function spawn(kind, button) {
 	try {
 		const body = { repo: $("repo").value || undefined, bubble: $("bubble").value || undefined, prompt: $("prompt").value };
 		const r = await api("POST", `/${kind}`, body);
+		if (!$("repo").value) whoami(); // a new repository: refresh the list
 		$("repo").value = r.repo;
 		$("out").textContent = JSON.stringify(r, null, 2);
 		if (kind === "agents") watchAgents();
@@ -213,6 +293,7 @@ async function watchAgents() {
 	} catch (e) { $("out").textContent = String(e); }
 }
 $("working").onclick = watchAgents;
+whoami();
 </script>
 </body>
 </html>
