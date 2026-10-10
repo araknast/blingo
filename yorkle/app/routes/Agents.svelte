@@ -51,7 +51,7 @@
 							<a href={href(r)}>
 								<span class="status"><i class="dot {runDot(r)}"></i>{agentLabel(r.status)}</span>
 								<span class="prompt">{r.prompt.split("\n")[0]}</span>
-								<span class="muted small">{kindOf(r)} · {r.finished ? `took ${duration(r.finished - r.started)}` : `started ${ago(r.started)}`}</span>
+								<span class="muted small">{kindOf(r)} <span class="mono">{r.fork.split(/-[fsc]-/).at(-1)}</span> · {r.finished ? `took ${duration(r.finished - r.started)}` : `started ${ago(r.started)}`}</span>
 							</a>
 						</li>
 					{/each}

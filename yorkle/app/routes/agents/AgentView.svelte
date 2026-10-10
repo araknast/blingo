@@ -161,7 +161,7 @@
 </script>
 
 <header class="head">
-	<p class="kind muted">{[kind, init?.model].filter(Boolean).join(" · ")}</p>
+	<p class="kind muted">{[kind, id.split(/-[fsc]-/).at(-1), init?.model].filter(Boolean).join(" · ")}</p>
 	<h1>{run?.prompt.split("\n")[0] ?? id}</h1>
 	<p class="muted">
 		<i class="dot {status === 'running' ? 'working pulse' : status === 'failed' || status === 'lost' ? 'conflict' : 'merged'}"></i>
