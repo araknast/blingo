@@ -52,5 +52,12 @@ res=$(ev router.json "[(x.get('api_error_status'), x.get('result')) for x in e i
 [ "$(ev router.json "[x.get('api_error_status') for x in e if x.get('type')=='result']")" = "[401]" ] || fail "expected OpenRouter to reject the fake key: $res"
 ok "OpenRouter provider: requests went to OpenRouter with the repo's key ($res)"
 
+api -X PUT --json "{\"apiKey\":\"sk-ant-oat01-blingo-e2e-not-a-real-token\",\"provider\":\"claude-subscription\",\"models\":{\"agent\":\"claude-haiku-5-5\"}}" $U/repos/$R/settings | grep -q '"provider":"claude-subscription"' || fail "subscription provider not stored"
+run sub
+res=$(ev sub.json "[(x.get('api_error_status'), x.get('result')) for x in e if x.get('type')=='result']")
+# 401 = api.anthropic.com rejected the fake token (sent as a bearer by Outbound); 403 would be Outbound refusing the host.
+[ "$(ev sub.json "[x.get('api_error_status') for x in e if x.get('type')=='result']")" = "[401]" ] || fail "expected Anthropic to reject the fake subscription token: $res"
+ok "Claude subscription provider: requests went to Anthropic with the repo's token ($res)"
+
 echo "== cleanup: $(api -X DELETE $U/repos/$R)"
 echo "PASS"
