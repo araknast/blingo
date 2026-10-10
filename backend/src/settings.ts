@@ -19,7 +19,12 @@ export type Settings = {
 	fergeAgents: boolean;
 	// New tasks wait for a person to approve them (and may be edited until then).
 	taskApproval: boolean;
+	deploys: Deploy[];
 };
+// A deployment: `command` runs in a Box on a bubble's code, reaching only Artifacts and `hosts`. Each
+// `auth` entry names a header Outbound adds to requests to that host (the value is kept apart, in
+// RepoDO, and never returned), so no credential enters the sandbox.
+export type Deploy = { name: string; command: string; hosts: string[]; auth: { host: string; header: string }[] };
 export type Provider = "anthropic" | "openrouter";
 export type Role = keyof Settings["models"];
 
@@ -32,6 +37,7 @@ export const DEFAULTS: Settings = {
 	models: { agent: "", superagent: "", ferge: "" },
 	fergeAgents: false,
 	taskApproval: false,
+	deploys: [],
 };
 
 // Applies a settings update from the API to `current`; returns the new settings or what's wrong.
@@ -82,7 +88,57 @@ export function updateSettings(current: Settings, body: unknown): Settings | { e
 			next.ci.hosts = [...new Set((c.hosts as string[]).map((h) => h.toLowerCase()))];
 		}
 	}
+	if (b.deploys !== undefined) {
+		const d = validateDeploys(b.deploys);
+		if (typeof d === "string") return { error: d };
+		next.deploys = d;
+	}
 	return next;
+}
+
+const HOST = /^[a-z0-9.-]+\.[a-z]{2,}$/i;
+function validateDeploys(raw: unknown): Deploy[] | string {
+	if (!Array.isArray(raw) || raw.length > 10) return "deploys must be a list of at most 10 deployments";
+	const out: Deploy[] = [];
+	for (const x of raw as Record<string, unknown>[]) {
+		const name = typeof x?.name === "string" ? x.name.trim() : "";
+		if (!/^[\w-]{1,40}$/.test(name)) return "a deployment's name is 1 to 40 letters, digits, - or _";
+		if (out.some((o) => o.name === name)) return `two deployments are named ${name}`;
+		if (typeof x.command !== "string" || !x.command.trim() || x.command.length > 2000) return `deployment ${name}: command must be 1 to 2000 characters`;
+		const hosts = x.hosts ?? [];
+		if (!Array.isArray(hosts) || hosts.length > 20 || !hosts.every((h) => typeof h === "string" && HOST.test(h))) return `deployment ${name}: hosts must be up to 20 host names`;
+		const lower = [...new Set((hosts as string[]).map((h) => h.toLowerCase()))];
+		const auth = x.auth ?? [];
+		if (!Array.isArray(auth) || auth.length > 10) return `deployment ${name}: auth must be a list of at most 10 headers`;
+		const entries: Deploy["auth"] = [];
+		for (const a of auth as Record<string, unknown>[]) {
+			const host = typeof a?.host === "string" ? a.host.toLowerCase() : "";
+			const header = typeof a?.header === "string" ? a.header.trim() : "";
+			if (!HOST.test(host) || !ciHostAllowed(lower, host)) return `deployment ${name}: auth host ${host || "?"} must be one of its hosts`;
+			if (!/^[\w-]{1,60}$/.test(header) || /^(host|content-length|transfer-encoding)$/i.test(header)) return `deployment ${name}: bad header name`;
+			if (entries.some((e) => e.host === host && e.header.toLowerCase() === header.toLowerCase())) return `deployment ${name}: ${header} for ${host} is listed twice`;
+			entries.push({ host, header });
+		}
+		out.push({ name, command: x.command.trim(), hosts: lower, auth: entries });
+	}
+	return out;
+}
+
+// The secret values sent with a settings update: [`name|host|header` → value] for entries that
+// carry a non-empty `value`. (updateSettings drops them; RepoDO stores them apart.)
+export function deployValues(body: unknown): Map<string, string> {
+	const out = new Map<string, string>();
+	const deploys = (body as { deploys?: unknown } | null)?.deploys;
+	if (!Array.isArray(deploys)) return out;
+	for (const d of deploys as { name?: string; auth?: { host?: string; header?: string; value?: unknown }[] }[])
+		for (const a of d?.auth ?? []) if (typeof a?.value === "string" && a.value && a.value.length <= 2000) out.set(deployKey(String(d.name).trim(), String(a.host).toLowerCase(), String(a.header).trim()), a.value);
+	return out;
+}
+export const deployKey = (name: string, host: string, header: string) => `${name}|${host}|${header.toLowerCase()}`;
+
+// The headers Outbound adds to a deployment's request to `hostname`, from its stored values.
+export function deployHeaders(d: Deploy | undefined, hostname: string, values: Record<string, string>): [string, string][] {
+	return (d?.auth ?? []).filter((a) => ciHostAllowed([a.host], hostname) && values[deployKey(d!.name, a.host, a.header)]).map((a) => [a.header, values[deployKey(d!.name, a.host, a.header)]]);
 }
 
 // May a request to `hostname` leave a CI Box? Exactly a listed host or one of its subdomains.

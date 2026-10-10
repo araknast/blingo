@@ -4,7 +4,7 @@ import { getAgentByName } from "agents";
 import { COMMIT_FILES_SH, MERGES, PATCH_SH, readSeries } from "./git-scripts";
 import { conflictKey, nearestNeighbour, placeFork, renameConflicts, type Basis, type Bubble } from "./bubbles";
 import { fergeName, friendlyName, nameText, type Name } from "./names";
-import { DEFAULTS, NO_KEY, gate, updateSettings, type Provider, type Role, type Settings } from "./settings";
+import { DEFAULTS, NO_KEY, deployHeaders, deployKey, deployValues, gate, updateSettings, type Provider, type Role, type Settings } from "./settings";
 import { resolveSkills, type Skill } from "./skills";
 import { explanation, fixPrompt, ready, renameOwed, shortTitle, type Owed, type PlanItem, type TaskState } from "./tasks";
 
@@ -91,6 +91,9 @@ export class RepoDO extends DurableObject<Env> {
 			-- a repository's skills (Claude Code skill folders); files are base64, one row each
 			CREATE TABLE IF NOT EXISTS skill(name TEXT PRIMARY KEY, description TEXT NOT NULL, created INTEGER NOT NULL);
 			CREATE TABLE IF NOT EXISTS skill_file(skill TEXT NOT NULL, path TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY (skill, path));
+			-- manual deployments: a command run on a bubble's commit (status running / succeeded / failed)
+			CREATE TABLE IF NOT EXISTS deploy(id TEXT PRIMARY KEY, name TEXT NOT NULL, bubble TEXT NOT NULL, head TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'running',
+				started INTEGER NOT NULL, finished INTEGER, log TEXT, by TEXT NOT NULL);
 			CREATE TABLE IF NOT EXISTS memory(id TEXT PRIMARY KEY, text TEXT NOT NULL, author TEXT NOT NULL, created INTEGER NOT NULL);
 			-- a ferge's locked bubble still owes its conflicting files to bubble "into"
 			CREATE TABLE IF NOT EXISTS owed(locked TEXT NOT NULL, "into" TEXT NOT NULL, PRIMARY KEY (locked, "into"));
@@ -639,6 +642,7 @@ export class RepoDO extends DurableObject<Env> {
 			tasks: this.tasks().map(({ base_head, skills, ...t }) => ({ ...t, skills: skills === null ? null : JSON.parse(skills), ready: startable.has(t.id) })),
 			memory: this.sql.exec("SELECT * FROM memory ORDER BY created").toArray(),
 			skills: this.sql.exec("SELECT name, description, created FROM skill ORDER BY name").toArray(),
+			deploys: this.sql.exec("SELECT * FROM deploy ORDER BY started DESC LIMIT 50").toArray(),
 		};
 	}
 
@@ -695,12 +699,13 @@ export class RepoDO extends DurableObject<Env> {
 		// Running agents, superagents and CI fixers (Box named after the run), and loose forks' CI.
 		const runs = this.sql.exec<{ fork: string }>("SELECT fork FROM agent_run WHERE status = 'running'").toArray().map((r) => r.fork);
 		const ci = this.sql.exec<{ fork: string }>("SELECT fork FROM loose").toArray().map((r) => `ci-${r.fork}`);
-		await Promise.allSettled([...runs, ...ci].map((n) => this.env.BOX.getByName(n).stop()));
+		const deploying = this.sql.exec<{ id: string }>("SELECT id FROM deploy WHERE status = 'running'").toArray().map((r) => `deploy-${r.id}`);
+		await Promise.allSettled([...runs, ...ci, ...deploying].map((n) => this.env.BOX.getByName(n).stop()));
 		await this.ctx.storage.deleteAlarm();
 		this.sql.exec(
-			"DELETE FROM bubble; DELETE FROM fork; DELETE FROM conflict; DELETE FROM locked; DELETE FROM hidden; DELETE FROM loose; DELETE FROM agent_run; DELETE FROM task; DELETE FROM task_dep; DELETE FROM memory; DELETE FROM skill; DELETE FROM skill_file; DELETE FROM owed; DELETE FROM basis; DELETE FROM renamed; DELETE FROM merging;",
+			"DELETE FROM bubble; DELETE FROM fork; DELETE FROM conflict; DELETE FROM locked; DELETE FROM hidden; DELETE FROM loose; DELETE FROM agent_run; DELETE FROM task; DELETE FROM task_dep; DELETE FROM memory; DELETE FROM skill; DELETE FROM skill_file; DELETE FROM deploy; DELETE FROM owed; DELETE FROM basis; DELETE FROM renamed; DELETE FROM merging;",
 		);
-		for (const k of ["repo", "seq", "name", "namedFirst", "settings", "apiKey"]) this.ctx.storage.kv.delete(k);
+		for (const k of ["repo", "seq", "name", "namedFirst", "settings", "apiKey", "deployAuth"]) this.ctx.storage.kv.delete(k);
 		return deleted;
 	}
 
@@ -711,6 +716,7 @@ export class RepoDO extends DurableObject<Env> {
 	// queues and hides them before its first await.
 	async alarm(): Promise<void> {
 		this.recoverHidden();
+		this.reapDeploys();
 		const [placing, applying, merging] = await Promise.allSettled([this.checkLoose(), this.applyQueues(), this.mergeStep()]);
 		await this.schedule(); // tasks whose deps just landed together in one bubble
 		const worked = [applying, merging].some((r) => r.status === "fulfilled" && r.value) || this.busy().size > 0;
@@ -732,7 +738,10 @@ export class RepoDO extends DurableObject<Env> {
 
 	// The settings as the API shows them: the API key only as whether one is set.
 	publicSettings() {
-		return { ...this.settings(), hasKey: !!this.ctx.storage.kv.get<string>("apiKey") };
+		const values = this.ctx.storage.kv.get<Record<string, string>>("deployAuth") ?? {};
+		const s = this.settings();
+		const deploys = s.deploys.map((d) => ({ ...d, auth: d.auth.map((a) => ({ ...a, hasValue: !!values[deployKey(d.name, a.host, a.header)] })) }));
+		return { ...s, deploys, hasKey: !!this.ctx.storage.kv.get<string>("apiKey") };
 	}
 
 	// `apiKey` (a string; "" removes it) is kept apart from the other settings and never returned.
@@ -742,9 +751,59 @@ export class RepoDO extends DurableObject<Env> {
 		const key = (body as { apiKey?: unknown } | null)?.apiKey;
 		if (key !== undefined && (typeof key !== "string" || key.length > 500)) return { error: "apiKey must be a string" };
 		this.ctx.storage.kv.put("settings", next);
+		// Deployment credentials: the values sent now, else the ones kept, for the headers still listed.
+		const sent = deployValues(body);
+		const kept = this.ctx.storage.kv.get<Record<string, string>>("deployAuth") ?? {};
+		const values: Record<string, string> = {};
+		for (const d of next.deploys) for (const a of d.auth) {
+			const k = deployKey(d.name, a.host, a.header);
+			const v = sent.get(k) ?? kept[k];
+			if (v) values[k] = v;
+		}
+		this.ctx.storage.kv.put("deployAuth", values);
 		if (typeof key === "string") key.trim() ? this.ctx.storage.kv.put("apiKey", key.trim()) : this.ctx.storage.kv.delete("apiKey");
 		if (key) await this.kick(); // tasks waiting for a key start now
 		return this.publicSettings();
+	}
+
+	// ---- deployments ----
+
+	// For Outbound: the headers deployment `name` adds to requests to `hostname`.
+	deployHeaders(name: string, hostname: string): [string, string][] {
+		return deployHeaders(this.settings().deploys.find((d) => d.name === name), hostname, this.ctx.storage.kv.get<Record<string, string>>("deployAuth") ?? {});
+	}
+
+	// A deployment still "running" after its Box's 30-minute timeout lost its result.
+	private reapDeploys() {
+		this.sql.exec("UPDATE deploy SET status = 'failed', finished = ?, log = 'the deployment never reported back' WHERE status = 'running' AND started < ?", Date.now(), Date.now() - 40 * 60_000);
+	}
+
+	// A person runs deployment `name` on `bubble`'s code, at its commit now. The bubble must have
+	// nothing queued, so what is deployed is what the bubble holds.
+	async startDeploy(name: string, bubble: string, by: string): Promise<{ id: string } | { error: string }> {
+		this.reapDeploys();
+		const d = this.settings().deploys.find((x) => x.name === name);
+		if (!d) return { error: "no such deployment: configure it in the repository's settings" };
+		const b = this.bubbles().find((x) => x.id === bubble);
+		if (!b) return { error: "no such bubble" };
+		if (!b.visible || this.sql.exec("SELECT 1 FROM fork WHERE bubble = ? AND status = 'pending'", bubble).toArray().length) return { error: "that bubble is merging or has changes still queued; try again in a moment" };
+		if (this.sql.exec("SELECT 1 FROM deploy WHERE name = ? AND bubble = ? AND status = 'running'", name, bubble).toArray().length) return { error: "that deployment is already running on this bubble" };
+		const id = `d-${crypto.randomUUID().slice(0, 8)}`;
+		this.sql.exec("INSERT INTO deploy (id, name, bubble, head, started, by) VALUES (?, ?, ?, '', ?, ?)", id, name, bubble, Date.now(), by);
+		try {
+			const head = await headOf(this.env, bubble);
+			if (!head) throw new Error("the bubble has no commits");
+			this.sql.exec("UPDATE deploy SET head = ? WHERE id = ?", head, id);
+			const { url } = await authRemote(this.env, bubble, "read", 3600);
+			await this.env.BOX.getByName(`deploy-${id}`).startCI({ repo: this.ctx.storage.kv.get<string>("repo")!, fork: bubble, head, remote: url, command: d.command, hosts: d.hosts, deploy: { id, name } });
+		} catch (e) {
+			this.deployDone(id, false, `couldn't start: ${e instanceof Error ? e.message : e}`);
+		}
+		return { id };
+	}
+
+	deployDone(id: string, ok: boolean, log: string) {
+		this.sql.exec("UPDATE deploy SET status = ?, finished = ?, log = ? WHERE id = ? AND status = 'running'", ok ? "succeeded" : "failed", Date.now(), log.slice(-8000), id);
 	}
 
 	// The repository's own API key, for Outbound and the Reviewer only (never sent to a sandbox or the

@@ -51,6 +51,18 @@ try {
 	check((await call("DELETE", `/repos/${R}/skills/pdf-tools`)).status === 200 && (await task(R, sk.task)).skills.length === 0, "skills: delete drops it from tasks");
 	check((await call("DELETE", `/repos/${R}/skills/pdf-tools`)).status === 404, "skills: delete unknown → 404");
 
+	// deployments: configured in settings, credentials stored apart, started by hand on a bubble
+	const dep = { name: "prod", command: "echo ship", hosts: ["api.example.com"], auth: [{ host: "api.example.com", header: "Authorization", value: "Bearer s3cret" }] };
+	check((await call("PUT", `/repos/${R}/settings`, { deploys: [{ ...dep, auth: [{ host: "other.example.org", header: "X", value: "v" }] }] })).status === 400, "deploys: auth host must be one of its hosts");
+	const saved = await call("PUT", `/repos/${R}/settings`, { deploys: [dep] });
+	check(saved.status === 200 && saved.deploys[0].auth[0].hasValue === true && !JSON.stringify(saved).includes("s3cret"), "deploys: saved; the credential is not returned");
+	const kept = await call("PUT", `/repos/${R}/settings`, { deploys: [{ ...dep, auth: [{ host: "api.example.com", header: "Authorization" }] }] });
+	check(kept.deploys[0].auth[0].hasValue === true, "deploys: a credential is kept when no value is sent");
+	check((await call("POST", `/repos/${R}/deploys`, { name: "nope", bubble: "x" })).status === 409, "deploys: unknown deployment → 409");
+	check((await call("POST", `/repos/${R}/deploys`, { name: "prod", bubble: "x" })).error === "no such bubble", "deploys: unknown bubble → 409");
+	check((await call("POST", `/repos/${R}/deploys`, { name: "prod" })).status === 400, "deploys: bubble required");
+	check((await call("PUT", `/repos/${R}/settings`, { deploys: [] })).deploys.length === 0, "deploys: removed");
+
 	// notagents: description required; title given or defaulted
 	check((await call("POST", "/notagents", { repo: R })).status === 400, "notagent: description required");
 	// agents and superagents run only on the repository's own key

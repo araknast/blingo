@@ -306,6 +306,12 @@ async function handle(request: Request, env: Env): Promise<Response> {
 			? Response.json({ ok: true })
 			: Response.json({ error: "no such skill" }, { status: 404 });
 	}
+	if (request.method === "POST" && a === "repos" && b && c === "deploys" && !d) {
+		const body = (await request.json().catch(() => ({}))) as { name?: unknown; bubble?: unknown };
+		if (typeof body.name !== "string" || typeof body.bubble !== "string") return Response.json({ error: "name and bubble required" }, { status: 400 });
+		const r = await env.REPO.getByName(b).startDeploy(body.name, body.bubble, auth.user);
+		return "error" in r ? Response.json(r, { status: 409 }) : Response.json(r, { status: 202 });
+	}
 	if (a === "repos" && b && c === "settings" && !d) {
 		const repo = env.REPO.getByName(b);
 		if (request.method === "GET") return Response.json(await repo.publicSettings());

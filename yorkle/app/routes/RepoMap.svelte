@@ -147,6 +147,7 @@
 	{repo}
 	openTasks={data?.tasks.filter((t) => t.status !== "completed").length}
 	activeAgents={data?.agents.filter((a) => a.status === "running").length}
+	runningDeploys={data?.deploys.filter((d) => d.status === "running").length}
 	full
 >
 	{#if repoData.missing}

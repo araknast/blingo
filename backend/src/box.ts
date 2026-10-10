@@ -103,7 +103,8 @@ export type AgentJob = {
 	previous?: string; // a retry: the run id of the failed attempt, whose transcript and log it gets
 };
 // A CI run on a loose fork at `head`, in a Box named ci-<fork> that can reach only Artifacts and `hosts`.
-export type CiJob = { repo: string; fork: string; head: string; remote: string; command: string; hosts: string[] };
+// A deployment is the same job: `fork` is then the bubble, `head` its commit, and `deploy` the deployment run.
+export type CiJob = { repo: string; fork: string; head: string; remote: string; command: string; hosts: string[]; deploy?: { id: string; name: string } };
 
 export async function headOf(env: Env, name: string) {
 	using repo = await env.ARTIFACTS.get(name);
@@ -134,13 +135,20 @@ export async function authRemote(env: Env, name: string, scope: "read" | "write"
 // no key ever enters a sandbox; there is no fallback key. CI Boxes (props.ci = its hosts) reach only
 // Artifacts and those hosts, other Boxes only Artifacts.
 // `box`: the agent Box's name, which is told each model response's token use (Box.addUsage).
-export class Outbound extends WorkerEntrypoint<Env, { ci?: string[]; repo?: string; box?: string }> {
+export class Outbound extends WorkerEntrypoint<Env, { ci?: string[]; repo?: string; box?: string; deploy?: { repo: string; name: string } }> {
 	async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url);
-		const { ci, repo, box } = this.ctx.props ?? {};
+		const { ci, repo, box, deploy } = this.ctx.props ?? {};
 		const creds = repo && Object.values(MODEL_HOSTS).includes(url.hostname) ? await this.env.REPO.getByName(repo).credentials() : null;
 		const to = egress(url, { ci, agent: !!repo, provider: creds?.provider });
-		if (to === "pass") return fetch(request);
+		if (to === "pass") {
+			// A deployment's credentials are added here, to the hosts they are for.
+			const extra = deploy ? await this.env.REPO.getByName(deploy.repo).deployHeaders(deploy.name, url.hostname) : [];
+			if (!extra.length) return fetch(request);
+			const headers = new Headers(request.headers);
+			for (const [k, v] of extra) headers.set(k, v);
+			return fetch(new Request(request, { headers }));
+		}
 		if (to !== "key") return new Response(`${to.deny}\n`, { status: 403 });
 		const headers = new Headers(request.headers);
 		headers.delete("x-api-key");
@@ -184,7 +192,7 @@ export class Box extends DurableObject<Env> {
 				const ci = this.ctx.storage.kv.get<CiJob>("ci");
 				const repo = this.ctx.storage.kv.get<string>("egress"); // an agent's repository
 				const outbound = ci
-					? this.ctx.exports.Outbound({ props: { ci: ci.hosts } })
+					? this.ctx.exports.Outbound({ props: { ci: ci.hosts, deploy: ci.deploy && { repo: ci.repo, name: ci.deploy.name } } })
 					: repo
 						? this.ctx.exports.Outbound({ props: { repo, box: this.ctx.id.name } })
 						: this.ctx.exports.Outbound;
@@ -461,7 +469,9 @@ export class Box extends DurableObject<Env> {
 			this.ctx.storage.kv.put("status", ok ? "passed" : "failed");
 			this.ctx.storage.kv.put("log", log);
 			await this.container.destroy().catch(() => {});
-			await this.env.REPO.getByName(job.repo).ciDone(job.fork, job.head, ok, log);
+			const repo = this.env.REPO.getByName(job.repo);
+			if (job.deploy) await repo.deployDone(job.deploy.id, ok, log);
+			else await repo.ciDone(job.fork, job.head, ok, log);
 		};
 		if (!this.container.running) return done(false, "the CI container stopped before CI finished");
 		const exit = (await this.sh(`cat ${TASK}/exit 2>/dev/null || true`)).stdout.trim();

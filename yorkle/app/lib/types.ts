@@ -42,6 +42,9 @@ export type LooseFork = {
 	reviewManual: "pending" | "approved" | "rejected" | null;
 	reviewNote: string | null;
 };
+// `hasValue`: a credential is stored for the header (its value is never sent back).
+export type DeployConfig = { name: string; command: string; hosts: string[]; auth: { host: string; header: string; hasValue: boolean }[] };
+export type DeployRun = { id: string; name: string; bubble: string; head: string; status: "running" | "succeeded" | "failed"; started: number; finished: number | null; log: string | null; by: string };
 export type Settings = {
 	autoPlaceNotagents: boolean;
 	ci: { enabled: boolean; command: string; hosts: string[] };
@@ -51,6 +54,7 @@ export type Settings = {
 	models: { agent: string; superagent: string; ferge: string };
 	fergeAgents: boolean;
 	taskApproval: boolean;
+	deploys: DeployConfig[];
 	hasKey: boolean;
 };
 export type Skill = { name: string; description: string; created: number };
@@ -68,6 +72,7 @@ export type RepoState = {
 	tasks: Task[];
 	memory: MemoryItem[];
 	skills: Skill[];
+	deploys: DeployRun[];
 };
 
 export type Commit = {

@@ -7,6 +7,8 @@
 	import { api, loadMe, session } from "../lib/session.svelte";
 	import { toast, toastError } from "../lib/toast.svelte";
 	import type { Settings } from "../lib/types";
+
+	type DeployForm = { name: string; command: string; hostsText: string; auth: { host: string; header: string; value: string; hasValue: boolean }[] };
 	import { repoName } from "../lib/util";
 
 	let { repo }: { repo: string } = $props();
@@ -14,10 +16,15 @@
 	const rd = repoState(repo, 15000);
 
 	// The form's copy, taken once the settings arrive (polls don't overwrite edits in progress).
-	let form = $state<(Omit<Settings, "ci"> & { ci: Settings["ci"] & { hostsText: string } }) | null>(null);
+	let form = $state<(Omit<Settings, "ci" | "deploys"> & { ci: Settings["ci"] & { hostsText: string }; deploys: DeployForm[] }) | null>(null);
 	$effect(() => {
 		const s = rd.data?.settings;
-		if (s && !form) form = { ...$state.snapshot(s), ci: { ...$state.snapshot(s.ci), hostsText: s.ci.hosts.join(", ") } };
+		if (s && !form)
+			form = {
+				...$state.snapshot(s),
+				ci: { ...$state.snapshot(s.ci), hostsText: s.ci.hosts.join(", ") },
+				deploys: s.deploys.map((d) => ({ name: d.name, command: d.command, hostsText: d.hosts.join(", "), auth: d.auth.map((a) => ({ ...a, value: "" })) })),
+			};
 	});
 	let apiKey = $state("");
 	let busy = $state(false);
@@ -27,9 +34,9 @@
 		if (!form) return;
 		busy = true;
 		try {
-			const { ci, hasKey: _, ...rest } = form;
+			const { ci, deploys, hasKey: _, ...rest } = form;
 			const hosts = ci.hostsText.split(/[\s,]+/).filter(Boolean);
-			await api("PUT", `/repos/${repo}/settings`, { ...rest, ci: { enabled: ci.enabled, command: ci.command, hosts }, ...(apiKey ? { apiKey } : {}) });
+			await api("PUT", `/repos/${repo}/settings`, { ...rest, ci: { enabled: ci.enabled, command: ci.command, hosts }, deploys: deploys.map(deployBody), ...(apiKey ? { apiKey } : {}) });
 			apiKey = "";
 			form = null; // take the saved values
 			await rd.refresh();
@@ -39,6 +46,12 @@
 		} finally {
 			busy = false;
 		}
+	}
+	const split = (t: string) => t.split(/[\s,]+/).filter(Boolean);
+	// A header's value is sent only when typed; blank keeps the stored one.
+	const deployBody = (d: DeployForm) => ({ name: d.name, command: d.command, hosts: split(d.hostsText), auth: d.auth.map((a) => ({ host: a.host, header: a.header, ...(a.value ? { value: a.value } : {}) })) });
+	function addDeploy() {
+		form!.deploys.push({ name: "", command: "", hostsText: "", auth: [] });
 	}
 	async function removeKey() {
 		try {
@@ -74,6 +87,7 @@
 	{repo}
 	openTasks={rd.data?.tasks.filter((t) => t.status !== "completed").length}
 	activeAgents={rd.data?.agents.filter((a) => a.status === "running").length}
+	runningDeploys={rd.data?.deploys.filter((d) => d.status === "running").length}
 >
 	<div class="page">
 		<h1>Settings</h1>
@@ -114,6 +128,40 @@
 						<input id="pushes" type="number" min="1" max="20" bind:value={form.maxAgentPushes} />
 						<p class="hint">Each failure starts an agent to fix it. After the last, a person takes over the fork.</p>
 					</div>
+				</section>
+
+				<section>
+					<h2>Deployments</h2>
+					<p class="hint">Run by hand from the Deploy tab, on a bubble's code, in a fresh sandbox that can reach only the git server and the hosts listed. A header's value is added to requests to its host outside the sandbox, so the command never sees it.</p>
+					{#each form.deploys as d, i (i)}
+						<fieldset class="deploy">
+							<div class="field">
+								<label for="dep-name-{i}">Name</label>
+								<input id="dep-name-{i}" bind:value={d.name} required pattern={"[\\w-]{1,40}"} placeholder="production" />
+							</div>
+							<div class="field">
+								<label for="dep-cmd-{i}">Command</label>
+								<input id="dep-cmd-{i}" class="mono" bind:value={d.command} required placeholder="npm ci && npx wrangler deploy" />
+							</div>
+							<div class="field">
+								<label for="dep-hosts-{i}">Hosts it may reach</label>
+								<input id="dep-hosts-{i}" class="mono" bind:value={d.hostsText} placeholder="registry.npmjs.org, api.cloudflare.com" />
+							</div>
+							{#each d.auth as a, j (j)}
+								<div class="row">
+									<input aria-label="Host" class="mono" bind:value={a.host} placeholder="api.cloudflare.com" />
+									<input aria-label="Header" class="mono" bind:value={a.header} placeholder="Authorization" />
+									<input aria-label="Value" type="password" autocomplete="off" bind:value={a.value} placeholder={a.hasValue ? "Set. Type to replace" : "Value"} />
+									<button type="button" onclick={() => d.auth.splice(j, 1)}>Remove</button>
+								</div>
+							{/each}
+							<div class="row">
+								<button type="button" onclick={() => d.auth.push({ host: "", header: "", value: "", hasValue: false })}>Add a credential header</button>
+								<button type="button" class="quiet" onclick={() => form!.deploys.splice(i, 1)}>Remove deployment</button>
+							</div>
+						</fieldset>
+					{/each}
+					<button type="button" onclick={addDeploy}>Add a deployment</button>
 				</section>
 
 				<section>
@@ -180,6 +228,8 @@
 	.check + .hint { margin: -0.2rem 0 0.75rem 1.6rem; }
 	.row { display: flex; gap: 0.5rem; }
 	.row input { flex: 1; min-width: 0; }
+	.deploy { border: 1px solid var(--line); border-radius: var(--r-md); padding: 0.75rem 1rem; margin-bottom: 0.75rem; }
+	.deploy .row { margin-bottom: 0.5rem; flex-wrap: wrap; }
 	form > button { margin-top: 1rem; }
 	.danger-zone { margin-top: 2.5rem; }
 	.danger-zone p { margin-bottom: 0.75rem; }

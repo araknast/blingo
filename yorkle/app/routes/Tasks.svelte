@@ -130,6 +130,7 @@
 	{repo}
 	openTasks={open}
 	activeAgents={data?.agents.filter((a) => a.status === "running").length}
+	runningDeploys={data?.deploys.filter((d) => d.status === "running").length}
 >
 	<div class="page">
 		{#if missing}
