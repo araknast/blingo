@@ -77,3 +77,23 @@ of generating code itself, it waits for a git push. Once it receives this, it
 shuts down the git sever and places the fork in a bubble in the same way an
 agent would.
 
+
+## patch queues
+a fork never pushes to a bubble. when it is placed, it sends its commits as a
+patch series (git format-patch, the git send-email format) to its bubble, where
+it joins the bubble's patch queue. each bubble's own sandbox applies its queue
+to the representative and is the only thing that ever writes it.
+
+## loose forks and CI
+a fork that has been pushed to but not placed is a loose fork. a notagent's
+fork stays loose until it is placed: at once, or only on request when the
+repository turns automatic placement off. with CI on, every push to a loose
+fork runs the repository's CI (a command, and automatic and/or manual review),
+and a fork is never placed until it passes. when an agent's fork fails, a new
+agent tries to fix it on the same fork, until the repository's push limit
+hands the fork to a person.
+
+## ferge bubbles
+the locked bubble a ferge creates is a ferge bubble. a fork made from it can
+only be placed back into it; unlocking it lets it merge back. a repository can
+have a ferge agent fix the conflict markers.
