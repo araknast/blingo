@@ -1,6 +1,5 @@
 import { invalidSignup, type Signup } from "./auth";
 import { authRemote } from "./box";
-import { pushOf } from "./events";
 import { diffTrees, resolvePath } from "./git";
 import { friendlyName, nameText, repoName } from "./names";
 import { shortTitle } from "./tasks";
@@ -53,14 +52,6 @@ export default {
 				return Response.json({ error: "storage busy, retry" }, { status: 503, headers: { "retry-after": "2" } });
 			}
 			throw e;
-		}
-	},
-	// Artifacts pushed events (src/events.ts): a push to a loose fork.
-	async queue(batch, env) {
-		for (const m of batch.messages) {
-			const p = pushOf(m.body);
-			if (p) await env.REPO.getByName(p.repo).onPushed(p.fork, p.head);
-			m.ack();
 		}
 	},
 } satisfies ExportedHandler<Env>;

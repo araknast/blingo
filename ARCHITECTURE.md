@@ -43,7 +43,7 @@ browser ──► yorkle Worker ──(service binding)──► blingo Worker �
 | `conflict(k)` | `"a|b"` bubble pairs whose merge failed; never retried (except by a ferge). When a bubble is absorbed, its pairs move to the bubble that absorbed it |
 | `locked(id)` | locked bubbles: placeable, but excluded from neighbour merges |
 | `hidden(id, since)` | lease for a bubble hidden by a running merge or ferge (see Merge loop) |
-| `loose(fork, base, head, token, expires, pushes, placing, sub, reason, kind, ci, ci_log, review_auto, review_manual, review_note, agent_pushes)` | forks not placed yet (a notagent's, or with CI on an agent's): `base` = where it started, `head` = last seen, `token` = live push token id (NULL once revoked or expired), `placing`, `sub` = its pushed-event subscription (NULL = polled), `reason` = why it isn't placed. CI results are for `head`: `ci` running/passed/failed and its log tail, each review pending/approved/rejected (NULL = not required) and their comments; `agent_pushes` counts an agent's attempts. Replaces `watch`/`pushed` (emptied into it on startup) |
+| `loose(fork, base, head, token, expires, pushes, placing, sub, reason, kind, ci, ci_log, review_auto, review_manual, review_note, agent_pushes)` | forks not placed yet (a notagent's, or with CI on an agent's): `base` = where it started, `head` = last seen, `token` = live push token id (NULL once revoked or expired), `placing`, `reason` = why it isn't placed. CI results are for `head`: `ci` running/passed/failed and its log tail, each review pending/approved/rejected (NULL = not required) and their comments; `agent_pushes` counts an agent's attempts. Replaces `watch`/`pushed` (emptied into it on startup). Some rows have an unused `sub` column |
 | `agent_run(fork, prompt, started, status, finished, log)` | agent and superagent runs (`-s-` ids), kept after they finish |
 | `task(id, title, description, kind, status, bubble, fork, base_head, explanation, superagent, created, finished)` | tasks: a short `title` (≤ 60 chars); `kind` agent / notagent; `status` open / in-progress / completed / failed; `bubble` = where it should start, then where it did. Listed in `rowid` (creation) order. `title` was added in place: objects from before it get the column and titles from their descriptions on startup |
 | `task_dep(task, dep)` | task dependencies |
@@ -150,11 +150,10 @@ there's no new egress and no API access from the sandbox. Humans manage memory t
 `POST /repos/:r/memory {text}` and `DELETE /repos/:r/memory/:id`.
 
 **Notagent: loose forks.** `POST /notagents` (or taking a human task) forks, mints a 1-hour write
-token, and records a **loose** fork: pushed to, or waiting to be, and not placed. A push is noticed
-from its Artifacts `pushed` event (`src/events.ts`: the `blingo-events` queue → `RepoDO.onPushed`)
-when the fork has a subscription, else by the alarm reading its head every 5 s. Subscriptions are per
-repo only, need the optional `CF_API_TOKEN` secret, and take up to about a minute to go live, so
-each fork's head is also read once when its token expires. With the repo setting
+token, and records a **loose** fork: pushed to, or waiting to be, and not placed. The alarm notices a
+push by reading each pushable fork's head every 5 s (Artifacts `pushed` events would need a
+subscription per repo, which takes up to a minute to go live, so a quick first push would be missed).
+With the repo setting
 `autoPlaceNotagents` (default on), a push revokes the token and starts placement. With it off, the
 fork stays loose and takes more pushes (counted) until `POST /repos/:r/forks/:fork/place`. Placing:
 the repository's git Box (`git-<id>`) clones the fork and takes its patch series from where it
@@ -258,8 +257,7 @@ Marked with `ponytail:` comments in the code.
   commits, so a notagent fork with merges in its history isn't placed.
 - Placement is conservative where a fork's basis bubble has since absorbed others: the basis's
   current files stand in for what they were.
-- Without `CF_API_TOKEN`, loose forks are polled (5 s); several pushes within one window count as
-  one. With it, one event subscription per loose fork.
+- Loose forks are polled every 5 s; several pushes within one window count as one.
 - Bubble rules are by file path only; semantic conflicts surface at merge or not at all.
 - Agent runs are listed per repository; there is no cross-repository list.
 - A dependent task waits indefinitely while its dependencies sit in conflicting bubbles (until a

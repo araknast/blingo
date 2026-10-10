@@ -6,10 +6,7 @@
 	"compatibility_flags": ["nodejs_compat"],
 	"observability": { "enabled": true },
 	"upload_source_maps": true,
-	"vars": { "MODEL": "claude-opus-5-5", "ADMIN_USERNAME": "araknast", "EMAIL_FROM": "noreply@blingo.breakdance.cc", "DOMAIN": "blingo.breakdance.cc", "CF_ACCOUNT_ID": "236c16af0e62bdaef95fe8c14cb213fe", "EVENTS_QUEUE_ID": "ddb5742ebba34e82bb030dbe3fba3166" },
-	// Artifacts `pushed` events for loose forks (src/events.ts); subscriptions also need the optional
-	// CF_API_TOKEN secret, else loose forks are polled.
-	"queues": { "consumers": [{ "queue": "blingo-events", "max_batch_size": 20, "max_batch_timeout": 1 }] },
+	"vars": { "MODEL": "claude-opus-5-5", "ADMIN_USERNAME": "araknast", "EMAIL_FROM": "noreply@blingo.breakdance.cc", "DOMAIN": "blingo.breakdance.cc" },
 	// Verification mail; the sender domain must be onboarded to Cloudflare Email Sending.
 	"send_email": [{ "name": "EMAIL" }],
 	// BLINGO_TOKEN guards the API (it mints git tokens); ANTHROPIC_API_KEY never enters the sandbox.

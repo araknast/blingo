@@ -25,12 +25,7 @@ npm workspaces: run `npm install` once at the root.
    openssl rand -hex 32                     # your API token; keep it
    npx wrangler secret put BLINGO_TOKEN
    npx wrangler secret put ANTHROPIC_API_KEY
-   npx wrangler secret put CF_API_TOKEN       # optional: push events instead of polling (below)
    ```
-   `CF_API_TOKEN` is an account API token with Queues Edit (the event-subscription endpoints accept it)
-   and Artifacts Read (for subscriptions on Artifacts repos). With it, each notagent
-   fork subscribes the `blingo-events` queue (`npx wrangler queues create blingo-events`; its id is
-   `EVENTS_QUEUE_ID` in `backend/wrangler.jsonc`) to its pushes.
 4. Verification email: onboard the sender domain to Cloudflare Email Sending
    (`npx wrangler email sending enable blingo.breakdance.cc`). The sender (`EMAIL_FROM`) and the
    admin's username (`ADMIN_USERNAME`) are vars in `backend/wrangler.jsonc`.

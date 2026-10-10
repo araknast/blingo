@@ -1,7 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { authRemote, forkRepo, headOf } from "./box";
 import { getAgentByName } from "agents";
-import { subscribePushes, unsubscribe } from "./events";
 import { MERGES, PATCH_SH, readSeries } from "./git-scripts";
 import { conflictKey, nearestNeighbour, placeFork, renameConflicts, type Basis, type Bubble } from "./bubbles";
 import { fergeName, friendlyName, nameText, type Name } from "./names";
@@ -21,8 +20,8 @@ const MAX_SERIES = 1_500_000;
 type Fork = { name: string; bubble: string; status: "rep" | "pending" | "merged" | "conflict" | "failed"; files: string; seq: number | null };
 // A fork pushed to (or waiting for its first push) and not placed yet: a notagent's, or, with CI on,
 // an agent's. `base`: the commit it started from; `head`: its head when last seen; `token`: the id of
-// its live push token (NULL once revoked or expired); `placing`: its placement is running; `sub`: its
-// pushed-event subscription (NULL = polled); `reason`: why it isn't placed. CI results are for `head`:
+// its live push token (NULL once revoked or expired); `placing`: its placement is running; `reason`:
+// why it isn't placed. (Rows may have an unused `sub` column, from push-event subscriptions.) CI results are for `head`:
 // `ci` running / passed / failed with its log tail, each review pending / approved / rejected (NULL =
 // not required) and their comments in `review_note`; `agent_pushes` counts an agent's attempts.
 type Loose = {
@@ -33,7 +32,6 @@ type Loose = {
 	expires: number;
 	pushes: number;
 	placing: number;
-	sub: string | null;
 	reason: string | null;
 	kind: "agent" | "notagent";
 	ci: string | null;
@@ -338,15 +336,7 @@ export class RepoDO extends DurableObject<Env> {
 			const base = await headOf(this.env, fork);
 			const { url: authed, remote, token } = await authRemote(this.env, fork, "write", 3600);
 			this.sql.exec("UPDATE task SET fork = ?, base_head = ? WHERE id = ?", fork, base, id);
-			this.sql.exec(
-				"INSERT INTO loose (fork, base, head, token, expires, sub) VALUES (?, ?, ?, ?, ?, ?)",
-				fork,
-				base,
-				base,
-				token.id,
-				Date.parse(token.expiresAt),
-				await subscribePushes(this.env, fork),
-			);
+			this.sql.exec("INSERT INTO loose (fork, base, head, token, expires) VALUES (?, ?, ?, ?, ?)", fork, base, base, token.id, Date.parse(token.expiresAt));
 			await this.kick();
 			return { repo, task: id, fork, remote, token: token.plaintext, clone: `git clone ${authed} ${fork}`, push: `git push ${authed} HEAD:main` };
 		} catch (e) {
@@ -608,7 +598,6 @@ export class RepoDO extends DurableObject<Env> {
 			}
 		}
 		await Promise.all(bubbles.map((id) => this.bubbleBox(id).stop()));
-		await Promise.all(this.sql.exec<{ sub: string | null }>("SELECT sub FROM loose").toArray().map((r) => unsubscribe(this.env, r.sub)));
 		await this.ctx.storage.deleteAlarm();
 		this.sql.exec(
 			"DELETE FROM bubble; DELETE FROM fork; DELETE FROM conflict; DELETE FROM locked; DELETE FROM hidden; DELETE FROM loose; DELETE FROM agent_run; DELETE FROM task; DELETE FROM task_dep; DELETE FROM memory; DELETE FROM owed; DELETE FROM basis; DELETE FROM renamed; DELETE FROM merging;",
@@ -676,20 +665,14 @@ export class RepoDO extends DurableObject<Env> {
 		return this.sql.exec<Loose>("SELECT * FROM loose WHERE fork = ?", fork).toArray()[0];
 	}
 
-	// When the alarm must look at loose forks again: a fork being placed now; a fork without a push
-	// subscription every POLL_MS; else the next push token to expire. null = nothing to look at.
+	// When the alarm must look at loose forks again: a fork being placed now; a fork that can still be
+	// pushed to every POLL_MS. null = nothing to look at.
 	private nextLooseCheck(): number | null {
-		const r = this.sql
-			.exec<{ placing: number; polled: number; expires: number | null }>(
-				"SELECT MAX(placing) AS placing, MAX(token IS NOT NULL AND sub IS NULL) AS polled, MIN(CASE WHEN token IS NOT NULL THEN expires END) AS expires FROM loose",
-			)
-			.one();
-		if (r.placing) return Date.now() + 1_000;
-		if (r.polled) return Date.now() + POLL_MS;
-		return r.expires === null ? null : Math.max(r.expires, Date.now()) + 1_000;
+		const r = this.sql.exec<{ placing: number; polled: number }>("SELECT MAX(placing) AS placing, MAX(token IS NOT NULL) AS polled FROM loose").one();
+		return r.placing ? Date.now() + 1_000 : r.polled ? Date.now() + POLL_MS : null;
 	}
 
-	// A push to loose notagent fork `fork` reached `head` (from its pushed event, or seen by checkLoose).
+	// A push to loose notagent fork `fork` reached `head` (seen by checkLoose).
 	async onPushed(fork: string, head: string) {
 		const l = this.loose(fork);
 		if (!l || l.placing || l.kind !== "notagent" || head === l.head) return;
@@ -855,17 +838,17 @@ export class RepoDO extends DurableObject<Env> {
 		return { repo: this.ctx.storage.kv.get<string>("repo"), fork, remote, token: token.plaintext, clone: `git clone ${authed} ${fork}`, push: `git push ${authed} HEAD:main` };
 	}
 
-	// Loose forks with a live token: polled ones are checked for a push; any whose token expired is
-	// checked once (a push may have come before its subscription was live). An expired fork with no
-	// push is deleted and its task reopened; one with pushes stays loose. Then every fork marked
-	// placing is placed, in parallel: the repo's git Box turns it into its patch series and place()
-	// queues it. A failed placement leaves it loose with the reason; infra errors are retried.
-	// ponytail: without CF_API_TOKEN, polling: pushes inside one 5 s window count as one.
+	// Loose forks with a live token are polled for a push. Once a token expires, a fork with no push is
+	// deleted and its task reopened; one with pushes stays loose. Then every fork marked placing is
+	// placed, in parallel: the repo's git Box turns it into its patch series and place() queues it. A
+	// failed placement leaves it loose with the reason; infra errors are retried.
+	// ponytail: polling (Artifacts push subscriptions take up to a minute to go live); pushes inside
+	// one 5 s window count as one.
 	private async checkLoose() {
 		const now = Date.now();
 		await Promise.all(
 			this.sql
-				.exec<Loose>("SELECT * FROM loose WHERE placing = 0 AND token IS NOT NULL AND (sub IS NULL OR expires < ?)", now)
+				.exec<Loose>("SELECT * FROM loose WHERE placing = 0 AND token IS NOT NULL")
 				.toArray()
 				.map(async (l) => {
 					const head = await headOf(this.env, l.fork);
@@ -876,7 +859,6 @@ export class RepoDO extends DurableObject<Env> {
 					this.sql.exec("DELETE FROM loose WHERE fork = ?", l.fork);
 					this.sql.exec("DELETE FROM basis WHERE fork = ?", l.fork);
 					this.sql.exec("UPDATE task SET status = 'open', fork = NULL, base_head = NULL WHERE fork = ? AND status = 'in-progress'", l.fork);
-					await unsubscribe(this.env, l.sub);
 					await this.env.ARTIFACTS.delete(l.fork);
 				}),
 		);
@@ -897,7 +879,6 @@ export class RepoDO extends DurableObject<Env> {
 						return;
 					}
 					this.sql.exec("DELETE FROM loose WHERE fork = ?", l.fork);
-					await unsubscribe(this.env, l.sub);
 				}),
 		);
 		const failed = results.find((r) => r.status === "rejected");

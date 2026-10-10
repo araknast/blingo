@@ -18,7 +18,7 @@ api -X POST --json '{"description":"base"}' $U/notagents > x0.json; R=$(j x0.jso
 push x0.json r0 'echo a > a.txt' >/dev/null || fail "base push"
 until_ "$(member $A) == ['rep']" "base placed (auto-placement is on by default)"; ok "auto-placed base"
 
-[ "$(api -X PUT --json '{"autoPlaceNotagents":false}' $U/repos/$R/settings)" = '{"autoPlaceNotagents":false}' ] || fail "settings"
+api -X PUT --json '{"autoPlaceNotagents":false}' $U/repos/$R/settings | grep -q '"autoPlaceNotagents":false' || fail "settings"
 ok "auto-placement off"
 
 api -X POST --json "{\"repo\":\"$R\",\"bubble\":\"$A\",\"description\":\"two pushes\"}" $U/notagents > x1.json; F1=$(j x1.json fork)
