@@ -6,8 +6,9 @@ show() { api $U/repos/$R | python3 -c "
 import json,sys;d=json.load(sys.stdin)
 for b in d['bubbles']: print('  bubble',b['id'][-8:],'LOCKED' if b['locked'] else '','' if b['visible'] else 'HIDDEN',[(m['name'][-8:],m['status'],m['files']) for m in b['members']])
 print('  conflicts',[[x[-8:] for x in c] for c in d['conflicts']],'waiting',len(d['waiting']))"; }
-# settled = nothing waiting for a push, nothing pending, unchanged across two reads 10s apart
-settle() { local prev= r; for i in $(seq 1 36); do r=$(api $U/repos/$R); if echo "$r" | grep -q '"waiting":\[\]' && ! echo "$r" | grep -q '"pending"' && [ "$r" = "$prev" ]; then return; fi; prev=$r; sleep 10; done; echo "  (did not settle)"; }
+# settled = nothing pending, unchanged across two reads 10s apart (a fork made but not pushed yet may
+# be waiting meanwhile)
+settle() { local prev= r; for i in $(seq 1 36); do r=$(api $U/repos/$R); if ! echo "$r" | grep -q '"pending"' && [ "$r" = "$prev" ]; then return; fi; prev=$r; sleep 10; done; echo "  (did not settle)"; }
 file() { api "$U/repos/$R/$1?path=$2"; }
 notagent() { api -X POST --json "$1" $U/notagents; }
 notagent '{"description":"base a.txt"}' > x0.json; R=$(j x0.json repo); A=$(j x0.json fork); echo "repo $R  A=${A: -8}"

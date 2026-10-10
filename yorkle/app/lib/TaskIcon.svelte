@@ -1,9 +1,9 @@
 <script lang="ts">
-	// Issue-tracker status mark: open ○, in progress (pulsing), completed ✓, failed ✕.
+	// Issue-tracker status mark: awaiting approval (dashed), open ○, in progress (pulsing), completed ✓, failed ✕.
 	import type { TaskStatus } from "./types";
 
 	let { status }: { status: TaskStatus } = $props();
-	const label = $derived({ open: "Open", "in-progress": "In progress", completed: "Completed", failed: "Failed" }[status]);
+	const label = $derived({ "awaiting-approval": "Awaiting approval", open: "Open", "in-progress": "In progress", completed: "Completed", failed: "Failed" }[status]);
 </script>
 
 <span class="icon {status}" class:pulse={status === "in-progress"} role="img" aria-label={label} title={label}>
@@ -24,6 +24,7 @@
 		line-height: 1;
 	}
 	.open { box-shadow: inset 0 0 0 2px var(--merged); }
+	.awaiting-approval { border: 2px dashed var(--ink-3); }
 	.in-progress { background: var(--working); }
 	.completed { background: var(--merged); }
 	.failed { background: var(--conflict); }

@@ -45,6 +45,25 @@
 			toastError(e);
 		}
 	}
+	async function approve(t: string) {
+		try {
+			await api("POST", `/repos/${repo}/tasks/${t}/approve`);
+			toast("Task approved");
+			refresh();
+		} catch (e) {
+			toastError(e);
+		}
+	}
+	async function editTask(t: string, title: string, description: string) {
+		try {
+			await api("PATCH", `/repos/${repo}/tasks/${t}`, { title, description });
+			await refresh();
+			return true;
+		} catch (e) {
+			toastError(e);
+			return false;
+		}
+	}
 	async function retry(t: string) {
 		try {
 			await api("POST", `/repos/${repo}/tasks/${t}/retry`);
@@ -105,7 +124,7 @@
 			<p class="muted">Loading…</p>
 		{:else if id}
 			{#if task}
-				<TaskView {task} {data} {href} {repo} ontake={take} onretry={retry} />
+				<TaskView {task} {data} {href} {repo} ontake={take} onretry={retry} onapprove={approve} onedit={editTask} />
 			{:else}
 				<h1>No such task</h1>
 				<p class="muted"><a href="/repos/{repo}/tasks">Back to the tasks</a></p>

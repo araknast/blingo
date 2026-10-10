@@ -1,7 +1,8 @@
 // Pure task rules (tasktracker.md). No I/O: RepoDO loads rows, asks these, writes results.
 
 export type TaskKind = "agent" | "notagent";
-export type TaskStatus = "open" | "in-progress" | "completed" | "failed";
+// awaiting-approval: filed while the repository approves tasks by hand; it starts once approved.
+export type TaskStatus = "awaiting-approval" | "open" | "in-progress" | "completed" | "failed";
 // `bubble`: where an open task without deps should start (null = any); once started, where it did.
 export type TaskState = { id: string; status: TaskStatus; bubble: string | null; fork: string | null; deps: string[] };
 export type ForkState = { name: string; bubble: string; status: string };

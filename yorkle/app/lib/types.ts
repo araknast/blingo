@@ -7,7 +7,7 @@ export type MemberStatus = "rep" | "pending" | "merged" | "conflict" | "failed";
 export type Member = { name: string; bubble: string; status: MemberStatus; files: string[] };
 export type Bubble = { id: string; visible: number | boolean; locked: boolean; members: Member[] };
 export type AgentRun = { fork: string; prompt: string; started: number; status: string; finished: number | null; log: string | null };
-export type TaskStatus = "open" | "in-progress" | "completed" | "failed";
+export type TaskStatus = "awaiting-approval" | "open" | "in-progress" | "completed" | "failed";
 export type Task = {
 	id: string;
 	title: string;

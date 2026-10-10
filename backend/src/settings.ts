@@ -15,6 +15,10 @@ export type Settings = {
 	// Worker's MODEL). The key itself is stored apart and never returned.
 	provider: Provider;
 	models: { agent: string; superagent: string; ferge: string };
+	// A ferge also files an agent task (model `models.ferge`) to resolve its conflict markers.
+	fergeAgents: boolean;
+	// New tasks wait for a person to approve them (and may be edited until then).
+	taskApproval: boolean;
 };
 export type Provider = "anthropic" | "openrouter";
 export type Role = keyof Settings["models"];
@@ -26,6 +30,8 @@ export const DEFAULTS: Settings = {
 	maxAgentPushes: 3,
 	provider: "anthropic",
 	models: { agent: "", superagent: "", ferge: "" },
+	fergeAgents: false,
+	taskApproval: false,
 };
 
 // Applies a settings update from the API to `current`; returns the new settings or what's wrong.
@@ -45,9 +51,10 @@ export function updateSettings(current: Settings, body: unknown): Settings | { e
 			next.models[role] = m[role] as string;
 		}
 	}
-	if (b.autoPlaceNotagents !== undefined) {
-		if (typeof b.autoPlaceNotagents !== "boolean") return { error: "autoPlaceNotagents must be true or false" };
-		next.autoPlaceNotagents = b.autoPlaceNotagents;
+	for (const k of ["autoPlaceNotagents", "fergeAgents", "taskApproval"] as const) {
+		if (b[k] === undefined) continue;
+		if (typeof b[k] !== "boolean") return { error: `${k} must be true or false` };
+		next[k] = b[k];
 	}
 	if (b.review !== undefined) {
 		if (!["none", "auto", "manual", "both"].includes(b.review as string)) return { error: "review must be none, auto, manual or both" };

@@ -19,6 +19,10 @@ export class UsersDO extends DurableObject<Env> {
 			CREATE TABLE IF NOT EXISTS session(token TEXT PRIMARY KEY, name TEXT NOT NULL, expires INTEGER NOT NULL);
 			CREATE TABLE IF NOT EXISTS repo(name TEXT PRIMARY KEY, owner TEXT NOT NULL);
 		`);
+		// Repositories' display names (`name` is the r-xxxxxxxx id), added in place.
+		if (!this.sql.exec("SELECT 1 FROM pragma_table_info('repo') WHERE name = 'title'").toArray().length) {
+			this.sql.exec("ALTER TABLE repo ADD COLUMN title TEXT NOT NULL DEFAULT ''");
+		}
 	}
 
 	private one<T extends Record<string, SqlStorageValue>>(q: string, ...args: SqlStorageValue[]): T | undefined {
@@ -85,8 +89,8 @@ export class UsersDO extends DurableObject<Env> {
 		return code;
 	}
 
-	own(repo: string, owner: string) {
-		this.sql.exec("INSERT INTO repo (name, owner) VALUES (?, ?)", repo, owner);
+	own(repo: string, owner: string, title = "") {
+		this.sql.exec("INSERT INTO repo (name, owner, title) VALUES (?, ?, ?)", repo, owner, title);
 	}
 
 	ownerOf(repo: string): string | null {
@@ -95,6 +99,12 @@ export class UsersDO extends DurableObject<Env> {
 
 	reposOf(owner: string): string[] {
 		return this.sql.exec<{ name: string }>("SELECT name FROM repo WHERE owner = ? ORDER BY name", owner).toArray().map((r) => r.name);
+	}
+
+	// Display names of `owner`'s repositories (id → name; ones from before names have none).
+	titlesOf(owner: string): Record<string, string> {
+		const rows = this.sql.exec<{ name: string; title: string }>("SELECT name, title FROM repo WHERE owner = ? AND title != ''", owner).toArray();
+		return Object.fromEntries(rows.map((r) => [r.name, r.title]));
 	}
 
 	disown(repo: string) {

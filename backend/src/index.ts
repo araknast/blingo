@@ -2,6 +2,7 @@ import { invalidSignup, type Signup } from "./auth";
 import { authRemote } from "./box";
 import { pushOf } from "./events";
 import { diffTrees, resolvePath } from "./git";
+import { friendlyName, nameText, repoName } from "./names";
 import { shortTitle } from "./tasks";
 
 export { Box, Outbound } from "./box";
@@ -11,7 +12,7 @@ export { UsersDO } from "./users-do";
 
 const id = () => crypto.randomUUID().slice(0, 8);
 
-type Body = { prompt?: string; title?: string; description?: string; repo?: string; bubble?: string };
+type Body = { prompt?: string; title?: string; description?: string; repo?: string; bubble?: string; name?: string };
 type Auth = { user: string; admin: boolean };
 
 const users = (env: Env) => env.USERS.getByName("users");
@@ -25,17 +26,20 @@ async function canUse(env: Env, auth: Auth, repo: string) {
 // Where new work starts. No repo → brand-new repository (design: "a new repository is created").
 // bubble null = any bubble (the base repo only while the repository has none).
 async function source(env: Env, auth: Auth, b: Body): Promise<{ repo: string; bubble: string | null } | Response> {
-	if (!b.repo) return { repo: await createRepo(env, auth), bubble: null };
+	if (!b.repo) return { repo: await createRepo(env, auth, repoName(b.name) ?? repoName(b.title)), bubble: null };
 	if (!(await canUse(env, auth, b.repo))) return noRepo();
 	if (!b.bubble) return { repo: b.repo, bubble: null };
 	const rep = await env.REPO.getByName(b.repo).repOf(b.bubble);
 	return rep ? { repo: b.repo, bubble: rep } : Response.json({ error: "no such bubble" }, { status: 404 });
 }
 
-async function createRepo(env: Env, auth: Auth) {
+// `name`: its display name (a friendly "adjective noun" if none); its first bubble is called after it.
+async function createRepo(env: Env, auth: Auth, name: string | null = null) {
 	const repo = `r-${id()}`;
+	const title = name ?? nameText(friendlyName());
 	await env.ARTIFACTS.create(repo, { setDefaultBranch: "main" });
-	await users(env).own(repo, auth.user);
+	await users(env).own(repo, auth.user, title);
+	await env.REPO.getByName(repo).setName(title);
 	return repo;
 }
 
@@ -125,7 +129,8 @@ async function handle(request: Request, env: Env): Promise<Response> {
 	if (!auth) return Response.json({ error: "unauthorized" }, { status: 401 });
 
 	if (request.method === "GET" && a === "me" && !b) {
-		return Response.json({ username: auth.user, admin: auth.admin, repos: await users(env).reposOf(auth.user) });
+		const u = users(env);
+		return Response.json({ username: auth.user, admin: auth.admin, repos: await u.reposOf(auth.user), names: await u.titlesOf(auth.user) });
 	}
 	if (request.method === "POST" && a === "logout" && !b) {
 		await users(env).logout(request.headers.get("authorization")!.slice("Bearer ".length));
@@ -153,6 +158,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
 		const added = await repoDO.addTasks(src.repo, [{ title, description, kind, deps: [], bubble: src.bubble }]);
 		if ("error" in added) return Response.json(added, { status: 400 });
 		const [task] = added.ids;
+		if ((await repoDO.task(task))?.status === "awaiting-approval") return Response.json({ repo: src.repo, task, awaitingApproval: true }, { status: 202 });
 		if (a === "notagents") {
 			const r = await repoDO.takeTask(task);
 			return "error" in r ? Response.json(r, { status: 409 }) : Response.json(r, { status: 201 });
@@ -180,7 +186,9 @@ async function handle(request: Request, env: Env): Promise<Response> {
 	}
 
 	if (request.method === "POST" && a === "repos" && !b) {
-		return Response.json({ repo: await createRepo(env, auth) }, { status: 201 });
+		const body = (await request.json().catch(() => ({}))) as Body;
+		if (body.name !== undefined && !repoName(body.name)) return Response.json({ error: "name must be 1 to 60 characters" }, { status: 400 });
+		return Response.json({ repo: await createRepo(env, auth, repoName(body.name)) }, { status: 201 });
 	}
 	// Code browser: tree, log, commit and blob reads of a fork (or of the bubble a merged fork joined).
 	if (request.method === "GET" && a === "repos" && b && c && d) {
@@ -240,6 +248,18 @@ async function handle(request: Request, env: Env): Promise<Response> {
 		if (t.bubble && !(await repoDO.repOf(t.bubble))) return Response.json({ error: "no such bubble" }, { status: 404 });
 		const added = await repoDO.addTasks(b, [{ title, description: description || title, kind: t.kind, deps, bubble: t.bubble ?? null }]);
 		return "error" in added ? Response.json(added, { status: 400 }) : Response.json({ task: added.ids[0] }, { status: 201 });
+	}
+	if (request.method === "PATCH" && a === "repos" && b && c === "tasks" && d && !e) {
+		const t = (await request.json()) as { title?: unknown; description?: unknown };
+		if (t.title !== undefined && (typeof t.title !== "string" || !t.title.trim())) return Response.json({ error: "title must be a non-empty string" }, { status: 400 });
+		if (t.description !== undefined && typeof t.description !== "string") return Response.json({ error: "description must be a string" }, { status: 400 });
+		const r = await env.REPO.getByName(b).editTask(d, t.title === undefined ? undefined : shortTitle(t.title as string), (t.description as string | undefined)?.trim());
+		return "error" in r ? Response.json(r, { status: 409 }) : Response.json({ task: d });
+	}
+	if (request.method === "POST" && a === "repos" && b && c === "tasks" && d && e === "approve") {
+		return (await env.REPO.getByName(b).approveTask(d))
+			? Response.json({ task: d })
+			: Response.json({ error: "that task isn't awaiting approval" }, { status: 409 });
 	}
 	if (request.method === "POST" && a === "repos" && b && c === "tasks" && d && (e === "take" || e === "retry")) {
 		const repoDO = env.REPO.getByName(b);

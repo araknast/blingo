@@ -38,6 +38,10 @@ test("a dependent task waits until one bubble holds every dep fully merged", () 
 	expect(ready([t("d1", "in-progress", [], "f1"), t("x", "open", ["d1"])], [f("f1", "A", "merged")], vis("A"), [], "A").has("x")).toBe(false);
 });
 
+test("a task awaiting approval never starts", () => {
+	expect(ready([t("a", "awaiting-approval")], [], vis("A"), [], "A").size).toBe(0);
+});
+
 test("ferge debt is paid when the locked bubble reaches the bubble it owes, either way", () => {
 	const owed = [{ locked: "L", into: "A" }];
 	expect(renameOwed(owed, "L", "A")).toEqual([]); // L absorbed into A

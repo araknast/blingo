@@ -4,6 +4,7 @@ import { getAgentByName } from "agents";
 import { subscribePushes, unsubscribe } from "./events";
 import { MERGES, PATCH_SH, readSeries } from "./git-scripts";
 import { conflictKey, nearestNeighbour, placeFork, renameConflicts, type Basis, type Bubble } from "./bubbles";
+import { fergeName, friendlyName, nameText, type Name } from "./names";
 import { DEFAULTS, gate, updateSettings, type Provider, type Role, type Settings } from "./settings";
 import { explanation, fixPrompt, ready, renameOwed, shortTitle, type Owed, type PlanItem, type TaskState } from "./tasks";
 
@@ -53,9 +54,10 @@ type TaskRow = TaskState & {
 	superagent: string | null;
 	created: number;
 	finished: number | null;
+	role: Role | null; // which model its agent uses (NULL = agent)
 };
 // A task to add: a superagent's plan item (deps by key within the batch), or one from the API.
-export type NewTask = Omit<PlanItem, "key"> & { key?: string; bubble?: string | null };
+export type NewTask = Omit<PlanItem, "key"> & { key?: string; bubble?: string | null; role?: Role };
 
 // One per blingo repository: placement, the bubbles' patch queues and bubble merges. Each bubble's rep
 // is written only by that bubble's own Box (see Box.rep), which applies its queue and runs its merges.
@@ -104,6 +106,15 @@ export class RepoDO extends DurableObject<Env> {
 		this.addColumn("bubble", "epoch", "INTEGER NOT NULL DEFAULT 0");
 		this.addColumn("bubble", "ferge", "INTEGER NOT NULL DEFAULT 0");
 		this.addColumn("fork", "seq", "INTEGER");
+		// Bubble names (names.ts): the first bubble is called after the repository, ferge bubbles after
+		// the two they came from, the rest get a friendly "adjective noun". Older bubbles get one now.
+		for (const c of ["name", "adj", "noun"]) this.addColumn("bubble", c, "TEXT NOT NULL DEFAULT ''");
+		for (const r of this.sql.exec<{ id: string }>("SELECT id FROM bubble WHERE noun = ''").toArray()) {
+			const n = friendlyName();
+			this.sql.exec("UPDATE bubble SET name = ?, adj = ?, noun = ? WHERE id = ?", nameText(n), n.adj, n.noun, r.id);
+			this.ctx.storage.kv.put("namedFirst", true);
+		}
+		this.addColumn("task", "role", "TEXT");
 		for (const [c, d] of [["kind", "TEXT NOT NULL DEFAULT 'notagent'"], ["ci", "TEXT"], ["ci_log", "TEXT"], ["review_auto", "TEXT"], ["review_manual", "TEXT"], ["review_note", "TEXT"], ["agent_pushes", "INTEGER NOT NULL DEFAULT 0"]]) {
 			this.addColumn("loose", c, d);
 		}
@@ -182,6 +193,18 @@ export class RepoDO extends DurableObject<Env> {
 
 	// ---- RPC ----
 
+	// The repository's display name (UsersDO keeps it too); its first bubble is called after it.
+	setName(name: string) {
+		this.ctx.storage.kv.put("name", name);
+	}
+
+	private newBubbleName(): Name {
+		if (this.ctx.storage.kv.get("namedFirst")) return friendlyName();
+		this.ctx.storage.kv.put("namedFirst", true);
+		const repo = this.ctx.storage.kv.get<string>("name");
+		return repo ? { adj: "", noun: repo } : friendlyName();
+	}
+
 	// A finished fork's patch series (its changed `files` and `git format-patch` `mbox`) joins the queue of
 	// the first bubble it applies to cleanly (placeFork), or starts a new bubble with the fork as its rep.
 	// Nothing awaits between choosing the bubble and queueing, so concurrent placements can't collide; a
@@ -212,7 +235,14 @@ export class RepoDO extends DurableObject<Env> {
 		}
 		this.sql.exec("DELETE FROM basis WHERE fork = ?", fork);
 		if (target === "new") {
-			this.sql.exec("INSERT INTO bubble (id, visible, seq) VALUES (?, 1, (SELECT COALESCE(MAX(seq), 0) + 1 FROM bubble))", fork);
+			const n = this.newBubbleName();
+			this.sql.exec(
+				"INSERT INTO bubble (id, visible, seq, name, adj, noun) VALUES (?, 1, (SELECT COALESCE(MAX(seq), 0) + 1 FROM bubble), ?, ?, ?)",
+				fork,
+				nameText(n),
+				n.adj,
+				n.noun,
+			);
 			this.sql.exec(
 				"INSERT INTO fork (name, bubble, status, files, diff, seq) VALUES (?, ?, 'rep', ?, ?, ?)",
 				fork,
@@ -247,17 +277,20 @@ export class RepoDO extends DurableObject<Env> {
 		const unknown = items.flatMap((i) => i.deps).find((d) => !dep(d));
 		if (unknown) return { error: `no such task: ${unknown}` };
 		this.ctx.storage.kv.put("repo", repo);
+		const status = this.settings().taskApproval ? "awaiting-approval" : "open";
 		items.forEach((i, n) => {
 			const id = ids.get(i.key ?? String(n))!;
 			this.sql.exec(
-				"INSERT INTO task (id, title, description, kind, bubble, superagent, created) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				"INSERT INTO task (id, title, description, kind, status, bubble, superagent, created, role) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
 				id,
 				i.title,
 				i.description,
 				i.kind,
+				status,
 				i.bubble ?? null,
 				superagent,
 				Date.now(),
+				i.role ?? null,
 			);
 			for (const d of i.deps) this.sql.exec("INSERT OR IGNORE INTO task_dep (task, dep) VALUES (?, ?)", id, dep(d));
 		});
@@ -267,6 +300,20 @@ export class RepoDO extends DurableObject<Env> {
 
 	task(id: string) {
 		return this.sql.exec<Omit<TaskRow, "deps">>("SELECT * FROM task WHERE id = ?", id).toArray()[0] ?? null;
+	}
+
+	// With task approval on: a task awaiting approval can be edited, then approved to start.
+	editTask(id: string, title: string | undefined, description: string | undefined): { ok: true } | { error: string } {
+		if (this.task(id)?.status !== "awaiting-approval") return { error: "only a task awaiting approval can be edited" };
+		if (title !== undefined) this.sql.exec("UPDATE task SET title = ? WHERE id = ?", title, id);
+		if (description !== undefined) this.sql.exec("UPDATE task SET description = ? WHERE id = ?", description, id);
+		return { ok: true };
+	}
+
+	async approveTask(id: string): Promise<boolean> {
+		const n = this.sql.exec("UPDATE task SET status = 'open' WHERE id = ? AND status = 'awaiting-approval'", id).rowsWritten;
+		if (n) await this.schedule();
+		return n > 0;
 	}
 
 	async retryTask(id: string): Promise<boolean> {
@@ -364,7 +411,7 @@ export class RepoDO extends DurableObject<Env> {
 					this.sql.exec("UPDATE task SET fork = ?, base_head = ? WHERE id = ?", fork, base, t.id);
 					const { url: remote } = await authRemote(this.env, fork, "write", 3 * 3600);
 					const prompt = `# ${t.title}\n\n${t.description}`;
-					await this.env.BOX.getByName(fork).startAgent({ repo, fork, remote, prompt, kind: "agent", memory, ...this.agentConfig("agent") });
+					await this.env.BOX.getByName(fork).startAgent({ repo, fork, remote, prompt, kind: "agent", memory, ...this.agentConfig(t.role ?? "agent") });
 					this.agentStarted(fork, t.title);
 				} catch (e) {
 					console.error(`starting task ${t.id}`, e);
@@ -423,16 +470,35 @@ export class RepoDO extends DurableObject<Env> {
 			]);
 			const r = await this.bubbleBox(a).ferge(ra.url, rb.url, rl.url);
 			if (!r) return { error: "those bubbles no longer conflict" };
+			const names = this.sql.exec<Name & { id: string }>("SELECT id, adj, noun FROM bubble WHERE id IN (?, ?)", a, b).toArray();
+			const name = fergeName(names.find((n) => n.id === a)!, names.find((n) => n.id === b)!); // before b is absorbed
 			this.absorb(a, b);
 			this.sql.exec("UPDATE fork SET status = 'merged', seq = ? WHERE name = ?", this.nextSeq(), b);
 			this.sql.exec("DELETE FROM conflict WHERE k = ?", conflictKey(a, b));
-			this.sql.exec("INSERT INTO bubble (id, visible, seq, ferge) VALUES (?, 1, (SELECT COALESCE(MAX(seq), 0) + 1 FROM bubble), 1)", l);
+			this.sql.exec(
+				"INSERT INTO bubble (id, visible, seq, ferge, name, adj, noun) VALUES (?, 1, (SELECT COALESCE(MAX(seq), 0) + 1 FROM bubble), 1, ?, '', ?)",
+				l,
+				name,
+				name,
+			);
 			this.sql.exec("INSERT INTO fork (name, bubble, status, files, seq) VALUES (?, ?, 'rep', ?, ?)", l, l, JSON.stringify(r.tree), this.nextSeq());
 			this.sql.exec("INSERT INTO locked (id) VALUES (?)", l);
 			this.sql.exec('INSERT OR IGNORE INTO owed (locked, "into") VALUES (?, ?)', l, a); // a lacks those files until l merges back
 			done = true;
 			await this.env.ARTIFACTS.delete(b);
 			await this.bubbleBox(b).stop();
+			if (this.settings().fergeAgents) {
+				await this.addTasks(repo, [
+					{
+						title: shortTitle(`Resolve the conflicts in ${name}`),
+						description: `This bubble holds files that two bubbles changed in ways git couldn't merge, with git conflict markers (<<<<<<<, =======, >>>>>>>) in them. Resolve every conflict: keep what both sides meant, remove every marker, make sure the result works, and commit.\n\nConflicting files:\n${r.files.map((f) => `- ${f}`).join("\n")}`,
+						kind: "agent",
+						deps: [],
+						bubble: l,
+						role: "ferge",
+					},
+				]);
+			}
 			return { bubble: a, locked: l, files: r.files };
 		} finally {
 			if (!done) await this.env.ARTIFACTS.delete(l).catch(() => false);
@@ -449,9 +515,13 @@ export class RepoDO extends DurableObject<Env> {
 	list() {
 		const forks = this.sql.exec<Fork>("SELECT name, bubble, status, files FROM fork").toArray();
 		const startable = this.startable();
+		const names = new Map(this.sql.exec<{ id: string; name: string }>("SELECT id, name FROM bubble").toArray().map((r) => [r.id, r.name]));
 		return {
+			name: this.ctx.storage.kv.get<string>("name") ?? null,
 			bubbles: this.bubbles().map((h) => ({
 				id: h.id,
+				name: names.get(h.id) ?? "",
+				ferge: !!h.ferge,
 				visible: h.visible,
 				locked: !!h.locked,
 				members: forks.filter((f) => f.bubble === h.id).map((f) => ({ ...f, files: JSON.parse(f.files) })),
@@ -543,8 +613,7 @@ export class RepoDO extends DurableObject<Env> {
 		this.sql.exec(
 			"DELETE FROM bubble; DELETE FROM fork; DELETE FROM conflict; DELETE FROM locked; DELETE FROM hidden; DELETE FROM loose; DELETE FROM agent_run; DELETE FROM task; DELETE FROM task_dep; DELETE FROM memory; DELETE FROM owed; DELETE FROM basis; DELETE FROM renamed; DELETE FROM merging;",
 		);
-		this.ctx.storage.kv.delete("repo");
-		this.ctx.storage.kv.delete("seq");
+		for (const k of ["repo", "seq", "name", "namedFirst", "settings", "apiKey"]) this.ctx.storage.kv.delete(k);
 		return deleted;
 	}
 

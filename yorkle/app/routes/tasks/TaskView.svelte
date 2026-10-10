@@ -11,7 +11,18 @@
 		repo,
 		ontake,
 		onretry,
-	}: { task: Task; data: RepoState; href: (id: string) => string; repo: string; ontake: (id: string) => void; onretry: (id: string) => void } =
+		onapprove,
+		onedit,
+	}: {
+		task: Task;
+		data: RepoState;
+		href: (id: string) => string;
+		repo: string;
+		ontake: (id: string) => void;
+		onretry: (id: string) => void;
+		onapprove: (id: string) => void;
+		onedit: (id: string, title: string, description: string) => Promise<boolean>;
+	} =
 		$props();
 
 	const byId = $derived(new Map(data.tasks.map((x) => [x.id, x])));
@@ -26,8 +37,22 @@
 					? "Starting"
 					: "Ready to take"
 				: "Waiting for its dependencies to land in one bubble"
-			: { "in-progress": "In progress", completed: "Completed", failed: "Failed" }[t.status],
+			: { "awaiting-approval": "Awaiting approval", "in-progress": "In progress", completed: "Completed", failed: "Failed" }[t.status],
 	);
+
+	// A task awaiting approval can be edited before it's approved.
+	let editing = $state(false);
+	let title = $state("");
+	let description = $state("");
+	function startEdit() {
+		title = t.title;
+		description = t.description;
+		editing = true;
+	}
+	async function save(e: SubmitEvent) {
+		e.preventDefault();
+		if (await onedit(t.id, title, description)) editing = false;
+	}
 </script>
 
 <header class="head">
@@ -63,7 +88,20 @@
 	</article>
 
 	<aside>
-		{#if t.status === "open" && t.kind === "notagent" && t.ready}
+		{#if t.status === "awaiting-approval"}
+			{#if editing}
+				<form class="edit" onsubmit={save}>
+					<label for="edit-title">Title</label>
+					<input id="edit-title" bind:value={title} required maxlength="60" />
+					<label for="edit-description">Description</label>
+					<textarea id="edit-description" bind:value={description} rows="8"></textarea>
+					<div class="row"><button class="primary">Save</button><button type="button" onclick={() => (editing = false)}>Cancel</button></div>
+				</form>
+			{:else}
+				<button class="primary wide" onclick={() => onapprove(t.id)}>Approve</button>
+				<button class="wide" onclick={startEdit}>Edit</button>
+			{/if}
+		{:else if t.status === "open" && t.kind === "notagent" && t.ready}
 			<button class="primary wide" onclick={() => ontake(t.id)}>Take this task</button>
 		{:else if t.status === "failed"}
 			<button class="primary wide" onclick={() => onretry(t.id)}>Retry</button>
@@ -132,4 +170,6 @@
 	dd li { display: flex; gap: 0.45rem; align-items: center; }
 	q { font-style: italic; }
 	@media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
+	.edit { display: grid; gap: 0.4rem; margin-bottom: 1rem; }
+	.edit .row { display: flex; gap: 0.5rem; }
 </style>

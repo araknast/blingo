@@ -63,6 +63,7 @@
 							<a class="title" href={href(t.id)}>{t.title}</a>
 							<span class="badge">{t.kind === "agent" ? "Agent" : "Human"}</span>
 							{#if t.status === "failed"}<span class="badge failed">Failed</span>{/if}
+							{#if t.status === "awaiting-approval"}<span class="badge">Needs approval</span>{/if}
 							{#if t.status === "in-progress"}<span class="badge working">In progress</span>{/if}
 							{#if t.status === "open" && !t.ready}
 								<span class="badge">{blocked ? `Waiting on ${plural(blocked, "task")}` : "Waiting for a merge"}</span>
