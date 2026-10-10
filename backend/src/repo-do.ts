@@ -581,7 +581,7 @@ export class RepoDO extends DurableObject<Env> {
 	}
 
 	// Deletes the git repos this repository still owns (base, reps, conflicting, loose and pre-patch-
-	// series forks; placed forks are already gone), stops the bubbles' Boxes, then deletes every record.
+	// series forks; placed forks are already gone), stops the bubbles' and running agents' Boxes, then deletes every record.
 	// Already-missing repos are skipped.
 	async destroy(repo: string): Promise<string[]> {
 		const bubbles = this.sql.exec<{ id: string }>("SELECT id FROM bubble").toArray().map((r) => r.id);
@@ -599,6 +599,10 @@ export class RepoDO extends DurableObject<Env> {
 			}
 		}
 		await Promise.all(bubbles.map((id) => this.bubbleBox(id).stop()));
+		// Running agents, superagents and CI fixers (Box named after the run), and loose forks' CI.
+		const runs = this.sql.exec<{ fork: string }>("SELECT fork FROM agent_run WHERE status = 'running'").toArray().map((r) => r.fork);
+		const ci = this.sql.exec<{ fork: string }>("SELECT fork FROM loose").toArray().map((r) => `ci-${r.fork}`);
+		await Promise.allSettled([...runs, ...ci].map((n) => this.env.BOX.getByName(n).stop()));
 		await this.ctx.storage.deleteAlarm();
 		this.sql.exec(
 			"DELETE FROM bubble; DELETE FROM fork; DELETE FROM conflict; DELETE FROM locked; DELETE FROM hidden; DELETE FROM loose; DELETE FROM agent_run; DELETE FROM task; DELETE FROM task_dep; DELETE FROM memory; DELETE FROM owed; DELETE FROM basis; DELETE FROM renamed; DELETE FROM merging;",
