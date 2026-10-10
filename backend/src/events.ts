@@ -1,6 +1,7 @@
 // Artifacts `pushed` events, delivered to the EVENTS queue. Subscriptions exist per repo only (a
 // namespace-wide one isn't accepted), so each loose fork gets its own while it can be pushed to.
-// They need CF_API_TOKEN (Event Subscriptions edit); without it, loose forks are polled instead.
+// They need CF_API_TOKEN (account permissions Queues Edit and Artifacts Read); without it, loose forks
+// are polled instead.
 
 declare global {
 	interface Env {

@@ -27,7 +27,8 @@ npm workspaces: run `npm install` once at the root.
    npx wrangler secret put ANTHROPIC_API_KEY
    npx wrangler secret put CF_API_TOKEN       # optional: push events instead of polling (below)
    ```
-   `CF_API_TOKEN` is an API token with Event Subscriptions edit on the account. With it, each notagent
+   `CF_API_TOKEN` is an account API token with Queues Edit (the event-subscription endpoints accept it)
+   and Artifacts Read (for subscriptions on Artifacts repos). With it, each notagent
    fork subscribes the `blingo-events` queue (`npx wrangler queues create blingo-events`; its id is
    `EVENTS_QUEUE_ID` in `backend/wrangler.jsonc`) to its pushes.
 4. Verification email: onboard the sender domain to Cloudflare Email Sending
