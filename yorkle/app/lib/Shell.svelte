@@ -13,8 +13,10 @@
 		children,
 		repo,
 		openTasks,
+		activeAgents,
+		runningDeploys,
 		full = false,
-	}: { crumbs: Crumb[]; actions?: Snippet; children: Snippet; repo?: string; openTasks?: number; full?: boolean } = $props();
+	}: { crumbs: Crumb[]; actions?: Snippet; children: Snippet; repo?: string; openTasks?: number; activeAgents?: number; runningDeploys?: number; full?: boolean } = $props();
 
 	// The repository's views, as tabs in the sidebar. The map also covers its bubbles and loose forks.
 	const tabs = $derived.by(() => {
@@ -25,7 +27,9 @@
 		return [
 			{ label: "Map", href: base, active: p === base || under("b") },
 			{ label: "Tasks", href: `${base}/tasks`, active: under("tasks"), count: openTasks },
-			{ label: "Agents", href: `${base}/agents`, active: under("agents") || under("forks") },
+			{ label: "Agents", href: `${base}/agents`, active: under("agents") || under("forks"), count: activeAgents },
+			{ label: "Deploy", href: `${base}/deploy`, active: under("deploy"), count: runningDeploys },
+			{ label: "Skills", href: `${base}/skills`, active: under("skills") },
 			{ label: "Memory", href: `${base}/memory`, active: under("memory") },
 			{ label: "Settings", href: `${base}/settings`, active: under("settings") },
 		];

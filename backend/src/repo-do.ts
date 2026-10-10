@@ -4,7 +4,8 @@ import { getAgentByName } from "agents";
 import { COMMIT_FILES_SH, MERGES, PATCH_SH, readSeries } from "./git-scripts";
 import { conflictKey, nearestNeighbour, placeFork, renameConflicts, type Basis, type Bubble } from "./bubbles";
 import { fergeName, friendlyName, nameText, type Name } from "./names";
-import { DEFAULTS, NO_KEY, gate, updateSettings, type Provider, type Role, type Settings } from "./settings";
+import { DEFAULTS, NO_KEY, deployHeaders, deployKey, deployValues, gate, updateSettings, type Provider, type Role, type Settings } from "./settings";
+import { resolveSkills, type Skill } from "./skills";
 import { explanation, fixPrompt, ready, renameOwed, shortTitle, type Owed, type PlanItem, type TaskState } from "./tasks";
 
 const POLL_MS = 5_000;
@@ -54,6 +55,7 @@ type TaskRow = TaskState & {
 	finished: number | null;
 	role: Role | null; // which model its agent uses (NULL = agent)
 	model: string | null; // a model chosen for this task alone, over the role's
+	skills: string | null; // JSON list of skill names its agent loads; NULL = all of the repository's
 	prev_fork: string | null; // retried: the failed attempt's run, whose context the next agent gets
 };
 // A task to add: a superagent's plan item (deps by key within the batch), or one from the API.
@@ -86,6 +88,12 @@ export class RepoDO extends DurableObject<Env> {
 				status TEXT NOT NULL DEFAULT 'open', bubble TEXT, fork TEXT, base_head TEXT, explanation TEXT,
 				superagent TEXT, created INTEGER NOT NULL, finished INTEGER, title TEXT NOT NULL DEFAULT '');
 			CREATE TABLE IF NOT EXISTS task_dep(task TEXT NOT NULL, dep TEXT NOT NULL, PRIMARY KEY (task, dep));
+			-- a repository's skills (Claude Code skill folders); files are base64, one row each
+			CREATE TABLE IF NOT EXISTS skill(name TEXT PRIMARY KEY, description TEXT NOT NULL, created INTEGER NOT NULL);
+			CREATE TABLE IF NOT EXISTS skill_file(skill TEXT NOT NULL, path TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY (skill, path));
+			-- manual deployments: a command run on a bubble's commit (status running / succeeded / failed)
+			CREATE TABLE IF NOT EXISTS deploy(id TEXT PRIMARY KEY, name TEXT NOT NULL, bubble TEXT NOT NULL, head TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'running',
+				started INTEGER NOT NULL, finished INTEGER, log TEXT, by TEXT NOT NULL);
 			CREATE TABLE IF NOT EXISTS memory(id TEXT PRIMARY KEY, text TEXT NOT NULL, author TEXT NOT NULL, created INTEGER NOT NULL);
 			-- a ferge's locked bubble still owes its conflicting files to bubble "into"
 			CREATE TABLE IF NOT EXISTS owed(locked TEXT NOT NULL, "into" TEXT NOT NULL, PRIMARY KEY (locked, "into"));
@@ -116,6 +124,7 @@ export class RepoDO extends DurableObject<Env> {
 		}
 		this.addColumn("task", "role", "TEXT");
 		this.addColumn("task", "model", "TEXT");
+		this.addColumn("task", "skills", "TEXT"); // JSON list of the skills its agent loads (NULL = all)
 		this.addColumn("task", "prev_fork", "TEXT"); // a retried task's failed attempt (its Box keeps the run)
 		for (const [c, d] of [["kind", "TEXT NOT NULL DEFAULT 'notagent'"], ["ci", "TEXT"], ["ci_log", "TEXT"], ["review_auto", "TEXT"], ["review_manual", "TEXT"], ["review_note", "TEXT"], ["agent_pushes", "INTEGER NOT NULL DEFAULT 0"]]) {
 			this.addColumn("loose", c, d);
@@ -280,12 +289,17 @@ export class RepoDO extends DurableObject<Env> {
 		const dep = (d: string) => ids.get(d) ?? (this.sql.exec("SELECT 1 FROM task WHERE id = ?", d).toArray().length ? d : null);
 		const unknown = items.flatMap((i) => i.deps).find((d) => !dep(d));
 		if (unknown) return { error: `no such task: ${unknown}` };
+		const available = this.skillNames();
+		for (const i of items) {
+			const r = resolveSkills(i.skills, available);
+			if ("error" in r) return r;
+		}
 		this.ctx.storage.kv.put("repo", repo);
 		const status = this.settings().taskApproval ? "awaiting-approval" : "open";
 		items.forEach((i, n) => {
 			const id = ids.get(i.key ?? String(n))!;
 			this.sql.exec(
-				"INSERT INTO task (id, title, description, kind, status, bubble, superagent, created, role, model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				"INSERT INTO task (id, title, description, kind, status, bubble, superagent, created, role, model, skills) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 				id,
 				i.title,
 				i.description,
@@ -296,6 +310,7 @@ export class RepoDO extends DurableObject<Env> {
 				Date.now(),
 				i.role ?? null,
 				i.model || null,
+				i.skills === undefined ? null : JSON.stringify(i.skills),
 			);
 			for (const d of i.deps) this.sql.exec("INSERT OR IGNORE INTO task_dep (task, dep) VALUES (?, ?)", id, dep(d));
 		});
@@ -369,6 +384,40 @@ export class RepoDO extends DurableObject<Env> {
 		}
 	}
 
+	// ---- skills ----
+
+	skillNames(): string[] {
+		return this.sql.exec<{ name: string }>("SELECT name FROM skill ORDER BY name").toArray().map((r) => r.name);
+	}
+
+	// Adds (or replaces) a parsed skill upload.
+	addSkill(skill: Skill) {
+		this.sql.exec("DELETE FROM skill_file WHERE skill = ?", skill.name);
+		this.sql.exec("INSERT OR REPLACE INTO skill (name, description, created) VALUES (?, ?, ?)", skill.name, skill.description, Date.now());
+		for (const f of skill.files) this.sql.exec("INSERT INTO skill_file (skill, path, data) VALUES (?, ?, ?)", skill.name, f.path, f.data);
+	}
+
+	// Removing a skill also takes it out of the tasks that named it.
+	deleteSkill(name: string): boolean {
+		for (const t of this.sql.exec<{ id: string; skills: string }>("SELECT id, skills FROM task WHERE skills IS NOT NULL").toArray()) {
+			const rest = (JSON.parse(t.skills) as string[]).filter((n) => n !== name);
+			this.sql.exec("UPDATE task SET skills = ? WHERE id = ?", JSON.stringify(rest), t.id);
+		}
+		this.sql.exec("DELETE FROM skill_file WHERE skill = ?", name);
+		return this.sql.exec("DELETE FROM skill WHERE name = ?", name).rowsWritten > 0;
+	}
+
+	// The skills an agent loads: those a task names (a JSON list; NULL = all), with their files.
+	// A superagent gets every skill, as a list only (it assigns them to tasks).
+	skillPack(named: string | null): Skill[] {
+		const names = named === null ? this.skillNames() : (JSON.parse(named) as string[]);
+		return this.sql
+			.exec<{ name: string; description: string }>("SELECT name, description FROM skill ORDER BY name")
+			.toArray()
+			.filter((s) => names.includes(s.name))
+			.map((s) => ({ ...s, files: this.sql.exec<{ path: string; data: string }>("SELECT path, data FROM skill_file WHERE skill = ?", s.name).toArray() }));
+	}
+
 	// New memory items also reach agents already running, through their memory hook (Box.pushMemory).
 	async addMemory(texts: string[], author: string) {
 		for (const text of texts) {
@@ -426,7 +475,7 @@ export class RepoDO extends DurableObject<Env> {
 					this.sql.exec("UPDATE task SET fork = ?, base_head = ? WHERE id = ?", fork, base, t.id);
 					const { url: remote } = await authRemote(this.env, fork, "write", 3 * 3600);
 					const prompt = `# ${t.title}\n\n${t.description}`;
-					await this.env.BOX.getByName(fork).startAgent({ repo, fork, remote, prompt, kind: "agent", memory, previous: t.prev_fork ?? undefined, ...this.agentConfig(t.role ?? "agent", t.model) });
+					await this.env.BOX.getByName(fork).startAgent({ repo, fork, remote, prompt, kind: "agent", memory, skills: this.skillPack(t.skills), previous: t.prev_fork ?? undefined, ...this.agentConfig(t.role ?? "agent", t.model) });
 					this.agentStarted(fork, t.title);
 				} catch (e) {
 					console.error(`starting task ${t.id}`, e);
@@ -590,8 +639,10 @@ export class RepoDO extends DurableObject<Env> {
 				.exec<AgentRun>("SELECT * FROM agent_run ORDER BY status = 'running' DESC, started DESC LIMIT 50")
 				.toArray(),
 			// `ready`: open and its deps have landed together, so it starts (agent) or can be taken (notagent).
-			tasks: this.tasks().map(({ base_head, ...t }) => ({ ...t, ready: startable.has(t.id) })),
+			tasks: this.tasks().map(({ base_head, skills, ...t }) => ({ ...t, skills: skills === null ? null : JSON.parse(skills), ready: startable.has(t.id) })),
 			memory: this.sql.exec("SELECT * FROM memory ORDER BY created").toArray(),
+			skills: this.sql.exec("SELECT name, description, created FROM skill ORDER BY name").toArray(),
+			deploys: this.sql.exec("SELECT * FROM deploy ORDER BY started DESC LIMIT 50").toArray(),
 		};
 	}
 
@@ -648,12 +699,13 @@ export class RepoDO extends DurableObject<Env> {
 		// Running agents, superagents and CI fixers (Box named after the run), and loose forks' CI.
 		const runs = this.sql.exec<{ fork: string }>("SELECT fork FROM agent_run WHERE status = 'running'").toArray().map((r) => r.fork);
 		const ci = this.sql.exec<{ fork: string }>("SELECT fork FROM loose").toArray().map((r) => `ci-${r.fork}`);
-		await Promise.allSettled([...runs, ...ci].map((n) => this.env.BOX.getByName(n).stop()));
+		const deploying = this.sql.exec<{ id: string }>("SELECT id FROM deploy WHERE status = 'running'").toArray().map((r) => `deploy-${r.id}`);
+		await Promise.allSettled([...runs, ...ci, ...deploying].map((n) => this.env.BOX.getByName(n).stop()));
 		await this.ctx.storage.deleteAlarm();
 		this.sql.exec(
-			"DELETE FROM bubble; DELETE FROM fork; DELETE FROM conflict; DELETE FROM locked; DELETE FROM hidden; DELETE FROM loose; DELETE FROM agent_run; DELETE FROM task; DELETE FROM task_dep; DELETE FROM memory; DELETE FROM owed; DELETE FROM basis; DELETE FROM renamed; DELETE FROM merging;",
+			"DELETE FROM bubble; DELETE FROM fork; DELETE FROM conflict; DELETE FROM locked; DELETE FROM hidden; DELETE FROM loose; DELETE FROM agent_run; DELETE FROM task; DELETE FROM task_dep; DELETE FROM memory; DELETE FROM skill; DELETE FROM skill_file; DELETE FROM deploy; DELETE FROM owed; DELETE FROM basis; DELETE FROM renamed; DELETE FROM merging;",
 		);
-		for (const k of ["repo", "seq", "name", "namedFirst", "settings", "apiKey"]) this.ctx.storage.kv.delete(k);
+		for (const k of ["repo", "seq", "name", "namedFirst", "settings", "apiKey", "deployAuth"]) this.ctx.storage.kv.delete(k);
 		return deleted;
 	}
 
@@ -664,6 +716,7 @@ export class RepoDO extends DurableObject<Env> {
 	// queues and hides them before its first await.
 	async alarm(): Promise<void> {
 		this.recoverHidden();
+		this.reapDeploys();
 		const [placing, applying, merging] = await Promise.allSettled([this.checkLoose(), this.applyQueues(), this.mergeStep()]);
 		await this.schedule(); // tasks whose deps just landed together in one bubble
 		const worked = [applying, merging].some((r) => r.status === "fulfilled" && r.value) || this.busy().size > 0;
@@ -685,7 +738,10 @@ export class RepoDO extends DurableObject<Env> {
 
 	// The settings as the API shows them: the API key only as whether one is set.
 	publicSettings() {
-		return { ...this.settings(), hasKey: !!this.ctx.storage.kv.get<string>("apiKey") };
+		const values = this.ctx.storage.kv.get<Record<string, string>>("deployAuth") ?? {};
+		const s = this.settings();
+		const deploys = s.deploys.map((d) => ({ ...d, auth: d.auth.map((a) => ({ ...a, hasValue: !!values[deployKey(d.name, a.host, a.header)] })) }));
+		return { ...s, deploys, hasKey: !!this.ctx.storage.kv.get<string>("apiKey") };
 	}
 
 	// `apiKey` (a string; "" removes it) is kept apart from the other settings and never returned.
@@ -695,9 +751,59 @@ export class RepoDO extends DurableObject<Env> {
 		const key = (body as { apiKey?: unknown } | null)?.apiKey;
 		if (key !== undefined && (typeof key !== "string" || key.length > 500)) return { error: "apiKey must be a string" };
 		this.ctx.storage.kv.put("settings", next);
+		// Deployment credentials: the values sent now, else the ones kept, for the headers still listed.
+		const sent = deployValues(body);
+		const kept = this.ctx.storage.kv.get<Record<string, string>>("deployAuth") ?? {};
+		const values: Record<string, string> = {};
+		for (const d of next.deploys) for (const a of d.auth) {
+			const k = deployKey(d.name, a.host, a.header);
+			const v = sent.get(k) ?? kept[k];
+			if (v) values[k] = v;
+		}
+		this.ctx.storage.kv.put("deployAuth", values);
 		if (typeof key === "string") key.trim() ? this.ctx.storage.kv.put("apiKey", key.trim()) : this.ctx.storage.kv.delete("apiKey");
 		if (key) await this.kick(); // tasks waiting for a key start now
 		return this.publicSettings();
+	}
+
+	// ---- deployments ----
+
+	// For Outbound: the headers deployment `name` adds to requests to `hostname`.
+	deployHeaders(name: string, hostname: string): [string, string][] {
+		return deployHeaders(this.settings().deploys.find((d) => d.name === name), hostname, this.ctx.storage.kv.get<Record<string, string>>("deployAuth") ?? {});
+	}
+
+	// A deployment still "running" after its Box's 30-minute timeout lost its result.
+	private reapDeploys() {
+		this.sql.exec("UPDATE deploy SET status = 'failed', finished = ?, log = 'the deployment never reported back' WHERE status = 'running' AND started < ?", Date.now(), Date.now() - 40 * 60_000);
+	}
+
+	// A person runs deployment `name` on `bubble`'s code, at its commit now. The bubble must have
+	// nothing queued, so what is deployed is what the bubble holds.
+	async startDeploy(name: string, bubble: string, by: string): Promise<{ id: string } | { error: string }> {
+		this.reapDeploys();
+		const d = this.settings().deploys.find((x) => x.name === name);
+		if (!d) return { error: "no such deployment: configure it in the repository's settings" };
+		const b = this.bubbles().find((x) => x.id === bubble);
+		if (!b) return { error: "no such bubble" };
+		if (!b.visible || this.sql.exec("SELECT 1 FROM fork WHERE bubble = ? AND status = 'pending'", bubble).toArray().length) return { error: "that bubble is merging or has changes still queued; try again in a moment" };
+		if (this.sql.exec("SELECT 1 FROM deploy WHERE name = ? AND bubble = ? AND status = 'running'", name, bubble).toArray().length) return { error: "that deployment is already running on this bubble" };
+		const id = `d-${crypto.randomUUID().slice(0, 8)}`;
+		this.sql.exec("INSERT INTO deploy (id, name, bubble, head, started, by) VALUES (?, ?, ?, '', ?, ?)", id, name, bubble, Date.now(), by);
+		try {
+			const head = await headOf(this.env, bubble);
+			if (!head) throw new Error("the bubble has no commits");
+			this.sql.exec("UPDATE deploy SET head = ? WHERE id = ?", head, id);
+			const { url } = await authRemote(this.env, bubble, "read", 3600);
+			await this.env.BOX.getByName(`deploy-${id}`).startCI({ repo: this.ctx.storage.kv.get<string>("repo")!, fork: bubble, head, remote: url, command: d.command, hosts: d.hosts, deploy: { id, name } });
+		} catch (e) {
+			this.deployDone(id, false, `couldn't start: ${e instanceof Error ? e.message : e}`);
+		}
+		return { id };
+	}
+
+	deployDone(id: string, ok: boolean, log: string) {
+		this.sql.exec("UPDATE deploy SET status = ?, finished = ?, log = ? WHERE id = ? AND status = 'running'", ok ? "succeeded" : "failed", Date.now(), log.slice(-8000), id);
 	}
 
 	// The repository's own API key, for Outbound and the Reviewer only (never sent to a sandbox or the
@@ -843,14 +949,14 @@ export class RepoDO extends DurableObject<Env> {
 	// A new agent run on the same fork, told what the task was and what failed.
 	private async startFixer(fork: string, steps: string[]) {
 		const l = this.loose(fork)!;
-		const t = this.sql.exec<{ title: string; description: string; model: string | null }>("SELECT title, description, model FROM task WHERE fork = ?", fork).toArray()[0];
+		const t = this.sql.exec<{ title: string; description: string; model: string | null; skills: string | null }>("SELECT title, description, model, skills FROM task WHERE fork = ?", fork).toArray()[0];
 		const repo = this.ctx.storage.kv.get<string>("repo")!;
 		const run = `${fork}-c${l.agent_pushes}`;
 		if (!this.credentials()) return this.toNotagent(fork, `${l.reason ?? "CI failed"}; no fixer agent: ${NO_KEY}, so a person takes over`);
 		const prompt = fixPrompt({ title: t?.title ?? "", description: t?.description ?? "", failed: steps, command: this.settings().ci.command, log: l.ci_log, review: l.review_note });
 		try {
 			const { url } = await authRemote(this.env, fork, "write", 3 * 3600);
-			await this.env.BOX.getByName(run).startAgent({ repo, fork, run, remote: url, prompt, kind: "agent", memory: this.memories(), ...this.agentConfig("agent", t?.model) });
+			await this.env.BOX.getByName(run).startAgent({ repo, fork, run, remote: url, prompt, kind: "agent", memory: this.memories(), skills: this.skillPack(t?.skills ?? null), ...this.agentConfig("agent", t?.model) });
 			this.agentStarted(run, `Fix: ${t?.title ?? fork}`);
 		} catch (e) {
 			console.error(`starting fixer ${run}`, e);

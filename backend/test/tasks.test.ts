@@ -133,3 +133,11 @@ test("a retry's note points at the earlier run and says why it failed, when that
 	expect(p).toContain("boom");
 	expect(retryNote({ file: "f", status: "lost" })).not.toContain("Its log");
 });
+
+test("a plan's skills must be among the repository's; omitted = all", () => {
+	const item = (skills?: unknown) => [{ key: "a", title: "t", description: "d", kind: "agent", deps: [], skills }];
+	expect(validatePlan(item(["x"]), ["x", "y"])).toMatchObject({ items: [{ skills: ["x"] }] });
+	expect(validatePlan(item([]), ["x"])).toMatchObject({ items: [{ skills: [] }] });
+	expect(validatePlan(item(["z"]), ["x"])).toHaveProperty("error");
+	expect((validatePlan(item(), ["x"]) as { items: object[] }).items[0]).not.toHaveProperty("skills");
+});

@@ -14,10 +14,11 @@ browser ──► yorkle Worker ──(service binding)──► blingo Worker �
 
 | Piece | File | Role |
 |---|---|---|
-| yorkle | `yorkle/src/index.ts`, `yorkle/app/` | Serves the built Svelte app (unknown paths get `index.html`); forwards `/api/*` (prefix stripped) and `/verify` to blingo, so the API is same-origin. A repository's views are tabs in the sidebar: Map (`/repos/:r`; bubbles, running agents as movable nodes, merging and conflict lines, a dock of forks not in a bubble yet), Tasks, Agents (runs and their transcripts, `/repos/:r/agents/:id`), Memory, Settings; a loose fork has its own page (`/repos/:r/forks/:fork`) |
+| yorkle | `yorkle/src/index.ts`, `yorkle/app/` | Serves the built Svelte app (unknown paths get `index.html`); forwards `/api/*` (prefix stripped) and `/verify` to blingo, so the API is same-origin. A repository's views are tabs in the sidebar: Map (`/repos/:r`; bubbles, running agents as movable nodes, merging and conflict lines, a dock of forks not in a bubble yet), Tasks, Agents (runs and their transcripts, `/repos/:r/agents/:id`; its tab shows the number running, like Tasks' open count), Deploy, Skills, Memory, Settings; a loose fork has its own page (`/repos/:r/forks/:fork`) |
 | Code browser | `backend/src/git.ts` | Pure tree helpers (`resolvePath`, `diffTrees`) behind `GET /repos/:r/:fork/tree`, `/log`, `/commits/:hash`, `/blob/:hash`. Unit-tested |
 | Worker | `backend/src/index.ts` | Auth (session or `BLINGO_TOKEN`), repo-ownership checks, routing, creating repos/forks, minting git tokens |
 | UsersDO | `backend/src/users-do.ts`, `backend/src/auth.ts` | One global SQLite object: accounts, pending signups, invites, sessions, repo owners |
+| Skills rules | `backend/src/skills.ts` | Pure: `parseSkillUpload` (a picked folder → a skill, or why not), `resolveSkills` (which skills an agent loads). Unit-tested |
 | Bubble rules | `backend/src/bubbles.ts` | Pure functions: `placeFork`, `distance`, `nearestNeighbour`. Unit-tested |
 | RepoDO | `backend/src/repo-do.ts` | SQLite state for one repository: placement, each bubble's patch queue, neighbour merges; alarm = the loop that drives them |
 | Box | `backend/src/box.ts`, `backend/src/git-scripts.ts` | Container sandbox. Runs Claude Code for an agent, or holds a bubble's rep clone and runs its git jobs (the git scripts are tested against local repos). `Outbound` limits its egress |
@@ -45,9 +46,11 @@ browser ──► yorkle Worker ──(service binding)──► blingo Worker �
 | `hidden(id, since)` | lease for a bubble hidden by a running merge or ferge (see Merge loop) |
 | `loose(fork, base, head, token, expires, pushes, placing, sub, reason, kind, ci, ci_log, review_auto, review_manual, review_note, agent_pushes)` | forks not placed yet (a notagent's, or with CI on an agent's): `base` = where it started, `head` = last seen, `token` = live push token id (NULL once revoked or expired), `placing`, `reason` = why it isn't placed. CI results are for `head`: `ci` running/passed/failed and its log tail, each review pending/approved/rejected (NULL = not required) and their comments; `agent_pushes` counts an agent's attempts. Replaces `watch`/`pushed` (emptied into it on startup). Some rows have an unused `sub` column |
 | `agent_run(fork, prompt, started, status, finished, log)` | agent and superagent runs (`-s-` ids), kept after they finish |
-| `task(id, title, description, kind, status, bubble, fork, base_head, explanation, superagent, created, finished)` | tasks: a short `title` (≤ 60 chars); `kind` agent / notagent; `status` open / in-progress / completed / failed; `bubble` = where it should start, then where it did. Listed in `rowid` (creation) order. `title` was added in place: objects from before it get the column and titles from their descriptions on startup |
+| `task(id, title, description, kind, status, bubble, fork, base_head, explanation, superagent, created, finished)` | tasks: a short `title` (≤ 60 chars); `kind` agent / notagent; `skills` = JSON list of the skills its agent loads (NULL = all, added in place); `status` open / in-progress / completed / failed; `bubble` = where it should start, then where it did. Listed in `rowid` (creation) order. `title` was added in place: objects from before it get the column and titles from their descriptions on startup |
 | `task_dep(task, dep)` | task dependencies |
 | `memory(id, text, author, created)` | memory items, given to every agent and superagent |
+| `skill(name, description, created)`, `skill_file(skill, path, data)` | the repository's skills; one row per file, `data` base64 (a skill is at most 1 MB, 200 files) |
+| `deploy(id, name, bubble, head, status, started, finished, log, by)` | manual deployments: `status` running / succeeded / failed; `head` = the bubble's commit it ran on; `log` = output tail |
 | `owed(locked, into)` | ferge debt: locked bubble `locked` still owes its conflicting files to bubble `into` |
 | `basis(fork, bubble, epoch, seq)` | where an unplaced fork started: the bubble it was forked from (NULL = the base repo), that bubble's epoch, and the repository's last applied `seq`, read just before forking |
 | `renamed(from, into)` | absorbed bubbles, so a fork's basis can be followed to the bubble that holds its code now |
@@ -139,6 +142,24 @@ own Box on a **read-only** clone. Its system prompt asks for a JSON plan
 `[{key, title, description, kind, deps}]` in `/workspace/task/tasks.json`. The Box alarm checks it with
 `validatePlan` (keys unique, deps known, no cycle, ≤ 30 tasks) and calls `addTasks`. Nothing is
 placed.
+
+**Skills.** `POST /repos/:r/skills {files: [{path, data(base64)}]}` takes a skills folder picked in yorkle's
+Skills tab (`webkitdirectory`); `parseSkillUpload` needs a `SKILL.md` with `name` and `description` frontmatter
+and no odd paths, and a skill with the same name is replaced. `DELETE …/skills/:name` removes it (and drops it
+from tasks that named it). A task's `skills` (from `POST /agents`, `POST …/tasks`, or a superagent's plan item)
+is a list of names: omitted = all the repository's skills at start, `[]` = none. `startAgent` empties
+`~/.claude/skills` in the container and unpacks only the chosen ones there (Claude Code lists them to the
+model itself) and names them in the system prompt; nothing is written into the clone.
+A superagent only gets the list (to assign skills to its tasks), not the files. Skills
+committed inside the repository itself are the repository's content and stay visible to Claude Code.
+
+**Deploys** (repo setting `deploys [{name, command, hosts, auth}]`; `POST /repos/:r/deploys {name, bubble}`
+by a person only). Like CI, a deployment is a command in a Box (`deploy-<id>`, the `CI_SH` job via `startCI`) on a
+clone of the bubble's rep at its commit now, reaching only Artifacts and its `hosts`. The bubble must be
+visible with nothing queued, and one deployment runs once per bubble at a time. `auth` entries name a header
+for a host; their values are stored apart (KV `deployAuth`, never returned: the API says `hasValue`) and
+`Outbound` adds the header to requests to that host, so the credential never enters the sandbox. The result
+(`deployDone`) fills the `deploy` row shown on the Deploy tab; a run with no result after 40 minutes is failed.
 
 **Memory.** Agents and superagents get the repo's memory items through `--append-system-prompt`
 (never written into the repo). Items added while an agent runs reach it too: `addMemory` has each

@@ -1,3 +1,5 @@
+import { resolveSkills } from "./skills";
+
 // Pure task rules (tasktracker.md). No I/O: RepoDO loads rows, asks these, writes results.
 
 export type TaskKind = "agent" | "notagent";
@@ -68,12 +70,13 @@ export function shortTitle(text: string, max = 60): string {
 	return `${(space > max / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
 }
 
-export type PlanItem = { key: string; title: string; description: string; kind: TaskKind; deps: string[] };
+// `skills`: the repository skills the task's agent loads (absent = all of them).
+export type PlanItem = { key: string; title: string; description: string; kind: TaskKind; deps: string[]; skills?: string[] };
 export const MAX_PLAN = 30;
 
 // Checks a superagent's plan: [{key, title, description, kind, deps}], deps by key within the plan,
-// acyclic. Long titles are shortened rather than rejected.
-export function validatePlan(raw: unknown): { items: PlanItem[] } | { error: string } {
+// acyclic, and skills (optional) among `available`. Long titles are shortened rather than rejected.
+export function validatePlan(raw: unknown, available: string[] = []): { items: PlanItem[] } | { error: string } {
 	if (!Array.isArray(raw) || !raw.length) return { error: "plan must be a non-empty array" };
 	if (raw.length > MAX_PLAN) return { error: `plan has more than ${MAX_PLAN} tasks` };
 	const items: PlanItem[] = [];
@@ -85,7 +88,9 @@ export function validatePlan(raw: unknown): { items: PlanItem[] } | { error: str
 		if (x.kind !== "agent" && x.kind !== "notagent") return { error: `task ${key}: kind must be agent or notagent` };
 		const deps = x.deps ?? [];
 		if (!Array.isArray(deps) || deps.some((d) => typeof d !== "string")) return { error: `task ${key}: deps must be keys` };
-		items.push({ key, title, description, kind: x.kind, deps: [...new Set(deps as string[])] });
+		const skills = resolveSkills(x.skills, available);
+		if ("error" in skills) return { error: `task ${key}: ${skills.error}` };
+		items.push({ key, title, description, kind: x.kind, deps: [...new Set(deps as string[])], ...(x.skills === undefined ? {} : { skills }) });
 	}
 	const keys = new Set(items.map((i) => i.key));
 	if (keys.size !== items.length) return { error: "task keys must be unique" };

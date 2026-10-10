@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { DEFAULTS, NO_KEY, ciHostAllowed, egress, gate, updateSettings, type Settings } from "../src/settings";
+import { DEFAULTS, NO_KEY, ciHostAllowed, deployHeaders, deployKey, deployValues, egress, gate, updateSettings, type Settings } from "../src/settings";
 
 const on = (o: Partial<Settings> = {}): Settings => ({ ...DEFAULTS, ...o, ci: { ...DEFAULTS.ci, enabled: true, ...o.ci } });
 
@@ -61,4 +61,29 @@ test("provider and per-role models", () => {
 	expect(s).toMatchObject({ provider: "openrouter", models: { agent: "anthropic/claude-sonnet-5.5", superagent: "", ferge: "" } });
 	expect(updateSettings(DEFAULTS, { provider: "openai" })).toHaveProperty("error");
 	expect(updateSettings(DEFAULTS, { models: { agent: "bad model; rm -rf" } })).toHaveProperty("error");
+});
+
+test("deployments are validated; auth hosts must be among their hosts; secret values are dropped", () => {
+	const body = { deploys: [{ name: "prod", command: " ./ship ", hosts: ["API.example.com"], auth: [{ host: "api.example.com", header: "Authorization", value: "Bearer s3cret" }] }] };
+	const s = updateSettings(DEFAULTS, body) as Settings;
+	expect(s.deploys).toEqual([{ name: "prod", command: "./ship", hosts: ["api.example.com"], auth: [{ host: "api.example.com", header: "Authorization" }] }]);
+	expect(JSON.stringify(s)).not.toContain("s3cret");
+	expect(deployValues(body).get(deployKey("prod", "api.example.com", "Authorization"))).toBe("Bearer s3cret");
+	const bad = (d: object) => expect(updateSettings(DEFAULTS, { deploys: [d] })).toHaveProperty("error");
+	bad({ name: "a b", command: "x" });
+	bad({ name: "p", command: "" });
+	bad({ name: "p", command: "x", hosts: ["a.example.com"], auth: [{ host: "b.example.com", header: "X-Key" }] });
+	bad({ name: "p", command: "x", hosts: ["a.example.com"], auth: [{ host: "a.example.com", header: "Host" }] });
+	expect(updateSettings(DEFAULTS, { deploys: [{ name: "p", command: "x" }, { name: "p", command: "y" }] })).toHaveProperty("error");
+});
+
+test("a deployment's headers go only to their host (and its subdomains)", () => {
+	const d = { name: "prod", command: "x", hosts: ["example.com"], auth: [{ host: "api.example.com", header: "X-Key" }] };
+	const values = { [deployKey("prod", "api.example.com", "X-Key")]: "k" };
+	expect(deployHeaders(d, "api.example.com", values)).toEqual([["X-Key", "k"]]);
+	expect(deployHeaders(d, "v2.api.example.com", values)).toEqual([["X-Key", "k"]]);
+	expect(deployHeaders(d, "example.com", values)).toEqual([]);
+	expect(deployHeaders(d, "evilapi.example.com", values)).toEqual([]);
+	expect(deployHeaders(d, "api.example.com", {})).toEqual([]); // no value stored
+	expect(deployHeaders(undefined, "api.example.com", values)).toEqual([]);
 });

@@ -1,6 +1,7 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { APPLY_SH, CONFLICT, ENSURE_REP, FERGE_SH, MEMORY_HOOK_SH, MERGES, MERGE_SH, NO_CONFLICT, PATCH_SH, PUSH_SH, REP, readSeries } from "./git-scripts";
 import { MODEL_HOSTS, egress, type Provider } from "./settings";
+import type { Skill } from "./skills";
 import { retryNote, validatePlan } from "./tasks";
 import { NO_USAGE, completeLines, usageFromBody, type Usage } from "./transcript";
 
@@ -41,23 +42,39 @@ rm -rf /workspace/repo; git clone -q "$1" /workspace/repo; cd /workspace/repo
 git checkout -q --detach "$2"
 set +e; bash -c "$3"`;
 
+// Unpacks the JSON list of skills on stdin (name, files {path, data base64}) into Claude Code's user skills folder.
+const UNPACK_SKILLS = `node -e '
+const fs = require("fs"), path = require("path"), dir = path.join(require("os").homedir(), ".claude", "skills");
+for (const s of JSON.parse(fs.readFileSync(0, "utf8")))
+	for (const f of s.files) {
+		const p = path.join(dir, s.name, f.path);
+		fs.mkdirSync(path.dirname(p), { recursive: true });
+		fs.writeFileSync(p, Buffer.from(f.data, "base64"));
+	}'`;
+
 const NOTES = `To leave a note for every future agent on this repository, append it as one line to ${TASK}/memory.
 Only note durable, repository-wide facts (conventions, gotchas, decisions), not progress on your own task.
 
 You have internet access and run as root in a disposable Debian container: install whatever tools you need (apt-get, npm, pip, curl ...).`;
 
 // ponytail: every memory item goes into every prompt; select or summarize them if the list grows long.
-function systemPrompt(kind: AgentJob["kind"], memory: string[]) {
+function systemPrompt(kind: AgentJob["kind"], memory: string[], skills: Skill[]) {
 	const role =
 		kind === "superagent"
 			? `You plan work on this repository; you do not change it. Split the request into tasks and write them to ${TASK}/tasks.json as a JSON array of
-{"key": short unique id, "title": a short summary of at most 60 characters, "description": everything an agent needs to do the task without other context, "kind": "agent" or "notagent", "deps": [keys of tasks that must land first]}.
+{"key": short unique id, "title": a short summary of at most 60 characters, "description": everything an agent needs to do the task without other context, "kind": "agent" or "notagent", "deps": [keys of tasks that must land first], "skills": [names of the repository skills the task's agent should have; leave the field out to give it all of them, [] for none]}.
 Each task is done on its own fork, in parallel with tasks it doesn't depend on, so keep tasks small and their files separate where you can.
 Use "notagent" only for tasks that need a human (credentials, decisions, manual testing); prefer "agent".`
 			: `You are doing one task on a fork of a shared repository; other agents do other tasks in parallel.
 Commit your work with messages that explain what you did and why: they become the task's record.`;
 	const mem = memory.length ? `\n\nNotes from earlier agents on this repository:\n${memory.map((m) => `- ${m}`).join("\n")}` : "";
-	return `${role}\n\n${NOTES}${mem}`;
+	const list = skills.map((s) => `- ${s.name}: ${s.description}`).join("\n");
+	const sk = !skills.length
+		? ""
+		: kind === "superagent"
+			? `\n\nThis repository's skills (assign them to tasks by name in "skills"):\n${list}`
+			: `\n\nSkills installed for this task (Claude Code loads them when relevant):\n${list}`;
+	return `${role}\n\n${NOTES}${mem}${sk}`;
 }
 
 // Claude Code settings for agents: the memory hook (MEMORY_HOOK_SH, written to $TASK at start).
@@ -80,12 +97,14 @@ export type AgentJob = {
 	prompt: string;
 	kind?: "agent" | "superagent";
 	memory?: string[];
+	skills?: Skill[]; // an agent installs them; a superagent is only told of them
 	model?: string;
 	provider?: Provider;
 	previous?: string; // a retry: the run id of the failed attempt, whose transcript and log it gets
 };
 // A CI run on a loose fork at `head`, in a Box named ci-<fork> that can reach only Artifacts and `hosts`.
-export type CiJob = { repo: string; fork: string; head: string; remote: string; command: string; hosts: string[] };
+// A deployment is the same job: `fork` is then the bubble, `head` its commit, and `deploy` the deployment run.
+export type CiJob = { repo: string; fork: string; head: string; remote: string; command: string; hosts: string[]; deploy?: { id: string; name: string } };
 
 export async function headOf(env: Env, name: string) {
 	using repo = await env.ARTIFACTS.get(name);
@@ -116,13 +135,20 @@ export async function authRemote(env: Env, name: string, scope: "read" | "write"
 // no key ever enters a sandbox; there is no fallback key. CI Boxes (props.ci = its hosts) reach only
 // Artifacts and those hosts, other Boxes only Artifacts.
 // `box`: the agent Box's name, which is told each model response's token use (Box.addUsage).
-export class Outbound extends WorkerEntrypoint<Env, { ci?: string[]; repo?: string; box?: string }> {
+export class Outbound extends WorkerEntrypoint<Env, { ci?: string[]; repo?: string; box?: string; deploy?: { repo: string; name: string } }> {
 	async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url);
-		const { ci, repo, box } = this.ctx.props ?? {};
+		const { ci, repo, box, deploy } = this.ctx.props ?? {};
 		const creds = repo && Object.values(MODEL_HOSTS).includes(url.hostname) ? await this.env.REPO.getByName(repo).credentials() : null;
 		const to = egress(url, { ci, agent: !!repo, provider: creds?.provider });
-		if (to === "pass") return fetch(request);
+		if (to === "pass") {
+			// A deployment's credentials are added here, to the hosts they are for.
+			const extra = deploy ? await this.env.REPO.getByName(deploy.repo).deployHeaders(deploy.name, url.hostname) : [];
+			if (!extra.length) return fetch(request);
+			const headers = new Headers(request.headers);
+			for (const [k, v] of extra) headers.set(k, v);
+			return fetch(new Request(request, { headers }));
+		}
 		if (to !== "key") return new Response(`${to.deny}\n`, { status: 403 });
 		const headers = new Headers(request.headers);
 		headers.delete("x-api-key");
@@ -166,7 +192,7 @@ export class Box extends DurableObject<Env> {
 				const ci = this.ctx.storage.kv.get<CiJob>("ci");
 				const repo = this.ctx.storage.kv.get<string>("egress"); // an agent's repository
 				const outbound = ci
-					? this.ctx.exports.Outbound({ props: { ci: ci.hosts } })
+					? this.ctx.exports.Outbound({ props: { ci: ci.hosts, deploy: ci.deploy && { repo: ci.repo, name: ci.deploy.name } } })
 					: repo
 						? this.ctx.exports.Outbound({ props: { repo, box: this.ctx.id.name } })
 						: this.ctx.exports.Outbound;
@@ -265,6 +291,9 @@ export class Box extends DurableObject<Env> {
 		await this.start();
 		await this.sh(`rm -rf ${TASK} && mkdir -p ${TASK}`);
 		await this.sh(`cat > ${TASK}/memory-hook.sh`, [], { stdin: MEMORY_HOOK_SH });
+		// Only the chosen skills: nothing else is in the user skills folder.
+		await this.sh(`rm -rf ~/.claude/skills`);
+		if (job.kind !== "superagent" && job.skills?.length) await this.sh(UNPACK_SKILLS, [], { stdin: JSON.stringify(job.skills) });
 		let prompt = job.prompt;
 		if (job.previous) {
 			const prev = this.env.BOX.getByName(job.previous);
@@ -283,7 +312,7 @@ export class Box extends DurableObject<Env> {
 			job.provider === "openrouter"
 				? { ANTHROPIC_BASE_URL: "https://openrouter.ai/api", ANTHROPIC_AUTH_TOKEN: "added-by-outbound", ANTHROPIC_API_KEY: "" }
 				: { ANTHROPIC_API_KEY: "added-by-outbound" };
-		await this.container.exec(["bash", "-c", BG_SH, script, job.remote, prompt, systemPrompt(job.kind, job.memory ?? []), AGENT_SETTINGS], {
+		await this.container.exec(["bash", "-c", BG_SH, script, job.remote, prompt, systemPrompt(job.kind, job.memory ?? [], job.skills ?? []), AGENT_SETTINGS], {
 			cwd: "/workspace",
 			env: {
 				...TRUST,
@@ -296,7 +325,7 @@ export class Box extends DurableObject<Env> {
 			stdout: "ignore",
 			stderr: "ignore",
 		});
-		this.ctx.storage.kv.put("job", { ...job, remote: "", memory: [] }); // don't persist the token
+		this.ctx.storage.kv.put("job", { ...job, remote: "", memory: [], skills: [] }); // don't persist the token
 		this.ctx.storage.kv.put("status", "running");
 		this.ctx.storage.kv.delete("reason");
 		this.ctx.storage.kv.delete("usage");
@@ -408,7 +437,7 @@ export class Box extends DurableObject<Env> {
 		if (job.kind === "superagent") {
 			let plan: ReturnType<typeof validatePlan>;
 			try {
-				plan = validatePlan(JSON.parse((await this.sh(`cat ${TASK}/tasks.json`)).stdout));
+				plan = validatePlan(JSON.parse((await this.sh(`cat ${TASK}/tasks.json`)).stdout), await repo.skillNames());
 			} catch {
 				plan = { error: "tasks.json is not JSON" };
 			}
@@ -440,7 +469,9 @@ export class Box extends DurableObject<Env> {
 			this.ctx.storage.kv.put("status", ok ? "passed" : "failed");
 			this.ctx.storage.kv.put("log", log);
 			await this.container.destroy().catch(() => {});
-			await this.env.REPO.getByName(job.repo).ciDone(job.fork, job.head, ok, log);
+			const repo = this.env.REPO.getByName(job.repo);
+			if (job.deploy) await repo.deployDone(job.deploy.id, ok, log);
+			else await repo.ciDone(job.fork, job.head, ok, log);
 		};
 		if (!this.container.running) return done(false, "the CI container stopped before CI finished");
 		const exit = (await this.sh(`cat ${TASK}/exit 2>/dev/null || true`)).stdout.trim();
