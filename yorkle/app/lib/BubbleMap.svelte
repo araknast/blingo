@@ -4,7 +4,7 @@
 	import { fade } from "svelte/transition";
 	import { MAX_DOTS, dotOffset, edge, fileCount, hash, orderMembers, radius } from "./layout";
 	import type { AgentRun, Bubble, Member, RepoState } from "./types";
-	import { menuGesture, plural, short } from "./util";
+	import { active, agentLabel, allRuns, menuGesture, plural, short } from "./util";
 
 	let {
 		data,
@@ -154,8 +154,9 @@
 		}
 		for (const id of nodes.keys()) if (!seen.has(id)) (nodes.delete(id), (changed = true));
 
-		// Running agents: new ones start on the outer ring, finished ones leave (their fork flies on).
-		const running = d.agents.filter((a) => a.status === "running");
+		// Running agents and people's unplaced forks: new ones start on the outer ring, finished ones leave
+		// (their fork flies on).
+		const running = allRuns(d).filter(active);
 		for (const run of running) {
 			const a = agentNodes.get(run.fork);
 			if (a) a.run = run;
@@ -355,7 +356,14 @@
 
 	// Dock: forks waiting for a push, being placed, or pushed and not placed (loose). Running agents are
 	// nodes on the map instead.
-	const dockCount = $derived((data?.waiting.length ?? 0) + (data?.placing.length ?? 0) + (data?.loose.length ?? 0));
+	// Unplaced forks without a pill on the map (an agent's fork in CI or being placed).
+	const pilled = $derived(new Set(agentView.map((a) => a.id)));
+	const dock = $derived({
+		waiting: (data?.waiting ?? []).filter((f) => !pilled.has(f)),
+		loose: (data?.loose ?? []).filter((l) => !pilled.has(l.fork)),
+		placing: (data?.placing ?? []).filter((f) => !pilled.has(f)),
+	});
+	const dockCount = $derived(dock.waiting.length + dock.loose.length + dock.placing.length);
 	const nameOf = (n: Node) => n.b.name || short(n.id);
 
 	const hl = (r: number) => {
@@ -489,14 +497,19 @@
 			{#each agentView as a (a.id)}
 				<g transform="translate({a.x} {a.y})" transition:fade={{ duration: 300 }}>
 					<a
-						href={demo ? undefined : agentHref?.(a.id)}
+						href={demo ? undefined : a.run.kind === "notagent" ? looseHref?.(a.id) : agentHref?.(a.id)}
 						class="agent"
-						aria-label="Agent working: {a.run.prompt}. Open its run."
+						class:person={a.run.kind === "notagent"}
+						aria-label="{a.run.kind === 'notagent' ? `A person's fork, ${agentLabel(a.run.status).toLowerCase()}` : 'Agent working'}: {a.run.prompt}. Open it."
 						onpointerdown={(e) => (e.stopPropagation(), down(e, a.id))}
 						onclick={(e) => suppressClick && (e.preventDefault(), (suppressClick = false))}
 					>
 						<rect x={-AGENT_W / 2} y={-AGENT_H / 2} width={AGENT_W} height={AGENT_H} rx={AGENT_H / 2} />
-						<circle class="pulse-dot" cx={-AGENT_W / 2 + 15} cy="0" r="5" />
+						{#if a.run.kind === "notagent"}
+							<g class="person-icon" transform="translate({-AGENT_W / 2 + 15} 0)"><circle cy="-2.5" r="2.6" /><path d="M -4.6 5 a 4.6 4.6 0 0 1 9.2 0 z" /></g>
+						{:else}
+							<circle class="pulse-dot" cx={-AGENT_W / 2 + 15} cy="0" r="5" />
+						{/if}
 						<text x={-AGENT_W / 2 + 27} y="4">{clip(a.run.prompt, 18)}</text>
 						<title>{a.run.prompt}</title>
 					</a>
@@ -559,15 +572,15 @@
 
 	{#if dockCount}
 		<div class="dock" bind:clientHeight={dockH} aria-label="Forks not in a bubble yet">
-			{#each data?.waiting ?? [] as f (f)}
+			{#each dock.waiting as f (f)}
 				<span class="chip" data-fork={f} title="Waiting for a push"><i class="dot waiting"></i><span class="mono">{short(f)}</span></span>
 			{/each}
-			{#each data?.loose ?? [] as l (l.fork)}
+			{#each dock.loose as l (l.fork)}
 				<a class="chip" data-fork={l.fork} href={looseHref?.(l.fork)} title={l.reason ?? (l.ci === "running" ? "CI running" : "Pushed, not placed yet")}>
 					<i class="dot {l.ci === 'failed' || l.reason ? 'conflict' : 'waiting'} {l.ci === 'running' ? 'pulse' : ''}"></i><span class="mono">{short(l.fork)}</span>
 				</a>
 			{/each}
-			{#each data?.placing ?? [] as f (f)}
+			{#each dock.placing as f (f)}
 				<span class="chip" data-fork={f} title="Finding a bubble"><i class="dot placing pulse"></i><span class="mono">{short(f)}</span></span>
 			{/each}
 		</div>
@@ -615,6 +628,8 @@
 	.agent rect { fill: var(--raised); stroke: var(--working); stroke-width: 2; filter: drop-shadow(0 2px 4px rgb(15 24 33 / 0.12)); }
 	.agent:hover rect, .agent:focus-visible rect { stroke-width: 3; }
 	.agent .pulse-dot { fill: var(--working); animation: blink 1.6s ease-in-out infinite; }
+	.agent.person rect { stroke: var(--pending); stroke-dasharray: 5 3; }
+	.agent .person-icon { fill: var(--ink-2); }
 	.agent text { text-anchor: start; font-size: 12px; fill: var(--ink); }
 	@keyframes blink { 50% { opacity: 0.35; } }
 	@keyframes swirl { to { stroke-dashoffset: -46; } }

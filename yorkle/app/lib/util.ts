@@ -1,3 +1,5 @@
+import type { AgentRun, RepoState } from "./types";
+
 // A repository's display name (its id when it has none), as /me lists it.
 export const repoName = (repo: string, names?: Record<string, string>) => names?.[repo] || repo;
 
@@ -54,4 +56,24 @@ export const firstLine =(s: string) => s.split("\n", 1)[0];
 
 // Agent run status → what the UI calls it.
 export const agentLabel = (status: string) =>
-	({ running: "Working", placed: "Done", loose: "Waiting for CI", planned: "Tasks added", failed: "Failed", lost: "Failed: sandbox lost" })[status] ?? status;
+	({ running: "Working", placed: "Done", loose: "Waiting for CI", planned: "Tasks added", failed: "Failed", lost: "Failed: sandbox lost", waiting: "Waiting for a push", pushed: "Pushed", placing: "Finding a bubble" })[status] ?? status;
+
+// Notagent tasks that got a fork, as runs beside the agents' (a fork an agent ran on keeps that run).
+export function notagentRuns(d: RepoState): AgentRun[] {
+	const ran = new Set(d.agents.map((a) => a.fork));
+	return d.tasks
+		.filter((t) => t.kind === "notagent" && t.fork && !ran.has(t.fork))
+		.map((t) => {
+			const f = t.fork!;
+			const status =
+				t.status === "completed" ? "placed" : t.status === "failed" ? "failed" : d.placing.includes(f) ? "placing" : d.waiting.includes(f) ? "waiting" : "pushed";
+			return { fork: f, prompt: t.title, started: t.created, status, finished: t.finished, log: null, kind: "notagent" as const };
+		});
+}
+// Still going: an agent at work, or a person's fork not placed yet.
+export const active = (r: AgentRun) => (r.kind === "notagent" ? r.status !== "placed" && r.status !== "failed" : r.status === "running");
+// Agents' and people's runs, the ones still going first, then newest first.
+export const allRuns = (d: RepoState) => [...d.agents, ...notagentRuns(d)].sort((a, b) => Number(active(b)) - Number(active(a)) || b.started - a.started);
+// A run's status dot.
+export const runDot = (r: AgentRun) =>
+	r.status === "running" ? "working pulse" : r.status === "failed" || r.status === "lost" ? "conflict" : r.status === "placing" ? "placing pulse" : active(r) ? "waiting" : "merged";

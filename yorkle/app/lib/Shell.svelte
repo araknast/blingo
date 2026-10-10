@@ -23,9 +23,9 @@
 		const p = route.path.replace(/\/+$/, "");
 		const under = (s: string) => p === `${base}/${s}` || p.startsWith(`${base}/${s}/`);
 		return [
-			{ label: "Map", href: base, active: p === base || under("b") || under("forks") },
+			{ label: "Map", href: base, active: p === base || under("b") },
 			{ label: "Tasks", href: `${base}/tasks`, active: under("tasks"), count: openTasks },
-			{ label: "Agents", href: `${base}/agents`, active: under("agents") },
+			{ label: "Agents", href: `${base}/agents`, active: under("agents") || under("forks") },
 			{ label: "Memory", href: `${base}/memory`, active: under("memory") },
 			{ label: "Settings", href: `${base}/settings`, active: under("settings") },
 		];

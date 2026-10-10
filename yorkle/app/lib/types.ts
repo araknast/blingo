@@ -8,7 +8,8 @@ export type MemberStatus = "rep" | "pending" | "merged" | "conflict" | "failed";
 export type Member = { name: string; bubble: string; status: MemberStatus; files: string[] };
 // `ferge`: the locked bubble a ferge made, holding the conflicting files.
 export type Bubble = { id: string; name: string; visible: number | boolean; locked: boolean; ferge: boolean; members: Member[] };
-export type AgentRun = { fork: string; prompt: string; started: number; status: string; finished: number | null; log: string | null };
+// kind "notagent": a person's fork, shown as a run (util.ts notagentRuns); its page is the fork's.
+export type AgentRun = { fork: string; prompt: string; started: number; status: string; finished: number | null; log: string | null; kind?: "notagent" };
 export type TaskStatus = "awaiting-approval" | "open" | "in-progress" | "completed" | "failed";
 export type Task = {
 	id: string;

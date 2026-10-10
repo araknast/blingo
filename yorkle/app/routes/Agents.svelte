@@ -1,18 +1,21 @@
 <script lang="ts">
-	// The repository's agent runs (agents, CI fixers, superagents), newest first; one opens its transcript.
+	// The repository's runs (agents, CI fixers, superagents, and people's forks), newest first; one opens
+	// its transcript, or for a person's fork its fork page.
 	import Shell from "../lib/Shell.svelte";
 	import { repoState } from "../lib/repoState.svelte";
 	import { session } from "../lib/session.svelte";
-	import { agentLabel, ago, duration, repoName } from "../lib/util";
+	import type { AgentRun } from "../lib/types";
+	import { agentLabel, ago, allRuns, duration, repoName, runDot } from "../lib/util";
 	import AgentView from "./agents/AgentView.svelte";
 
 	let { repo, id }: { repo: string; id?: string } = $props();
 	// svelte-ignore state_referenced_locally (the page is keyed by repo in App)
 	const rd = repoState(repo, 4000);
-	const runs = $derived(rd.data?.agents ?? []);
+	const runs = $derived(rd.data ? allRuns(rd.data) : []);
 	const run = $derived(id ? runs.find((r) => r.fork === id) : undefined);
 	const kind = (fork: string) => (fork.includes("-s-") ? "Superagent" : /-c\d+$/.test(fork) ? "CI fixer" : "Agent");
-	const href = (fork: string) => `/repos/${repo}/agents/${fork}`;
+	const kindOf = (r: AgentRun) => (r.kind === "notagent" ? "Person" : kind(r.fork));
+	const href = (r: AgentRun) => (r.kind === "notagent" ? `/repos/${repo}/forks/${r.fork}` : `/repos/${repo}/agents/${r.fork}`);
 </script>
 
 <Shell
@@ -35,15 +38,15 @@
 			{#if !rd.data}
 				<p class="muted">Loading…</p>
 			{:else if !runs.length}
-				<p class="muted">No agent has run here yet. Start one from the map or the Tasks tab.</p>
+				<p class="muted">No agent has run here yet, and nobody has taken a task. Start one from the map or the Tasks tab.</p>
 			{:else}
 				<ul class="runs">
 					{#each runs as r (r.fork)}
 						<li>
-							<a href={href(r.fork)}>
-								<span class="status"><i class="dot {r.status === 'running' ? 'working pulse' : r.status === 'failed' || r.status === 'lost' ? 'conflict' : 'merged'}"></i>{agentLabel(r.status)}</span>
+							<a href={href(r)}>
+								<span class="status"><i class="dot {runDot(r)}"></i>{agentLabel(r.status)}</span>
 								<span class="prompt">{r.prompt.split("\n")[0]}</span>
-								<span class="muted small">{kind(r.fork)} · {r.finished ? `took ${duration(r.finished - r.started)}` : `started ${ago(r.started)}`}</span>
+								<span class="muted small">{kindOf(r)} · {r.finished ? `took ${duration(r.finished - r.started)}` : `started ${ago(r.started)}`}</span>
 							</a>
 						</li>
 					{/each}
