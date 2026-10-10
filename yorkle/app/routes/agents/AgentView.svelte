@@ -26,7 +26,7 @@
 	}
 
 	type Block = { type: string; text?: string; thinking?: string; name?: string; input?: unknown; content?: unknown; is_error?: boolean; tool_use_id?: string; id?: string };
-	type Event = { type: string; subtype?: string; model?: string; message?: { content?: Block[] | string }; result?: string; is_error?: boolean; total_cost_usd?: number; num_turns?: number; duration_ms?: number; hook_event?: string; output?: string; text?: string; bytes?: number };
+	type Event = { type: string; subtype?: string; model?: string; message?: { content?: Block[] | string }; result?: string; is_error?: boolean; num_turns?: number; duration_ms?: number; hook_event?: string; output?: string; text?: string; bytes?: number };
 	let events = $state<Event[]>([]);
 	let status = $state("none");
 	let reason = $state<string>(); // why the run failed after the agent finished: its change wasn't submitted
@@ -169,7 +169,6 @@
 			agentLabel(run?.status ?? status),
 			run && (run.finished ? `took ${duration(run.finished - run.started)}` : `started ${ago(run.started)}`),
 			usage && `${compact(usage.input + usage.cacheRead + usage.cacheWrite)} tokens in · ${compact(usage.output)} out`,
-			result?.total_cost_usd && `$${result.total_cost_usd.toFixed(2)}`,
 			result?.num_turns && `${result.num_turns} ${result.num_turns === 1 ? "turn" : "turns"}`,
 		]
 			.filter(Boolean)
