@@ -25,6 +25,7 @@ export type Task = {
 	created: number;
 	finished: number | null;
 	ready: boolean;
+	skills: string[] | null;
 	role: "agent" | "superagent" | "ferge" | null;
 };
 // A notagent fork that was pushed to and isn't placed yet (auto-placement off, or placement failed).
@@ -52,6 +53,7 @@ export type Settings = {
 	taskApproval: boolean;
 	hasKey: boolean;
 };
+export type Skill = { name: string; description: string; created: number };
 export type MemoryItem = { id: string; text: string; author: string; created: number };
 export type RepoState = {
 	name: string | null;
@@ -65,6 +67,7 @@ export type RepoState = {
 	agents: AgentRun[];
 	tasks: Task[];
 	memory: MemoryItem[];
+	skills: Skill[];
 };
 
 export type Commit = {

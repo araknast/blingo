@@ -2,6 +2,7 @@
 	import BubbleMap from "../lib/BubbleMap.svelte";
 	import ContextMenu, { type MenuItem } from "../lib/ContextMenu.svelte";
 	import Dialog from "../lib/Dialog.svelte";
+	import SkillPicker from "../lib/SkillPicker.svelte";
 	import ModelField from "../lib/ModelField.svelte";
 	import ForkCommands from "../lib/ForkCommands.svelte";
 	import Shell from "../lib/Shell.svelte";
@@ -59,12 +60,13 @@
 	let prompt = $state("");
 	let agentBase = $state("");
 	let agentModel = $state("");
+	let agentSkills = $state<string[] | undefined>(undefined);
 	let busy = $state(false);
 	async function startAgent(e: SubmitEvent) {
 		e.preventDefault();
 		busy = true;
 		try {
-			const r = await api<{ awaitingApproval?: boolean }>("POST", "/agents", { repo, title: agentTitle, prompt, bubble: agentBase || undefined, model: agentModel.trim() || undefined });
+			const r = await api<{ awaitingApproval?: boolean }>("POST", "/agents", { repo, title: agentTitle, prompt, bubble: agentBase || undefined, model: agentModel.trim() || undefined, skills: agentSkills });
 			agentOpen = false;
 			agentTitle = prompt = "";
 			toast(r.awaitingApproval ? "Task filed. It starts once it's approved on the Tasks tab." : "Agent started. Its task is on the Tasks tab.");
@@ -180,6 +182,7 @@
 			{@render base("agent-base", "The agent works on a fork of this bubble's code. When it finishes, its fork joins whichever bubble it fits.")}
 		</div>
 		<div class="field"><ModelField id="agent-model" bind:value={agentModel} /></div>
+		<SkillPicker skills={data?.skills ?? []} bind:chosen={agentSkills} />
 		<button class="primary" disabled={busy}>Start agent</button>
 	</form>
 </Dialog>

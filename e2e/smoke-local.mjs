@@ -35,6 +35,22 @@ try {
 	const mid = (await state(R)).memory[0].id;
 	check((await call("DELETE", `/repos/${R}/memory/${mid}`)).status === 200 && (await state(R)).memory.length === 0, "memory: delete");
 
+	// skills: a folder upload with SKILL.md; tasks may name some; deleting one drops it from tasks
+	const b64 = (x) => Buffer.from(x).toString("base64");
+	const folder = (name, fm) => [
+		{ path: `${name}/SKILL.md`, data: b64(`---\n${fm}\n---\nDo the thing.`) },
+		{ path: `${name}/scripts/run.sh`, data: b64("echo hi") },
+	];
+	check((await call("POST", `/repos/${R}/skills`, { files: [{ path: "x/readme.md", data: b64("hi") }] })).status === 400, "skills: no SKILL.md → 400");
+	check((await call("POST", `/repos/${R}/skills`, { files: folder("pdf", "name: pdf-tools\ndescription: Work with PDFs") })).status === 201, "skills: upload");
+	check((await call("POST", `/repos/${R}/skills`, { files: folder("q", "name: quick\ndescription: Quick things") })).status === 201, "skills: second upload");
+	check((await state(R)).skills.map((s) => s.name).join() === "pdf-tools,quick", "skills: listed");
+	const sk = await call("POST", `/repos/${R}/tasks`, { title: "S", kind: "agent", skills: ["pdf-tools"] });
+	check(sk.status === 201 && (await task(R, sk.task)).skills?.join() === "pdf-tools", "skills: a task names some");
+	check((await call("POST", `/repos/${R}/tasks`, { title: "S", kind: "notagent", skills: ["nope"] })).status === 400, "skills: unknown skill → 400");
+	check((await call("DELETE", `/repos/${R}/skills/pdf-tools`)).status === 200 && (await task(R, sk.task)).skills.length === 0, "skills: delete drops it from tasks");
+	check((await call("DELETE", `/repos/${R}/skills/pdf-tools`)).status === 404, "skills: delete unknown → 404");
+
 	// notagents: description required; title given or defaulted
 	check((await call("POST", "/notagents", { repo: R })).status === 400, "notagent: description required");
 	// agents and superagents run only on the repository's own key
@@ -67,7 +83,7 @@ try {
 
 	// order: creation order
 	const ids = (await state(R)).tasks.map((t) => t.id);
-	check(ids.join() === [n1.task, n2.task, h.task, free.task].join(), "list keeps creation order");
+	check(ids.join() === [sk.task, n1.task, n2.task, h.task, free.task].join(), "list keeps creation order");
 
 	// push to n1 → it is pushed; placement needs containers, so it stops at "placing" here
 	const d = join(mkdtempSync(join(tmpdir(), "smoke-")), "c");

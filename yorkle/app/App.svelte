@@ -10,6 +10,7 @@
 	import BubbleCode from "./routes/BubbleCode.svelte";
 	import Tasks from "./routes/Tasks.svelte";
 	import Agents from "./routes/Agents.svelte";
+	import Skills from "./routes/Skills.svelte";
 	import Memory from "./routes/Memory.svelte";
 	import Settings from "./routes/Settings.svelte";
 	import LooseFork from "./routes/LooseFork.svelte";
@@ -35,6 +36,7 @@
 		if ((m = match("/repos/:repo/tasks", path))) return { page: "tasks", params: m };
 		if ((m = match("/repos/:repo/agents/:id", path))) return { page: "agents", params: m };
 		if ((m = match("/repos/:repo/agents", path))) return { page: "agents", params: m };
+		if ((m = match("/repos/:repo/skills", path))) return { page: "skills", params: m };
 		if ((m = match("/repos/:repo/memory", path))) return { page: "memory", params: m };
 		if ((m = match("/repos/:repo/settings", path))) return { page: "settings", params: m };
 		if ((m = match("/repos/:repo/forks/:fork", path))) return { page: "fork", params: m };
@@ -53,6 +55,7 @@
 	{:else if view.page === "repos"}<Repos />
 	{:else if view.page === "repo"}{#key view.params.repo}<RepoMap repo={view.params.repo} />{/key}
 	{:else if view.page === "agents"}{#key view.params.repo + "/" + view.params.id}<Agents repo={view.params.repo} id={view.params.id} />{/key}
+	{:else if view.page === "skills"}{#key view.params.repo}<Skills repo={view.params.repo} />{/key}
 	{:else if view.page === "memory"}{#key view.params.repo}<Memory repo={view.params.repo} />{/key}
 	{:else if view.page === "settings"}{#key view.params.repo}<Settings repo={view.params.repo} />{/key}
 	{:else if view.page === "fork"}{#key view.params.repo + "/" + view.params.fork}<LooseFork repo={view.params.repo} fork={view.params.fork} />{/key}

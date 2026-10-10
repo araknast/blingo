@@ -27,6 +27,7 @@
 			{ label: "Map", href: base, active: p === base || under("b") },
 			{ label: "Tasks", href: `${base}/tasks`, active: under("tasks"), count: openTasks },
 			{ label: "Agents", href: `${base}/agents`, active: under("agents") || under("forks"), count: activeAgents },
+			{ label: "Skills", href: `${base}/skills`, active: under("skills") },
 			{ label: "Memory", href: `${base}/memory`, active: under("memory") },
 			{ label: "Settings", href: `${base}/settings`, active: under("settings") },
 		];

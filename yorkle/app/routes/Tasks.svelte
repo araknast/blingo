@@ -4,6 +4,7 @@
 	import Dialog from "../lib/Dialog.svelte";
 	import ForkCommands from "../lib/ForkCommands.svelte";
 	import Shell from "../lib/Shell.svelte";
+	import SkillPicker from "../lib/SkillPicker.svelte";
 	import SuperagentDialog from "../lib/SuperagentDialog.svelte";
 	import { navigate } from "../lib/router.svelte";
 	import { ApiError, api, session } from "../lib/session.svelte";
@@ -92,6 +93,7 @@
 	let kind = $state<"agent" | "notagent">("agent");
 	let deps = $state<string[]>([]);
 	let bubble = $state("");
+	let skills = $state<string[] | undefined>(undefined);
 	let busy = $state(false);
 	async function create(e: SubmitEvent) {
 		e.preventDefault();
@@ -103,9 +105,11 @@
 				kind,
 				deps,
 				bubble: deps.length ? undefined : bubble || undefined,
+				skills: kind === "agent" ? skills : undefined,
 			});
 			newOpen = false;
 			title = description = bubble = "";
+			skills = undefined;
 			deps = [];
 			await refresh();
 			navigate(href(r.task));
@@ -178,6 +182,7 @@
 				<p class="hint">It starts once one bubble holds all of these.</p>
 			</fieldset>
 		{/if}
+		{#if kind === "agent"}<SkillPicker skills={data?.skills ?? []} bind:chosen={skills} />{/if}
 		{#if !deps.length}
 			<div class="field">
 				<label for="task-bubble">Start from</label>

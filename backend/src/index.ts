@@ -3,6 +3,7 @@ import { authRemote } from "./box";
 import { diffTrees, resolvePath } from "./git";
 import { friendlyName, nameText, repoName } from "./names";
 import { NO_KEY, isModelId } from "./settings";
+import { parseSkillUpload } from "./skills";
 import { shortTitle } from "./tasks";
 
 export { Box, Outbound } from "./box";
@@ -12,7 +13,7 @@ export { UsersDO } from "./users-do";
 
 const id = () => crypto.randomUUID().slice(0, 8);
 
-type Body = { prompt?: string; title?: string; description?: string; repo?: string; bubble?: string; name?: string; model?: string };
+type Body = { prompt?: string; title?: string; description?: string; repo?: string; bubble?: string; name?: string; model?: string; skills?: string[] };
 type Auth = { user: string; admin: boolean };
 
 const users = (env: Env) => env.USERS.getByName("users");
@@ -153,7 +154,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
 		const repoDO = env.REPO.getByName(src.repo);
 		const kind = a === "agents" ? "agent" : "notagent";
 		const title = shortTitle(body.title?.trim() || description);
-		const added = await repoDO.addTasks(src.repo, [{ title, description, kind, deps: [], bubble: src.bubble, model: body.model }]);
+		const added = await repoDO.addTasks(src.repo, [{ title, description, kind, deps: [], bubble: src.bubble, model: body.model, skills: body.skills }]);
 		if ("error" in added) return Response.json(added, { status: 400 });
 		const [task] = added.ids;
 		if ((await repoDO.task(task))?.status === "awaiting-approval") return Response.json({ repo: src.repo, task, awaitingApproval: true }, { status: 202 });
@@ -184,8 +185,9 @@ async function handle(request: Request, env: Env): Promise<Response> {
 		const from = src.bubble ?? (await repoDO.anyBubble()) ?? src.repo;
 		const { url: remote } = await authRemote(env, from, "read", 3 * 3600);
 		const memory = await repoDO.memories();
+		const skills = (await repoDO.skillPack(null)).map((s) => ({ ...s, files: [] })); // only listed for it
 		const config = await repoDO.agentConfig("superagent", body.model);
-		await env.BOX.getByName(run).startAgent({ repo: src.repo, fork: run, remote, prompt, kind: "superagent", memory, ...config });
+		await env.BOX.getByName(run).startAgent({ repo: src.repo, fork: run, remote, prompt, kind: "superagent", memory, skills, ...config });
 		await repoDO.agentStarted(run, prompt);
 		return Response.json({ repo: src.repo, superagent: run }, { status: 202 });
 	}
@@ -242,7 +244,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
 	}
 	// One task, as an issue tracker files it: an agent task starts once ready; a human one waits to be taken.
 	if (request.method === "POST" && a === "repos" && b && c === "tasks" && !d) {
-		const t = (await request.json()) as { title?: string; description?: string; kind?: string; deps?: unknown; bubble?: string };
+		const t = (await request.json()) as { title?: string; description?: string; kind?: string; deps?: unknown; bubble?: string; skills?: string[] };
 		const title = t.title?.trim() ? shortTitle(t.title) : "";
 		const description = t.description?.trim() ?? "";
 		const deps = t.deps ?? [];
@@ -251,7 +253,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
 		if (!Array.isArray(deps) || deps.some((x) => typeof x !== "string")) return Response.json({ error: "deps must be task ids" }, { status: 400 });
 		const repoDO = env.REPO.getByName(b);
 		if (t.bubble && !(await repoDO.repOf(t.bubble))) return Response.json({ error: "no such bubble" }, { status: 404 });
-		const added = await repoDO.addTasks(b, [{ title, description: description || title, kind: t.kind, deps, bubble: t.bubble ?? null }]);
+		const added = await repoDO.addTasks(b, [{ title, description: description || title, kind: t.kind, deps, bubble: t.bubble ?? null, skills: t.skills }]);
 		return "error" in added ? Response.json(added, { status: 400 }) : Response.json({ task: added.ids[0] }, { status: 201 });
 	}
 	if (request.method === "PATCH" && a === "repos" && b && c === "tasks" && d && !e) {
@@ -292,6 +294,17 @@ async function handle(request: Request, env: Env): Promise<Response> {
 		return (await env.REPO.getByName(b).deleteMemory(d))
 			? Response.json({ ok: true })
 			: Response.json({ error: "no such memory item" }, { status: 404 });
+	}
+	if (request.method === "POST" && a === "repos" && b && c === "skills" && !d) {
+		const skill = parseSkillUpload(((await request.json().catch(() => ({}))) as { files?: unknown }).files);
+		if ("error" in skill) return Response.json(skill, { status: 400 });
+		await env.REPO.getByName(b).addSkill(skill);
+		return Response.json({ name: skill.name }, { status: 201 });
+	}
+	if (request.method === "DELETE" && a === "repos" && b && c === "skills" && d) {
+		return (await env.REPO.getByName(b).deleteSkill(d))
+			? Response.json({ ok: true })
+			: Response.json({ error: "no such skill" }, { status: 404 });
 	}
 	if (a === "repos" && b && c === "settings" && !d) {
 		const repo = env.REPO.getByName(b);

@@ -5,6 +5,7 @@ import { COMMIT_FILES_SH, MERGES, PATCH_SH, readSeries } from "./git-scripts";
 import { conflictKey, nearestNeighbour, placeFork, renameConflicts, type Basis, type Bubble } from "./bubbles";
 import { fergeName, friendlyName, nameText, type Name } from "./names";
 import { DEFAULTS, NO_KEY, gate, updateSettings, type Provider, type Role, type Settings } from "./settings";
+import { resolveSkills, type Skill } from "./skills";
 import { explanation, fixPrompt, ready, renameOwed, shortTitle, type Owed, type PlanItem, type TaskState } from "./tasks";
 
 const POLL_MS = 5_000;
@@ -54,6 +55,7 @@ type TaskRow = TaskState & {
 	finished: number | null;
 	role: Role | null; // which model its agent uses (NULL = agent)
 	model: string | null; // a model chosen for this task alone, over the role's
+	skills: string | null; // JSON list of skill names its agent loads; NULL = all of the repository's
 	prev_fork: string | null; // retried: the failed attempt's run, whose context the next agent gets
 };
 // A task to add: a superagent's plan item (deps by key within the batch), or one from the API.
@@ -86,6 +88,9 @@ export class RepoDO extends DurableObject<Env> {
 				status TEXT NOT NULL DEFAULT 'open', bubble TEXT, fork TEXT, base_head TEXT, explanation TEXT,
 				superagent TEXT, created INTEGER NOT NULL, finished INTEGER, title TEXT NOT NULL DEFAULT '');
 			CREATE TABLE IF NOT EXISTS task_dep(task TEXT NOT NULL, dep TEXT NOT NULL, PRIMARY KEY (task, dep));
+			-- a repository's skills (Claude Code skill folders); files are base64, one row each
+			CREATE TABLE IF NOT EXISTS skill(name TEXT PRIMARY KEY, description TEXT NOT NULL, created INTEGER NOT NULL);
+			CREATE TABLE IF NOT EXISTS skill_file(skill TEXT NOT NULL, path TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY (skill, path));
 			CREATE TABLE IF NOT EXISTS memory(id TEXT PRIMARY KEY, text TEXT NOT NULL, author TEXT NOT NULL, created INTEGER NOT NULL);
 			-- a ferge's locked bubble still owes its conflicting files to bubble "into"
 			CREATE TABLE IF NOT EXISTS owed(locked TEXT NOT NULL, "into" TEXT NOT NULL, PRIMARY KEY (locked, "into"));
@@ -116,6 +121,7 @@ export class RepoDO extends DurableObject<Env> {
 		}
 		this.addColumn("task", "role", "TEXT");
 		this.addColumn("task", "model", "TEXT");
+		this.addColumn("task", "skills", "TEXT"); // JSON list of the skills its agent loads (NULL = all)
 		this.addColumn("task", "prev_fork", "TEXT"); // a retried task's failed attempt (its Box keeps the run)
 		for (const [c, d] of [["kind", "TEXT NOT NULL DEFAULT 'notagent'"], ["ci", "TEXT"], ["ci_log", "TEXT"], ["review_auto", "TEXT"], ["review_manual", "TEXT"], ["review_note", "TEXT"], ["agent_pushes", "INTEGER NOT NULL DEFAULT 0"]]) {
 			this.addColumn("loose", c, d);
@@ -280,12 +286,17 @@ export class RepoDO extends DurableObject<Env> {
 		const dep = (d: string) => ids.get(d) ?? (this.sql.exec("SELECT 1 FROM task WHERE id = ?", d).toArray().length ? d : null);
 		const unknown = items.flatMap((i) => i.deps).find((d) => !dep(d));
 		if (unknown) return { error: `no such task: ${unknown}` };
+		const available = this.skillNames();
+		for (const i of items) {
+			const r = resolveSkills(i.skills, available);
+			if ("error" in r) return r;
+		}
 		this.ctx.storage.kv.put("repo", repo);
 		const status = this.settings().taskApproval ? "awaiting-approval" : "open";
 		items.forEach((i, n) => {
 			const id = ids.get(i.key ?? String(n))!;
 			this.sql.exec(
-				"INSERT INTO task (id, title, description, kind, status, bubble, superagent, created, role, model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				"INSERT INTO task (id, title, description, kind, status, bubble, superagent, created, role, model, skills) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 				id,
 				i.title,
 				i.description,
@@ -296,6 +307,7 @@ export class RepoDO extends DurableObject<Env> {
 				Date.now(),
 				i.role ?? null,
 				i.model || null,
+				i.skills === undefined ? null : JSON.stringify(i.skills),
 			);
 			for (const d of i.deps) this.sql.exec("INSERT OR IGNORE INTO task_dep (task, dep) VALUES (?, ?)", id, dep(d));
 		});
@@ -369,6 +381,40 @@ export class RepoDO extends DurableObject<Env> {
 		}
 	}
 
+	// ---- skills ----
+
+	skillNames(): string[] {
+		return this.sql.exec<{ name: string }>("SELECT name FROM skill ORDER BY name").toArray().map((r) => r.name);
+	}
+
+	// Adds (or replaces) a parsed skill upload.
+	addSkill(skill: Skill) {
+		this.sql.exec("DELETE FROM skill_file WHERE skill = ?", skill.name);
+		this.sql.exec("INSERT OR REPLACE INTO skill (name, description, created) VALUES (?, ?, ?)", skill.name, skill.description, Date.now());
+		for (const f of skill.files) this.sql.exec("INSERT INTO skill_file (skill, path, data) VALUES (?, ?, ?)", skill.name, f.path, f.data);
+	}
+
+	// Removing a skill also takes it out of the tasks that named it.
+	deleteSkill(name: string): boolean {
+		for (const t of this.sql.exec<{ id: string; skills: string }>("SELECT id, skills FROM task WHERE skills IS NOT NULL").toArray()) {
+			const rest = (JSON.parse(t.skills) as string[]).filter((n) => n !== name);
+			this.sql.exec("UPDATE task SET skills = ? WHERE id = ?", JSON.stringify(rest), t.id);
+		}
+		this.sql.exec("DELETE FROM skill_file WHERE skill = ?", name);
+		return this.sql.exec("DELETE FROM skill WHERE name = ?", name).rowsWritten > 0;
+	}
+
+	// The skills an agent loads: those a task names (a JSON list; NULL = all), with their files.
+	// A superagent gets every skill, as a list only (it assigns them to tasks).
+	skillPack(named: string | null): Skill[] {
+		const names = named === null ? this.skillNames() : (JSON.parse(named) as string[]);
+		return this.sql
+			.exec<{ name: string; description: string }>("SELECT name, description FROM skill ORDER BY name")
+			.toArray()
+			.filter((s) => names.includes(s.name))
+			.map((s) => ({ ...s, files: this.sql.exec<{ path: string; data: string }>("SELECT path, data FROM skill_file WHERE skill = ?", s.name).toArray() }));
+	}
+
 	// New memory items also reach agents already running, through their memory hook (Box.pushMemory).
 	async addMemory(texts: string[], author: string) {
 		for (const text of texts) {
@@ -426,7 +472,7 @@ export class RepoDO extends DurableObject<Env> {
 					this.sql.exec("UPDATE task SET fork = ?, base_head = ? WHERE id = ?", fork, base, t.id);
 					const { url: remote } = await authRemote(this.env, fork, "write", 3 * 3600);
 					const prompt = `# ${t.title}\n\n${t.description}`;
-					await this.env.BOX.getByName(fork).startAgent({ repo, fork, remote, prompt, kind: "agent", memory, previous: t.prev_fork ?? undefined, ...this.agentConfig(t.role ?? "agent", t.model) });
+					await this.env.BOX.getByName(fork).startAgent({ repo, fork, remote, prompt, kind: "agent", memory, skills: this.skillPack(t.skills), previous: t.prev_fork ?? undefined, ...this.agentConfig(t.role ?? "agent", t.model) });
 					this.agentStarted(fork, t.title);
 				} catch (e) {
 					console.error(`starting task ${t.id}`, e);
@@ -590,8 +636,9 @@ export class RepoDO extends DurableObject<Env> {
 				.exec<AgentRun>("SELECT * FROM agent_run ORDER BY status = 'running' DESC, started DESC LIMIT 50")
 				.toArray(),
 			// `ready`: open and its deps have landed together, so it starts (agent) or can be taken (notagent).
-			tasks: this.tasks().map(({ base_head, ...t }) => ({ ...t, ready: startable.has(t.id) })),
+			tasks: this.tasks().map(({ base_head, skills, ...t }) => ({ ...t, skills: skills === null ? null : JSON.parse(skills), ready: startable.has(t.id) })),
 			memory: this.sql.exec("SELECT * FROM memory ORDER BY created").toArray(),
+			skills: this.sql.exec("SELECT name, description, created FROM skill ORDER BY name").toArray(),
 		};
 	}
 
@@ -651,7 +698,7 @@ export class RepoDO extends DurableObject<Env> {
 		await Promise.allSettled([...runs, ...ci].map((n) => this.env.BOX.getByName(n).stop()));
 		await this.ctx.storage.deleteAlarm();
 		this.sql.exec(
-			"DELETE FROM bubble; DELETE FROM fork; DELETE FROM conflict; DELETE FROM locked; DELETE FROM hidden; DELETE FROM loose; DELETE FROM agent_run; DELETE FROM task; DELETE FROM task_dep; DELETE FROM memory; DELETE FROM owed; DELETE FROM basis; DELETE FROM renamed; DELETE FROM merging;",
+			"DELETE FROM bubble; DELETE FROM fork; DELETE FROM conflict; DELETE FROM locked; DELETE FROM hidden; DELETE FROM loose; DELETE FROM agent_run; DELETE FROM task; DELETE FROM task_dep; DELETE FROM memory; DELETE FROM skill; DELETE FROM skill_file; DELETE FROM owed; DELETE FROM basis; DELETE FROM renamed; DELETE FROM merging;",
 		);
 		for (const k of ["repo", "seq", "name", "namedFirst", "settings", "apiKey"]) this.ctx.storage.kv.delete(k);
 		return deleted;
@@ -843,14 +890,14 @@ export class RepoDO extends DurableObject<Env> {
 	// A new agent run on the same fork, told what the task was and what failed.
 	private async startFixer(fork: string, steps: string[]) {
 		const l = this.loose(fork)!;
-		const t = this.sql.exec<{ title: string; description: string; model: string | null }>("SELECT title, description, model FROM task WHERE fork = ?", fork).toArray()[0];
+		const t = this.sql.exec<{ title: string; description: string; model: string | null; skills: string | null }>("SELECT title, description, model, skills FROM task WHERE fork = ?", fork).toArray()[0];
 		const repo = this.ctx.storage.kv.get<string>("repo")!;
 		const run = `${fork}-c${l.agent_pushes}`;
 		if (!this.credentials()) return this.toNotagent(fork, `${l.reason ?? "CI failed"}; no fixer agent: ${NO_KEY}, so a person takes over`);
 		const prompt = fixPrompt({ title: t?.title ?? "", description: t?.description ?? "", failed: steps, command: this.settings().ci.command, log: l.ci_log, review: l.review_note });
 		try {
 			const { url } = await authRemote(this.env, fork, "write", 3 * 3600);
-			await this.env.BOX.getByName(run).startAgent({ repo, fork, run, remote: url, prompt, kind: "agent", memory: this.memories(), ...this.agentConfig("agent", t?.model) });
+			await this.env.BOX.getByName(run).startAgent({ repo, fork, run, remote: url, prompt, kind: "agent", memory: this.memories(), skills: this.skillPack(t?.skills ?? null), ...this.agentConfig("agent", t?.model) });
 			this.agentStarted(run, `Fix: ${t?.title ?? fork}`);
 		} catch (e) {
 			console.error(`starting fixer ${run}`, e);
