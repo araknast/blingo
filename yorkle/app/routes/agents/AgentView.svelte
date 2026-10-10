@@ -1,7 +1,8 @@
 <script lang="ts">
 	// One agent run: its Claude Code transcript (stream-json events from GET /agents/:id/transcript),
-	// polled while it runs. Thinking, tool calls and results fold away; text and the result stay open.
+	// polled while it runs. Each tool call is one row with its result; text and the result stay open.
 	import { onDestroy, tick as nextTick } from "svelte";
+	import Code from "../../lib/Code.svelte";
 	import Markdown from "../../lib/Markdown.svelte";
 	import { api } from "../../lib/session.svelte";
 	import type { AgentRun } from "../../lib/types";
@@ -66,6 +67,71 @@
 	const output = (c: unknown) =>
 		typeof c === "string" ? c : Array.isArray(c) ? c.map((x: { text?: string; type?: string }) => x.text ?? `[${x.type}]`).join("\n") : JSON.stringify(c, null, 2);
 	const json = (x: unknown) => JSON.stringify(x, null, 2);
+
+	// The transcript as rows: a tool call carries its result (matched by id); runs of more than FOLD
+	// tool calls in a row fold into one group.
+	type Tool = { id?: string; name: string; input: Record<string, any>; result?: string; error?: boolean };
+	type Item =
+		| { kind: "text"; text: string }
+		| { kind: "thinking"; text: string }
+		| { kind: "tool"; tool: Tool }
+		| { kind: "tools"; tools: Tool[] }
+		| { kind: "event"; e: Event };
+	const FOLD = 3;
+	const items = $derived.by(() => {
+		const out: Item[] = [];
+		const byId = new Map<string, Tool>();
+		for (const e of events) {
+			if (e.type === "assistant") {
+				for (const b of blocks(e)) {
+					if (b.type === "text" && b.text?.trim()) out.push({ kind: "text", text: b.text });
+					else if (b.type === "thinking") out.push({ kind: "thinking", text: b.thinking ?? "" });
+					else if (b.type === "tool_use") {
+						const tool: Tool = { id: b.id, name: b.name ?? "tool", input: (b.input ?? {}) as Record<string, any> };
+						if (b.id) byId.set(b.id, tool);
+						out.push({ kind: "tool", tool });
+					}
+				}
+			} else if (e.type === "user") {
+				for (const b of blocks(e)) {
+					if (b.type !== "tool_result") continue;
+					const tool = b.tool_use_id ? byId.get(b.tool_use_id) : undefined;
+					if (tool) Object.assign(tool, { result: output(b.content), error: !!b.is_error });
+					else out.push({ kind: "tool", tool: { name: "Result", input: {}, result: output(b.content), error: !!b.is_error } });
+				}
+			} else if (e.type !== "system" || (e.subtype === "hook_response" && hookContext(e.output))) out.push({ kind: "event", e });
+		}
+		// Fold runs of tool rows (the run still being written stays open, so live output is visible).
+		const folded: Item[] = [];
+		for (let i = 0; i < out.length; ) {
+			let j = i;
+			while (j < out.length && out[j].kind === "tool") j++;
+			if (j - i > FOLD && j < out.length) folded.push({ kind: "tools", tools: out.slice(i, j).map((x) => (x as { tool: Tool }).tool) }), (i = j);
+			else if (j > i) folded.push(...out.slice(i, j)), (i = j);
+			else folded.push(out[i++]);
+		}
+		return folded;
+	});
+
+	const rel = (p?: string) => (typeof p === "string" ? p.replace(/^\/workspace\/repo\//, "") : "");
+	// What a tool call did, in one line.
+	function summary(t: Tool): string {
+		const i = t.input;
+		switch (t.name) {
+			case "Bash": return i.command ?? "";
+			case "Read": case "Write": case "Edit": case "MultiEdit": return rel(i.file_path);
+			case "NotebookEdit": return rel(i.notebook_path);
+			case "Grep": return `${i.pattern ?? ""}${i.path ? ` in ${rel(i.path)}` : ""}`;
+			case "Glob": return i.pattern ?? "";
+			case "WebFetch": return i.url ?? "";
+			case "WebSearch": return i.query ?? "";
+			case "TodoWrite": return `${(i.todos ?? []).length} to-dos`;
+			default: return typeof i.description === "string" ? i.description : "";
+		}
+	}
+	// Edit / MultiEdit as removed and added lines.
+	const edits = (t: Tool): { old_string?: string; new_string?: string }[] => (t.name === "MultiEdit" ? (t.input.edits ?? []) : [t.input]);
+	const lines = (s?: string) => (s ?? "").split("\n");
 	const hookContext = (o?: string) => {
 		try {
 			return JSON.parse(o ?? "").hookSpecificOutput?.additionalContext ?? "";
@@ -91,6 +157,42 @@
 	</p>
 </header>
 
+{#snippet tool(t: Tool)}
+	<details class="tool" class:error={t.error}>
+		<summary>
+			<i class="state" class:done={t.result !== undefined && !t.error} class:fail={t.error} class:pulse={t.result === undefined && live}></i>
+			<span class="name">{t.name}</span>
+			<span class="arg">{summary(t)}</span>
+		</summary>
+		<div class="body">
+			{#if t.name === "Bash"}
+				<pre class="cmd"><span class="prompt">$</span> {t.input.command}</pre>
+			{:else if (t.name === "Edit" || t.name === "MultiEdit") && edits(t).some((x) => typeof x.old_string === "string")}
+				<div class="diff">
+					{#each edits(t) as x, n}
+						{#if n}<div class="hunk">⋯</div>{/if}
+						{#each lines(x.old_string) as l}<div class="del">- {l}</div>{/each}
+						{#each lines(x.new_string) as l}<div class="add">+ {l}</div>{/each}
+					{/each}
+				</div>
+			{:else if t.name === "Write" && typeof t.input.content === "string"}
+				<div class="code"><Code text={t.input.content} path={rel(t.input.file_path)} /></div>
+			{:else if t.name === "TodoWrite" && Array.isArray(t.input.todos)}
+				<ul class="todos">
+					{#each t.input.todos as td}<li class={td.status}><span class="check">{td.status === "completed" ? "☑" : td.status === "in_progress" ? "◐" : "☐"}</span> {td.content}</li>{/each}
+				</ul>
+			{:else if !["Read", "Glob", "Grep"].includes(t.name) && Object.keys(t.input).length}
+				<pre>{json(t.input)}</pre>
+			{/if}
+			{#if t.result !== undefined && t.result.trim() && t.name !== "TodoWrite"}
+				<pre class="out" class:err={t.error}>{t.result}</pre>
+			{:else if t.result === undefined}
+				<p class="muted pad">{live ? "Running…" : "No result was recorded."}</p>
+			{/if}
+		</div>
+	</details>
+{/snippet}
+
 {#snippet spin()}
 	<p class="thinking"><span class="glyph">{glyphs[tick % glyphs.length]}</span> {verbs[Math.floor(tick / 40) % verbs.length]}… <span class="muted">({elapsed})</span></p>
 {/snippet}
@@ -103,34 +205,31 @@
 {:else}
 	<div class="box" bind:this={box} {onscroll}>
 	<ol class="events">
-		{#each events as e, i (i)}
-			{#if e.type === "assistant"}
-				{#each blocks(e) as b}
-					{#if b.type === "text" && b.text?.trim()}
-						<li class="text"><Markdown text={b.text} /></li>
-					{:else if b.type === "thinking"}
-						<li><details><summary>Thinking</summary>{#if b.thinking}<pre class="thought">{b.thinking}</pre>{:else}<p class="muted pad">Its thinking isn't shown.</p>{/if}</details></li>
-					{:else if b.type === "tool_use"}
-						<li><details><summary><span class="tool">{b.name}</span> <span class="muted">{typeof (b.input as { description?: string })?.description === "string" ? (b.input as { description: string }).description : ""}</span></summary><pre>{json(b.input)}</pre></details></li>
-					{/if}
-				{/each}
-			{:else if e.type === "user"}
-				{#each blocks(e) as b}
-					{#if b.type === "tool_result"}
-						<li><details><summary class:error={b.is_error}>{b.is_error ? "Tool error" : "Tool result"}</summary><pre>{output(b.content)}</pre></details></li>
-					{/if}
-				{/each}
-			{:else if e.type === "system" && e.subtype === "hook_response" && hookContext(e.output)}
-				<li><details><summary>Memory update ({e.hook_event})</summary><pre>{hookContext(e.output)}</pre></details></li>
-			{:else if e.type === "result"}
-				<li class="result" class:error={e.is_error}>
-					<strong>{e.is_error ? "Ended with an error" : "Finished"}</strong>
-					{#if e.result}<Markdown text={e.result} />{/if}
+		{#each items as it, i (i)}
+			{#if it.kind === "text"}
+				<li class="text"><Markdown text={it.text} /></li>
+			{:else if it.kind === "thinking"}
+				<li><details class="quiet"><summary><span class="mark">✻</span> Thinking</summary>{#if it.text}<pre class="thought">{it.text}</pre>{:else}<p class="muted pad">Its thinking isn't shown.</p>{/if}</details></li>
+			{:else if it.kind === "tool"}
+				<li>{@render tool(it.tool)}</li>
+			{:else if it.kind === "tools"}
+				<li>
+					<details class="group">
+						<summary><span class="mark">⋯</span> {it.tools.length} tool calls <span class="muted">{[...new Set(it.tools.map((t) => t.name))].join(", ")}</span>{#if it.tools.some((t) => t.error)}<span class="err">&nbsp;· {it.tools.filter((t) => t.error).length} failed</span>{/if}</summary>
+						<ol class="events nested">{#each it.tools as t}<li>{@render tool(t)}</li>{/each}</ol>
+					</details>
 				</li>
-			{:else if e.type === "truncated"}
-				<li class="muted">An event of {Math.round((e.bytes ?? 0) / 1000)} KB was too big to keep.</li>
-			{:else if e.type === "raw" && e.text}
-				<li><pre>{e.text}</pre></li>
+			{:else if it.e.type === "system"}
+				<li><details class="quiet"><summary><span class="mark">✎</span> Memory update <span class="muted">({it.e.hook_event})</span></summary><pre>{hookContext(it.e.output)}</pre></details></li>
+			{:else if it.e.type === "result"}
+				<li class="result" class:error={it.e.is_error}>
+					<strong>{it.e.is_error ? "Ended with an error" : "Finished"}</strong>
+					{#if it.e.result}<Markdown text={it.e.result} />{/if}
+				</li>
+			{:else if it.e.type === "truncated"}
+				<li class="muted">An event of {Math.round((it.e.bytes ?? 0) / 1000)} KB was too big to keep.</li>
+			{:else if it.e.type === "raw" && it.e.text}
+				<li><pre class="plain">{it.e.text}</pre></li>
 			{/if}
 		{/each}
 	</ol>
@@ -151,16 +250,51 @@
 	.head h1 { margin: 0.2rem 0 0.4rem; overflow-wrap: anywhere; }
 	.head .dot { vertical-align: 0.05em; margin-right: 0.2rem; }
 	.box { max-height: calc(100vh - 15rem); min-height: 10rem; overflow: auto; border: 1px solid var(--line); border-radius: var(--r-md); padding: 0.75rem; background: var(--paper); }
-	.events { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; }
+	.events { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.35rem; }
 	.events li { min-width: 0; }
-	.text :global(.md) { padding: 0.25rem 0; }
-	details { border: 1px solid var(--line-2); border-radius: var(--r-sm); background: var(--raised); }
-	summary { cursor: pointer; padding: 0.45rem 0.75rem; font-size: 0.875rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-	summary.error { color: var(--conflict); }
-	.tool { font-family: var(--mono); font-weight: 600; }
-	pre { margin: 0; padding: 0.6rem 0.75rem; border-top: 1px solid var(--line-2); white-space: pre-wrap; font-size: 0.75rem; }
-	.thought { font-style: italic; color: var(--ink-2); }
-	.pad { padding: 0.5rem 0.75rem; }
+	.nested { padding: 0.4rem 0.5rem 0.5rem 1.4rem; }
+	.text { padding: 0.15rem 0; }
+	.text :global(.md) { padding: 0.25rem 0.25rem; max-width: none; }
+	details { border-radius: var(--r-sm); }
+	summary { cursor: pointer; padding: 0.35rem 0.6rem; font-size: 0.8125rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; list-style: none; border-radius: var(--r-sm); }
+	summary::-webkit-details-marker { display: none; }
+	summary:hover { background: var(--fog); }
+	.mark { display: inline-block; width: 1.1em; color: var(--ink-3); font-family: var(--mono); }
+	.quiet summary { color: var(--ink-2); }
+	.group { border: 1px dashed var(--line); }
+	.group > summary { color: var(--ink-2); }
+	.err { color: var(--conflict); }
+
+	/* A tool call: a status dot, the tool, its main argument; the body is input then output. */
+	.tool { font-family: var(--mono); }
+	.tool > summary { display: flex; align-items: baseline; gap: 0.55rem; }
+	.state { flex: none; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--pending); align-self: center; }
+	.state.done { background: var(--merged); }
+	.state.fail { background: var(--conflict); }
+	.name { flex: none; font-weight: 600; color: var(--ink); }
+	.arg { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--ink-2); }
+	.tool.error .name { color: var(--conflict); }
+	.tool[open] > summary { background: var(--fog); border-radius: var(--r-sm) var(--r-sm) 0 0; }
+	.body { border: 1px solid var(--line-2); border-top: 0; border-radius: 0 0 var(--r-sm) var(--r-sm); background: var(--raised); overflow: hidden; }
+	.body > :not(:first-child) { border-top: 1px solid var(--line-2); }
+	pre { margin: 0; padding: 0.55rem 0.75rem; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); font-size: 0.75rem; line-height: 1.5; max-height: 24rem; overflow: auto; }
+	.plain { border: 1px solid var(--line-2); border-radius: var(--r-sm); }
+	.cmd { color: var(--ink); }
+	.prompt { color: var(--merged); user-select: none; }
+	.out { color: var(--ink-2); background: var(--paper); }
+	.out.err { color: var(--del-ink); background: var(--del-bg); }
+	.diff { font-family: var(--mono); font-size: 0.75rem; line-height: 1.5; max-height: 24rem; overflow: auto; }
+	.diff > div { padding: 0 0.75rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+	.diff .del { background: var(--del-bg); color: var(--del-ink); }
+	.diff .add { background: var(--add-bg); color: var(--add-ink); }
+	.diff .hunk { color: var(--ink-3); }
+	.code { max-height: 24rem; overflow: auto; font-size: 0.75rem; }
+	.todos { list-style: none; margin: 0; padding: 0.5rem 0.75rem; font-size: 0.8125rem; display: grid; gap: 0.15rem; }
+	.todos .completed { color: var(--ink-3); text-decoration: line-through; }
+	.todos .in_progress { font-weight: 600; }
+	.todos .check { display: inline-block; width: 1.2em; }
+	.thought { font-family: var(--font); font-style: italic; color: var(--ink-2); border-left: 2px solid var(--line); margin: 0.2rem 0 0.2rem 0.9rem; max-height: none; }
+	.pad { padding: 0.5rem 0.75rem; margin: 0; font-size: 0.8125rem; }
 	.result { border-left: 3px solid var(--merged); padding-left: 0.9rem; margin-top: 0.5rem; }
 	.result.error { border-color: var(--conflict); }
 	.result :global(.md) { padding: 0.4rem 0; }
