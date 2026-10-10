@@ -80,14 +80,16 @@ created before users existed have no owner, so only the admin can reach them. An
 | `GET /verify?token=…` | No auth. Creates the account and spends the invite |
 | `POST /login {username, password}` → `{token, username, admin}` | No auth. Session token valid 30 days |
 | `POST /logout` | End this session |
-| `GET /me` | `{username, admin, repos}` |
+| `GET /me` | `{username, admin, repos, names}` (`names`: repository id → display name) |
 | `POST /invites` → `{code}` | Admin only. A single-use invite code |
-| `POST /agents {prompt, repo?, bubble?}` | Fork and run Claude Code on it. No `repo` → new repository; no `bubble` → any bubble |
+| `POST /repos {name?}` → `{repo}` | A new, empty repository with a display name |
+| `POST /agents {prompt, repo?, bubble?, name?}` | Fork and run Claude Code on it. No `repo` → new repository (named `name`, else the title); no `bubble` → any bubble. With task approval on → `{task, awaitingApproval: true}` |
+| `PATCH /repos/:repo/tasks/:id {title?, description?}` / `POST …/approve` | Edit or approve a task awaiting approval |
 | `POST /notagents {repo?, bubble?}` | Fork and return a git remote with a 1-hour push token; a push gets placed (or waits as a loose fork when `autoPlaceNotagents` is off) |
 | `GET /agents/:fork` | One agent's sandbox status and log tail |
 | `GET /agents/:fork/transcript` | `{status, events}`: the run's Claude Code stream-json events (thinking, text, tool calls and results) |
 | `GET /repos/:repo` | Bubbles, members, conflicts, bubbles merging, notagents waiting for a push (`waiting`), being placed (`placing`) or pushed and not placed (`loose`), settings, agent runs |
-| `GET /repos/:repo/settings` / `PUT … {autoPlaceNotagents?, ci?: {enabled?, command?, hosts?}, review?, maxAgentPushes?, provider?, models?: {agent?, superagent?, ferge?}, apiKey?}` | Repository settings. `review`: none / auto / manual / both; `provider`: anthropic / openrouter; `apiKey` is write-only (`"" ` removes it; `hasKey` says whether one is set) |
+| `GET /repos/:repo/settings` / `PUT … {autoPlaceNotagents?, ci?: {enabled?, command?, hosts?}, review?, maxAgentPushes?, provider?, models?: {agent?, superagent?, ferge?}, apiKey?}` | Repository settings. `review`: none / auto / manual / both; `provider`: anthropic / openrouter; `fergeAgents`, `taskApproval`: booleans; `apiKey` is write-only (`"" ` removes it; `hasKey` says whether one is set) |
 | `POST /repos/:repo/forks/:fork/place` | Place a loose notagent fork |
 | `POST /repos/:repo/forks/:fork/token` | A fresh 1-hour push token for a notagent's loose fork |
 | `POST /repos/:repo/forks/:fork/review {approve, comment?}` | A manual review of a loose fork waiting for one |

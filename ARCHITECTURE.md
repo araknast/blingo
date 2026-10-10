@@ -26,6 +26,11 @@ browser ──► yorkle Worker ──(service binding)──► blingo Worker �
 ## Names
 
 - Repository `r-xxxxxxxx` = an Artifacts repo (the empty starting point) + one RepoDO keyed by that name.
+  Its display name (`POST /repos {name}`, else a friendly "adjective noun") is in UsersDO `repo.title`
+  and the RepoDO's KV (`name`).
+- Bubble names (`src/names.ts`): the repository's first bubble is called after the repository; later
+  ones get a friendly "adjective noun"; a ferge bubble is called `<adj a> <adj b> <noun a><noun b> ferge`.
+  A bubble keeps its name when it absorbs another.
 - Fork `r-xxxxxxxx-f-yyyyyyyy` = an Artifacts repo forked from the base or a bubble representative.
 - Bubble id = the name of its **representative** fork (the fork that started it). The rep's repo holds the bubble's code, and only the bubble's own Box (`bubble-<id>`) ever writes it.
 
@@ -33,7 +38,7 @@ browser ──► yorkle Worker ──(service binding)──► blingo Worker �
 
 | Table | Holds |
 |---|---|
-| `bubble(id, visible, seq, epoch, ferge)` | `visible = 0` while it is in a neighbour merge or ferge (hidden from placement); `epoch` goes up when its code changes other than by applying a member's series (absorbing a bubble, a ferge); `ferge = 1` for a ferge's locked bubble |
+| `bubble(id, visible, seq, epoch, ferge, name, adj, noun)` | `visible = 0` while it is in a neighbour merge or ferge (hidden from placement); `epoch` goes up when its code changes other than by applying a member's series (absorbing a bubble, a ferge); `ferge = 1` for a ferge's locked bubble |
 | `fork(name, bubble, status, files, diff, seq)` | a member and its change table. status `rep` / `pending` (its patch series is queued) / `merged` (applied) / `failed` (its series didn't apply) / `conflict` (a fork from before patch series that didn't merge); `files` = paths it changed (JSON); `diff` = its patch series (mbox); `seq` = when it was applied, across the repository |
 | `conflict(k)` | `"a|b"` bubble pairs whose merge failed; never retried (except by a ferge). When a bubble is absorbed, its pairs move to the bubble that absorbed it |
 | `locked(id)` | locked bubbles: placeable, but excluded from neighbour merges |
@@ -106,6 +111,9 @@ task. `POST /agents` and `POST /notagents` add a one-task batch and start it; `P
 waits to be taken); a superagent adds a whole plan. Every task has a short title: given, or
 `shortTitle` of the description (first line, ≤ 60 chars at a word). A dep names a task in the same
 batch by key, or an existing task by id. Agents get `# title` then the description as their prompt.
+With the setting `taskApproval`, every new task (filed, planned, from `/agents` or `/notagents`, or a ferge
+agent's) starts as `awaiting-approval`: it never starts, it can be edited (`PATCH /repos/:r/tasks/:id
+{title?, description?}`), and `POST …/approve` opens it.
 In yorkle, tasks are the repository's **Tasks** tab (`/repos/:r/tasks`, `/repos/:r/tasks/:id`),
 an issue tracker beside the Map tab.
 `schedule()` runs from `addTasks`, `retryTask` and every alarm. It starts each `ready` agent task:
@@ -225,7 +233,9 @@ Then b is absorbed into a (its rep repo and Box deleted), the conflict row goes,
 becomes a **locked ferge bubble** (`ferge = 1`). Its file set is everything in its tree (like any new
 bubble); the API returns just the conflicting files. A fix forked from it only ever goes back into
 it (the home rule lets it change the conflicting files there), and it stays locked until someone
-unlocks it, so the fix merges back with it. A fix that no longer fits there fails.
+unlocks it, so the fix merges back with it. A fix that no longer fits there fails. With the setting
+`fergeAgents`, the ferge also files an agent task on the ferge bubble to resolve its markers, run with
+the `models.ferge` model (task `role` = ferge).
 
 ## Sandbox and secrets
 
