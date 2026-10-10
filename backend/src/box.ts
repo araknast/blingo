@@ -2,7 +2,7 @@ import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { APPLY_SH, CONFLICT, ENSURE_REP, FERGE_SH, MEMORY_HOOK_SH, MERGES, MERGE_SH, NO_CONFLICT, PATCH_SH, PUSH_SH, REP, readSeries } from "./git-scripts";
 import { MODEL_HOSTS, egress, type Provider } from "./settings";
 import { retryNote, validatePlan } from "./tasks";
-import { completeLines } from "./transcript";
+import { NO_USAGE, completeLines, usageFromBody, type Usage } from "./transcript";
 
 // Containers re-sign intercepted HTTPS with this CA; git/node/curl must trust it.
 const CA = "/etc/cloudflare/certs/cloudflare-containers-ca.crt";
@@ -115,10 +115,11 @@ export async function authRemote(env: Env, name: string, scope: "read" | "write"
 // (props.repo) reach the internet, and their repository's model API with its own key added here, so
 // no key ever enters a sandbox; there is no fallback key. CI Boxes (props.ci = its hosts) reach only
 // Artifacts and those hosts, other Boxes only Artifacts.
-export class Outbound extends WorkerEntrypoint<Env, { ci?: string[]; repo?: string }> {
+// `box`: the agent Box's name, which is told each model response's token use (Box.addUsage).
+export class Outbound extends WorkerEntrypoint<Env, { ci?: string[]; repo?: string; box?: string }> {
 	async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url);
-		const { ci, repo } = this.ctx.props ?? {};
+		const { ci, repo, box } = this.ctx.props ?? {};
 		const creds = repo && Object.values(MODEL_HOSTS).includes(url.hostname) ? await this.env.REPO.getByName(repo).credentials() : null;
 		const to = egress(url, { ci, agent: !!repo, provider: creds?.provider });
 		if (to === "pass") return fetch(request);
@@ -128,7 +129,20 @@ export class Outbound extends WorkerEntrypoint<Env, { ci?: string[]; repo?: stri
 		headers.delete("authorization");
 		if (creds!.provider === "openrouter") headers.set("authorization", `Bearer ${creds!.key}`);
 		else headers.set("x-api-key", creds!.key);
-		return fetch(new Request(request, { headers }));
+		const res = await fetch(new Request(request, { headers }));
+		if (!box || !res.body) return res;
+		// Read a copy of the body for its token use; the agent gets the other copy as it streams.
+		const [mine, theirs] = res.body.tee();
+		this.ctx.waitUntil(
+			new Response(mine)
+				.text()
+				.then((t) => {
+					const u = usageFromBody(t);
+					if (u.input || u.output || u.cacheRead || u.cacheWrite) return this.env.BOX.getByName(box).addUsage(u);
+				})
+				.catch(() => {}),
+		);
+		return new Response(theirs, res);
 	}
 }
 
@@ -154,7 +168,7 @@ export class Box extends DurableObject<Env> {
 				const outbound = ci
 					? this.ctx.exports.Outbound({ props: { ci: ci.hosts } })
 					: repo
-						? this.ctx.exports.Outbound({ props: { repo } })
+						? this.ctx.exports.Outbound({ props: { repo, box: this.ctx.id.name } })
 						: this.ctx.exports.Outbound;
 				try {
 					await c.interceptAllOutboundHttp(outbound);
@@ -285,6 +299,7 @@ export class Box extends DurableObject<Env> {
 		this.ctx.storage.kv.put("job", { ...job, remote: "", memory: [] }); // don't persist the token
 		this.ctx.storage.kv.put("status", "running");
 		this.ctx.storage.kv.delete("reason");
+		this.ctx.storage.kv.delete("usage");
 		await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
 	}
 
@@ -320,17 +335,19 @@ export class Box extends DurableObject<Env> {
 	// `from` is a line cursor: only events after the first `from` lines are returned, with the cursor to
 	// pass next time. (Stored transcripts drop blank lines, so the client refetches from 0 once a run ends.)
 	// `reason`: why a run whose agent finished failed anyway (its change wasn't submitted).
-	async transcript(from = 0): Promise<{ status: string; reason?: string; events: unknown[]; next: number }> {
+	// `usage`: its token use so far (absent for runs from before it was counted).
+	async transcript(from = 0): Promise<{ status: string; reason?: string; usage?: Usage; events: unknown[]; next: number }> {
 		this.transcriptTable();
 		from = Math.max(0, Math.floor(from) || 0);
 		const status = this.ctx.storage.kv.get<string>("status") ?? "none";
+		const usage = this.ctx.storage.kv.get<Usage>("usage");
 		if (this.ctx.storage.kv.get("job") && this.ctx.container?.running) {
 			const raw = (await this.sh(`tail -n +${from + 1} ${TASK}/transcript.jsonl 2>/dev/null | head -c 8000000 || true`)).stdout;
 			const { lines, count } = completeLines(raw);
-			return { status, events: lines.map(parseEvent), next: from + count };
+			return { status, usage, events: lines.map(parseEvent), next: from + count };
 		}
 		const rows = this.sql.exec<{ line: string }>("SELECT line FROM transcript WHERE seq >= ? ORDER BY seq", from).toArray();
-		return { status, reason: this.ctx.storage.kv.get<string>("reason"), events: rows.map((r) => parseEvent(r.line)), next: from + rows.length };
+		return { status, reason: this.ctx.storage.kv.get<string>("reason"), usage, events: rows.map((r) => parseEvent(r.line)), next: from + rows.length };
 	}
 
 	// Stores the finished run's transcript; returns its final result text (or error) for the run's log.
@@ -346,6 +363,12 @@ export class Box extends DurableObject<Env> {
 	status() {
 		const kv = this.ctx.storage.kv;
 		return { status: kv.get<string>("status") ?? "none", log: kv.get<string>("log"), reason: kv.get<string>("reason") };
+	}
+
+	// The run's token use so far, summed over its model responses (Outbound reports each).
+	addUsage(u: Usage) {
+		const t = this.ctx.storage.kv.get<Usage>("usage") ?? NO_USAGE;
+		this.ctx.storage.kv.put("usage", { input: t.input + u.input, output: t.output + u.output, cacheRead: t.cacheRead + u.cacheRead, cacheWrite: t.cacheWrite + u.cacheWrite });
 	}
 
 	// The finished run's stored transcript as JSONL (for a retry of it).

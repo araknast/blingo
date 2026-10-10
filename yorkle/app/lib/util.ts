@@ -18,6 +18,9 @@ export function ago(ms: number) {
 	return new Date(ms).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 
+// 35400000 → "35.4M", 194290 → "194.3K".
+export const compact = (n: number) => new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(n);
+
 export function duration(ms: number) {
 	const m = Math.round(ms / 60000);
 	return m < 1 ? "under a minute" : m === 1 ? "1 minute" : m < 60 ? `${m} minutes` : `${(m / 60).toFixed(1)} hours`;

@@ -7,7 +7,7 @@
 	import { api } from "../../lib/session.svelte";
 	import { toast, toastError } from "../../lib/toast.svelte";
 	import type { AgentRun } from "../../lib/types";
-	import { agentLabel, ago, duration, poll } from "../../lib/util";
+	import { agentLabel, ago, compact, duration, poll } from "../../lib/util";
 
 	let { repo, id, run, task, kind }: { repo: string; id: string; run?: AgentRun; task?: string; kind: string } = $props();
 
@@ -30,12 +30,13 @@
 	let events = $state<Event[]>([]);
 	let status = $state("none");
 	let reason = $state<string>(); // why the run failed after the agent finished: its change wasn't submitted
+	let usage = $state<{ input: number; output: number; cacheRead: number; cacheWrite: number }>(); // tokens so far
 	let loaded = $state(false);
 	let cursor = 0;
 	let stop = () => {};
 	stop = poll(async () => {
 		try {
-			const t = await api<{ status: string; reason?: string; events: Event[]; next: number }>("GET", `/agents/${id}/transcript?from=${cursor}`);
+			const t = await api<{ status: string; reason?: string; usage?: typeof usage; events: Event[]; next: number }>("GET", `/agents/${id}/transcript?from=${cursor}`);
 			if (status === "running" && t.status !== "running") {
 				// The run just ended: replace the live copy with the stored one.
 				const full = await api<{ events: Event[]; next: number }>("GET", `/agents/${id}/transcript?from=0`);
@@ -47,6 +48,7 @@
 			}
 			status = t.status;
 			reason = t.reason;
+			usage = t.usage;
 			loaded = true;
 			if (status !== "running") stop();
 		} catch {
@@ -166,6 +168,7 @@
 		{[
 			agentLabel(run?.status ?? status),
 			run && (run.finished ? `took ${duration(run.finished - run.started)}` : `started ${ago(run.started)}`),
+			usage && `${compact(usage.input + usage.cacheRead + usage.cacheWrite)} tokens in · ${compact(usage.output)} out`,
 			result?.total_cost_usd && `$${result.total_cost_usd.toFixed(2)}`,
 			result?.num_turns && `${result.num_turns} ${result.num_turns === 1 ? "turn" : "turns"}`,
 		]
