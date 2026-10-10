@@ -84,12 +84,30 @@ test("shortTitle takes the first line and cuts long ones at a word", () => {
 	expect(shortTitle("")).toBe("");
 });
 
-test("explanation stops at the fork's starting commit", () => {
-	const log = [
-		{ hash: "3", message: "fix tests\n" },
-		{ hash: "2", message: "add feature" },
-		{ hash: "1", message: "base" },
-	];
-	expect(explanation(log, "1")).toBe("fix tests\n\nadd feature");
-	expect(explanation(log, "")).toBe("fix tests\n\nadd feature\n\nbase");
+test("explanation reads a patch series' commit messages, newest first", () => {
+	const mbox = `From 1111111111111111111111111111111111111111 Mon Sep 17 00:00:00 2001
+From: Alice <alice@example.com>
+Date: Sat, 10 Oct 2026 06:00:00 +0000
+Subject: [PATCH 1/2] add feature
+
+Why it was added.
+---
+ a.txt | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/a.txt b/a.txt
+--
+2.47.0
+
+From 2222222222222222222222222222222222222222 Mon Sep 17 00:00:00 2001
+From: Alice <alice@example.com>
+Date: Sat, 10 Oct 2026 06:01:00 +0000
+Subject: [PATCH 2/2] =?UTF-8?q?fix=20caf=C3=A9?= tests, with a subject long
+ enough to be folded
+
+---
+ b.txt | 1 +
+`;
+	expect(explanation(mbox)).toBe("fix café tests, with a subject long enough to be folded\n\nadd feature\n\nWhy it was added.");
+	expect(explanation("")).toBe("");
 });

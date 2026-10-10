@@ -5,7 +5,9 @@ Read [README.md](README.md) for setup and [ARCHITECTURE.md](ARCHITECTURE.md) bef
 ## Projects
 
 - `backend/` — the `blingo` Worker. Bubble rules live in `src/bubbles.ts` as pure functions; keep
-  them I/O-free and add a test in `test/bubbles.test.ts` when you change them.
+  them I/O-free and add a test in `test/bubbles.test.ts` when you change them. The git jobs Boxes
+  run are bash strings in `src/git-scripts.ts`; `test/git-scripts.test.ts` runs them against local
+  repos (needs git ≥ 2.38), so extend it when you change one.
 - `yorkle/` — the UI: a Svelte 5 + Vite app in `app/` (`routes/` pages, `lib/` shared parts;
   `lib/BubbleMap.svelte` is the live map) built to `dist/`. The client calls `/api/*`; the Worker
   (`src/index.ts`) strips `/api` and forwards to blingo. Put API logic in the backend, not here.

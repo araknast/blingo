@@ -2,10 +2,11 @@
 
 ```
 browser ──► yorkle Worker ──(service binding)──► blingo Worker ──► RepoDO (one per repository)
-            static UI                            API + auth          │  bubbles, merge loop
+            static UI                            API + auth          │  bubbles, patch queues
                                                      │               ▼
                                                      └──────────► Box (Durable Object + container)
-                                                                     git / Claude Code sandbox
+                                                                     one per agent: Claude Code
+                                                                     one per bubble: its rep's clone
                                          Cloudflare Artifacts (namespace "blingo") = every git repo
 ```
 
@@ -17,25 +18,25 @@ browser ──► yorkle Worker ──(service binding)──► blingo Worker �
 | Code browser | `backend/src/git.ts` | Pure tree helpers (`resolvePath`, `diffTrees`) behind `GET /repos/:r/:fork/tree`, `/log`, `/commits/:hash`, `/blob/:hash`. Unit-tested |
 | Worker | `backend/src/index.ts` | Auth (session or `BLINGO_TOKEN`), repo-ownership checks, routing, creating repos/forks, minting git tokens |
 | UsersDO | `backend/src/users-do.ts`, `backend/src/auth.ts` | One global SQLite object: accounts, pending signups, invites, sessions, repo owners |
-| Bubble rules | `backend/src/bubbles.ts` | Pure functions: `placeFork`, `distance`, `zeroDistanceJoins`, `nearestNeighbour`. Unit-tested |
-| RepoDO | `backend/src/repo-do.ts` | SQLite state for one repository; serializes placement and merging; alarm = representative loop |
-| Box | `backend/src/box.ts` | Container sandbox. Runs git scripts for RepoDO and Claude Code for agents. `Outbound` limits its egress |
+| Bubble rules | `backend/src/bubbles.ts` | Pure functions: `placeFork`, `distance`, `nearestNeighbour`. Unit-tested |
+| RepoDO | `backend/src/repo-do.ts` | SQLite state for one repository: placement, each bubble's patch queue, neighbour merges; alarm = the loop that drives them |
+| Box | `backend/src/box.ts`, `backend/src/git-scripts.ts` | Container sandbox. Runs Claude Code for an agent, or holds a bubble's rep clone and runs its git jobs (the git scripts are tested against local repos). `Outbound` limits its egress |
 | Artifacts | binding `ARTIFACTS` | Hosts the base repo, every fork, and every bubble representative as real git remotes |
 
 ## Names
 
 - Repository `r-xxxxxxxx` = an Artifacts repo (the empty starting point) + one RepoDO keyed by that name.
 - Fork `r-xxxxxxxx-f-yyyyyyyy` = an Artifacts repo forked from the base or a bubble representative.
-- Bubble id = the name of its **representative** fork (the first fork placed in it). The rep's repo holds the bubble's merged code.
+- Bubble id = the name of its **representative** fork (the fork that started it). The rep's repo holds the bubble's code, and only the bubble's own Box (`bubble-<id>`) ever writes it.
 
 ## RepoDO tables
 
 | Table | Holds |
 |---|---|
-| `bubble(id, visible, seq)` | `visible = 0` while it is in a neighbour merge (hidden from placement) |
-| `fork(name, bubble, status, files, diff)` | status `rep` / `pending` / `merged` / `conflict`; `files` = changed paths (JSON); `diff` kept after merge |
+| `bubble(id, visible, seq, epoch, ferge)` | `visible = 0` while it is in a neighbour merge or ferge (hidden from placement); `epoch` goes up when its code changes other than by applying a member's series (absorbing a bubble, a ferge); `ferge = 1` for a ferge's locked bubble |
+| `fork(name, bubble, status, files, diff, seq)` | a member and its change table. status `rep` / `pending` (its patch series is queued) / `merged` (applied) / `failed` (its series didn't apply) / `conflict` (a fork from before patch series that didn't merge); `files` = paths it changed (JSON); `diff` = its patch series (mbox); `seq` = when it was applied, across the repository |
 | `conflict(k)` | `"a|b"` bubble pairs whose merge failed; never retried (except by a ferge). When a bubble is absorbed, its pairs move to the bubble that absorbed it |
-| `locked(id)` | locked bubbles: placeable, but excluded from neighbour merges and distance-0 joins |
+| `locked(id)` | locked bubbles: placeable, but excluded from neighbour merges |
 | `hidden(id, since)` | lease for a bubble hidden by a running merge or ferge (see Merge loop) |
 | `watch(fork, base, token, expires)` | notagent forks waiting for their push, or pushed and not yet placed |
 | `pushed(fork)` | watched forks whose push arrived; removed with the watch once placed |
@@ -44,10 +45,13 @@ browser ──► yorkle Worker ──(service binding)──► blingo Worker �
 | `task_dep(task, dep)` | task dependencies |
 | `memory(id, text, author, created)` | memory items, given to every agent and superagent |
 | `owed(locked, into)` | ferge debt: locked bubble `locked` still owes its conflicting files to bubble `into` |
+| `basis(fork, bubble, epoch, seq)` | where an unplaced fork started: the bubble it was forked from (NULL = the base repo), that bubble's epoch, and the repository's last applied `seq`, read just before forking |
+| `renamed(from, into)` | absorbed bubbles, so a fork's basis can be followed to the bubble that holds its code now |
+| `merging(a, b)` | bubble pairs in a neighbour merge or ferge, for the map |
 
-The repository's name is kept in the object's KV (`repo`), set by `addTasks`, so the alarm can start agents.
+The repository's name is kept in the object's KV (`repo`), set by `addTasks`, so the alarm can start agents. The KV's `seq` counts applied series.
 
-Some older RepoDOs also have an unused `fork.deleted` column, so inserts name their columns.
+Some older RepoDOs also have an unused `fork.deleted` column, and columns were added in place since, so inserts name their columns.
 
 ## UsersDO tables
 
@@ -67,16 +71,35 @@ re-checks all three (another signup on the same invite may have won), then creat
 spends the invite and drops the competing pending rows. The admin is whichever user is named
 `ADMIN_USERNAME`; `BLINGO_TOKEN` also acts as that account, which is how the first invite is made.
 
-**Placement** (`RepoDO.place`, `PLACE_SH`). One Box job checks the visible bubbles in order. For
-each, it computes the files the fork would bring into that bubble's rep (`git diff` since their
-merge base), so history the fork carries from elsewhere counts too, and stops at the first bubble
-none of whose files are in that set. The fork joins it, recorded with that set, so it can always be
-merged in. If that bubble changed while the job ran, placement runs again. If
-none fits, it starts a new bubble as its representative, with its files = everything changed since
-the repository's starting point (the empty tree), so distance to other bubbles reflects all it
-carries. Then any visible bubbles at
-distance 0 are set-joined: the absorbed bubble's members move over and its rep becomes a `pending`
-member, so its code is still merged in.
+**Placement** (`RepoDO.place`, `placeFork`). A fork never pushes to a bubble. When it is done, its
+**patch series** (`git format-patch` of its commits: an mbox, as git send-email sends them) and its
+**change table** (the files it changed since it started) go to `place()`. Each fork's starting point
+is recorded in `basis` when it is made: the bubble it was forked from, that bubble's `epoch`, and the
+last applied `seq`. `placeFork` takes the first visible bubble the series applies to cleanly, trying
+the fork's home bubble first. A series applies cleanly where each of its files is exactly as it was
+in the fork's basis:
+- **home** (the basis bubble, same epoch): no member applied after the basis, or still queued,
+  changed those files;
+- **any other bubble**: neither that bubble nor the basis bubble (followed through `renamed`; its
+  files now are a superset of what they were) ever changed them, so both hold the base repo's
+  version.
+
+A fork of a ferge bubble only ever goes home. If nothing fits, the fork's own repo becomes a new
+bubble's rep, with files = its changes ∪ its basis bubble's files. `place()` does no await between
+choosing and queueing (a `pending` member, its series in `diff`), so concurrent placements can't
+collide. A fork that changed nothing joins no bubble. A fork from before bases were recorded starts
+its own bubble that counts every bubble's files.
+
+**Patch queues** (`RepoDO.applyQueues`, `Box.apply`, `APPLY_SH`). Each bubble has its own Box,
+`bubble-<id>`, holding a clone of its rep. That Box is the rep's **only writer**: it applies the
+bubble's queue, and runs its neighbour merges and ferges. Because nothing else writes the rep, the
+clone is never fetched. It is cloned fresh when the container is new or after a failed job, which
+also avoids incremental fetches from Artifacts (they intermittently fail to negotiate). Every alarm,
+each visible bubble with queued series has its Box `git am --3way` them in queue order, one series
+at a time, with the fork's name as committer (`agent@`/`notagent@` + `DOMAIN`) and the authors from
+the patches. Then it pushes once. Applied members become `merged` with the next `seq`. A series that
+doesn't apply is left out whole and marked `failed`; placement should make that impossible, so it's
+logged rather than retried. Rep jobs in one Box run one at a time.
 
 **Tasks** (`backend/src/tasks.ts` rules, `RepoDO.schedule`). Every agent and notagent belongs to a
 task. `POST /agents` and `POST /notagents` add a one-task batch and start it; `POST /repos/:r/tasks
@@ -87,19 +110,18 @@ batch by key, or an existing task by id. Agents get `# title` then the descripti
 In yorkle, tasks are the repository's **Tasks** tab (`/repos/:r/tasks`, `/repos/:r/tasks/:id`),
 an issue tracker beside the Map tab.
 `schedule()` runs from `addTasks`, `retryTask` and every alarm. It starts each `ready` agent task:
-it forks the task's bubble, records the fork's head as `base_head` and starts the agent. It marks the
+it records the fork's basis, forks the task's bubble, records the fork's head as `base_head` and
+starts the agent. It marks the
 task `in-progress` before any await, so concurrent calls don't double-start it. A failed start
 goes back to `open` and retries on a 30 s alarm. An open notagent task waits for a human:
 `POST /repos/:r/tasks/:id/take` runs the notagent setup below. If the push token expires unused,
 the task is `open` again. When a task's fork is placed, the task is `completed` and its
-`explanation` is the fork's commit messages down to `base_head`. These are read before placement,
-since a merged fork's repo is deleted. An agent run that fails marks its task `failed`, and
+`explanation` is the commit messages in its patch series, newest first (`explanation`). An agent run that fails marks its task `failed`, and
 `POST …/retry` reopens it.
 
 A task with dependencies is `ready` when every dependency is completed **and one visible bubble
 holds all their forks fully merged**. Each fork is `merged` or that bubble's rep, the bubble has
-no `pending` members, and nothing is `owed` to it. (After an absorb, the absorbed members read
-`merged` while the absorbed rep that carries them is still `pending`.) The task forks that
+no `pending` members (no queued series), and nothing is `owed` to it. The task forks that
 bubble. A ferge leaves bubble a without the conflicting files, so it records `owed(L, a)`. In
 `absorb`, `renameOwed` follows renames and drops the debt once L and a end up in one bubble,
 whichever absorbed which. So a dependent task waits through the ferge, the fix, the unlock and
@@ -119,51 +141,55 @@ there's no new egress and no API access from the sandbox. Humans manage memory t
 
 **Notagent.** `POST /notagents` forks, mints a 1-hour write token, and registers a `watch`. The
 alarm checks each watched fork's head every 5 s (`repo.log`, all in parallel). On change it revokes
-the token and marks the fork `pushed`. Then it places every pushed fork **in parallel**: `place()`
-re-checks its chosen bubble right before inserting, so concurrent placements stay safe. The watch is
-kept until placement succeeds, so failures are retried. Unpushed forks are deleted when the token
+the token and marks the fork `pushed`. Then, for every pushed fork in parallel, the repository's git
+Box (`git-<id>`) clones it and takes its patch series from `base_head` (`PATCH_SH`), and `place()`
+queues it. The watch is kept until that succeeds, so failures are retried. A fork whose history has
+merge commits (which `format-patch` can't carry) isn't placed: its task fails with that reason. Unpushed forks are deleted when the token
 expires. The API reports `waiting` (no push yet) and `placing` (pushed, not yet placed) separately.
 
-**Agent.** `RepoDO.schedule` forks and calls `Box.startAgent`: clone, `claude --print …`, commit,
-push, all detached in the container. The Box alarm checks every 30 s. When
-it's done it places the fork (or deletes it on failure) and reports to `RepoDO.agentDone`.
+**Agent.** `RepoDO.schedule` forks and calls `Box.startAgent`: clone (recording the commit it
+starts from), `claude --print …`, commit, push to its own fork, all detached in the container. The
+Box alarm checks every 30 s. When it's done, the same container takes the patch series (`PATCH_SH`)
+and calls `place()` (or deletes the fork on failure), then reports to `RepoDO.agentDone`. A placed
+fork's repo is deleted unless it became a new bubble's rep.
 
-**Merge loop** (`RepoDO.alarm`, one step per tick, running **concurrently with placement**):
-1. Every visible bubble with `pending` members merges all of them (up to 50) into its rep in one
-   `MERGE_SH` job: a single merge commit, an octopus when there are several. If that fails, the
-   job merges them one at a time, so only the members that conflict are marked `conflict`; the
-   rest become `merged`, with their diffs kept and their repos deleted. All such bubbles run in
-   parallel.
-2. Else pick a visible bubble and its nearest non-conflicting neighbour; hide both; merge the
-   neighbour's rep into this rep with a merge commit. On success, join the sets and delete the
-   neighbour's rep; on conflict, record the pair. Show both again and re-run zero-distance joins.
+**Merge loop** (`RepoDO.alarm`, running **concurrently with placement**). Each tick applies every
+bubble's queue (above) and tries one neighbour merge: a visible bubble with an empty queue and its
+nearest non-conflicting neighbour with an empty queue (distance 0 first, so bubbles that share no
+files simply merge next). Both are hidden; the neighbour's rep is cloned, fetched from that local
+copy and merged into this rep by this bubble's Box (`MERGE_SH`), then pushed. On success the
+neighbour is absorbed: its members move over, its rep becomes a `merged` member, its conflicts,
+ferge debts and basis follow (`renamed`), this bubble's `epoch` goes up, and the neighbour's repo
+and Box go. On conflict the pair is recorded. Both are shown again.
 
-Running alongside placement is safe: `place()` re-checks its bubble before inserting, members
-placed during a batch wait for the next one, and step 2 hides both bubbles before its git work.
-Infra errors throw; the alarm retries. Only a merge conflict counts as a conflict.
+Running alongside placement is safe: placement never picks a hidden bubble, a queue only grows by
+placement, and the neighbour merge only takes bubbles with empty queues and hides them before its
+first await, so a series always reaches the rep of the bubble it was queued in. Infra errors throw;
+the alarm retries. Only a merge conflict counts as a conflict. Forks queued before patch series
+(`pending` with no `diff`) are merged in by the bubble's Box the old way.
 
 **Hidden bubbles are leased.** Hiding records the time in `hidden(id, since)`. If the operation
 dies first (cancelled alarm, reset, deploy), its bubbles would stay hidden, blocking merges and
 ferges on them. So every alarm run and every ferge first un-hides bubbles hidden for over 15 min
 (the alarm's own wall-clock limit; real merges take seconds). A fresh object instance un-hides all
 of them, since nothing from the old instance is still running.
-Locked bubbles skip step 2 on both sides, but their own pending members are still merged in.
+Locked bubbles are never neighbour-merged, on either side, but their own queues are still applied.
 
-**Lock / unlock** (`POST /repos/:repo/lock|unlock`). Unlocking re-runs distance-0 joins and
-wakes the merge loop.
+**Lock / unlock** (`POST /repos/:repo/lock|unlock`). Unlocking wakes the merge loop.
 
 **Ferge** (`POST /repos/:repo/ferge {a, b}`, `RepoDO.ferge`, `FERGE_SH`). Only for a pair in
-`conflict`, both visible and unlocked; both are hidden while it runs. In a Box:
+`conflict`, both visible, unlocked and with empty queues; both are hidden while it runs. In a's Box,
+on a's clone:
 1. `git merge-tree` lists the files that conflict between the two reps.
 2. A real `git merge` captures those files with conflict markers.
 3. The files are removed from both sides, and b's changes land on a's rep as one squashed commit.
 4. A new fork of a's rep gets a commit adding the marker files.
 
-Then b is absorbed into a (its rep repo deleted), the conflict row goes, and the new fork becomes
-a **locked** bubble. Its file set is everything in its tree (like any new bubble); the API returns
-just the conflicting files. A fix forked from it goes wherever it fits like any fork; it doesn't
-wait for the unlock, so it must resolve **every** conflicting file: any it misses reach the main
-bubble with their conflict markers. Unlock the bubble to let it merge back.
+Then b is absorbed into a (its rep repo and Box deleted), the conflict row goes, and the new fork
+becomes a **locked ferge bubble** (`ferge = 1`). Its file set is everything in its tree (like any new
+bubble); the API returns just the conflicting files. A fix forked from it only ever goes back into
+it (the home rule lets it change the conflicting files there), and it stays locked until someone
+unlocks it, so the fix merges back with it. A fix that no longer fits there fails.
 
 ## Sandbox and secrets
 
@@ -178,8 +204,13 @@ bubble with their conflict markers. Unlock the bubble to let it merge back.
 
 Marked with `ponytail:` comments in the code.
 
-- Neighbour merges run one at a time per repository. A ferge runs from its API request, not the
-  alarm, so a member merge into the same rep at that moment makes one of them fail.
+- Neighbour merges run one at a time per repository, and a bubble whose queue never empties is
+  never neighbour-merged.
+- One Box per bubble while it has work (30-minute inactivity timeout).
+- A patch series is kept in SQLite, so one over 1.5 MB isn't placed. `format-patch` can't carry merge
+  commits, so a notagent fork with merges in its history isn't placed.
+- Placement is conservative where a fork's basis bubble has since absorbed others: the basis's
+  current files stand in for what they were.
 - Pushes are found by polling, not Artifacts events; several pushes within one 5 s window all
   count as the one push.
 - Bubble rules are by file path only; semantic conflicts surface at merge or not at all.

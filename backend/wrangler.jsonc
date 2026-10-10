@@ -6,7 +6,7 @@
 	"compatibility_flags": ["nodejs_compat"],
 	"observability": { "enabled": true },
 	"upload_source_maps": true,
-	"vars": { "MODEL": "claude-opus-5-5", "ADMIN_USERNAME": "araknast", "EMAIL_FROM": "noreply@blingo.breakdance.cc" },
+	"vars": { "MODEL": "claude-opus-5-5", "ADMIN_USERNAME": "araknast", "EMAIL_FROM": "noreply@blingo.breakdance.cc", "DOMAIN": "blingo.breakdance.cc" },
 	// Verification mail; the sender domain must be onboarded to Cloudflare Email Sending.
 	"send_email": [{ "name": "EMAIL" }],
 	// BLINGO_TOKEN guards the API (it mints git tokens); ANTHROPIC_API_KEY never enters the sandbox.

@@ -1,7 +1,13 @@
 // Pure bubble rules from design.md. No I/O: RepoDO loads rows, asks these, writes results.
 
+// A member's change table: the files it changed from its basis. `seq` orders applied tables
+// (null = still queued, not in the representative yet).
+export type Table = { files: string[]; seq: number | null };
 // Locked bubbles stay placeable but never merge with (or get merged into by) another bubble.
-export type Bubble = { id: string; files: Set<string>; visible: boolean; locked?: boolean };
+// `epoch` changes whenever the bubble's code changes other than by applying a member (absorb, ferge).
+export type Bubble = { id: string; files: Set<string>; visible: boolean; locked?: boolean; epoch?: number; ferge?: boolean; tables?: Table[] };
+// Where a fork started: a bubble as it was at `epoch`, with every table up to `seq` applied.
+export type Basis = { bubble: string; epoch: number; seq: number };
 
 // |files(a) ∩ files(b)| — symmetric, so "distance from a to b" == "from b to a".
 export function distance(a: Bubble, b: Bubble): number {
@@ -10,27 +16,25 @@ export function distance(a: Bubble, b: Bubble): number {
 	return n;
 }
 
-// Can a fork join this bubble? `brings` = files the fork changes relative to the bubble's
-// representative (since their merge base), so history the fork carries from elsewhere counts too.
-export function fits(bubble: Bubble, brings: string[]): boolean {
-	return bubble.visible && brings.every((f) => !bubble.files.has(f));
-}
-
-// Visible, unlocked bubbles at distance 0 get set-joined. Returns [into, from] pairs in the order
-// they must be applied; later pairs see the union produced by earlier ones.
-export function zeroDistanceJoins(bubbles: Bubble[]): [string, string][] {
-	const live = bubbles.filter((h) => h.visible && !h.locked).map((h) => ({ ...h, files: new Set(h.files) }));
-	const joins: [string, string][] = [];
-	for (let i = 0; i < live.length; i++) {
-		for (let j = i + 1; j < live.length; ) {
-			if (distance(live[i], live[j]) === 0) {
-				joins.push([live[i].id, live[j].id]);
-				for (const f of live[j].files) live[i].files.add(f);
-				live.splice(j, 1);
-			} else j++;
-		}
-	}
-	return joins;
+// Where a fork's patches go: the first visible bubble they apply to cleanly, "new" if none, or null
+// for a fork of a ferge bubble that can't go back into it. A patch applies cleanly where each of
+// its files is exactly as it was in the fork's basis:
+// - its home bubble (the basis, unchanged since but for applied members): no table applied after
+//   the basis, or still queued, touches its files;
+// - any other bubble: neither that bubble nor the basis bubble (now `basisFiles`, a superset of
+//   what it was) ever changed them, so both hold the base repository's version.
+// The home bubble is tried first; a ferge bubble's forks only ever go home.
+export function placeFork(bubbles: Bubble[], files: string[], basis: Basis | null, basisFiles: Set<string>): string | null {
+	const fs = new Set(files);
+	const touches = (paths: Iterable<string>) => {
+		for (const p of paths) if (fs.has(p)) return true;
+		return false;
+	};
+	const home = basis && bubbles.find((b) => b.id === basis.bubble && (b.epoch ?? 0) === basis.epoch);
+	if (home && home.visible && !home.tables?.some((t) => (t.seq === null || t.seq > basis!.seq) && touches(t.files))) return home.id;
+	if (home?.ferge) return null;
+	if (touches(basisFiles)) return "new";
+	return bubbles.find((b) => b.visible && b !== home && !touches(b.files))?.id ?? "new";
 }
 
 export const conflictKey = (a: string, b: string) => (a < b ? `${a}|${b}` : `${b}|${a}`);
@@ -58,17 +62,4 @@ export function nearestNeighbour(id: string, bubbles: Bubble[], conflicts: Set<s
 		if (d < bestD) [best, bestD] = [h, d];
 	}
 	return best?.id ?? null;
-}
-
-
-// Parses MERGE_SH output: per source, in order, a "== <i> ok|conflict" line then its diff.
-export function parseMerge(out: string): { ok: boolean; diff: string }[] {
-	return out
-		.split(/^== \d+ /m)
-		.slice(1)
-		.map((part) => {
-			const nl = part.indexOf("\n");
-			const status = nl < 0 ? part : part.slice(0, nl);
-			return { ok: status.trim() === "ok", diff: nl < 0 ? "" : part.slice(nl + 1) };
-		});
 }

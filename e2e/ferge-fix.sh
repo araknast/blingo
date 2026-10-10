@@ -24,7 +24,7 @@ B=$(api $U/repos/$R | python3 -c "import json,sys;c=json.load(sys.stdin)['confli
 echo "== 2. ferge A + ${B: -8}:"; api -X POST --json "{\"a\":\"$A\",\"b\":\"$B\"}" $U/repos/$R/ferge > ferge.json; cat ferge.json; echo
 L=$(j ferge.json locked); show
 echo "  ferge bubble a.txt: $(file $L a.txt | tr '\n' '|')"
-echo "== 3. notagent from ferge bubble ${L: -8}, resolve a.txt (goes wherever it fits):"
+echo "== 3. notagent from ferge bubble ${L: -8}, resolve a.txt (goes back into the ferge bubble):"
 notagent "{\"repo\":\"$R\",\"bubble\":\"$L\",\"description\":\"resolve a.txt\"}" > x3.json; X=$(j x3.json fork)
 push x3.json r3 'printf "ALPHA+BETA\nline2\nline3\n" > a.txt' >/dev/null; settle
 show

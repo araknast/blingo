@@ -24,9 +24,10 @@
 
 	const what = {
 		rep: "Representative. The bubble's code lives in this fork.",
-		pending: "Waiting to merge into the representative.",
+		pending: "Its patches are queued for the representative.",
 		merged: "Merged into the representative.",
 		conflict: "Couldn't merge: it conflicts with the bubble's code.",
+		failed: "Its patches didn't apply to the representative.",
 	};
 </script>
 

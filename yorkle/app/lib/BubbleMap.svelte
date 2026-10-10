@@ -565,7 +565,7 @@
 	.fork.rep { fill: var(--paper); stroke: var(--merged); stroke-width: 2.5; }
 	.fork.pending { fill: var(--paper); stroke: var(--pending); }
 	.fork.merged { fill: var(--merged); stroke: none; }
-	.fork.conflict { fill: var(--conflict); stroke: none; }
+	.fork.conflict, .fork.failed { fill: var(--conflict); stroke: none; }
 	.flyer { pointer-events: none; filter: drop-shadow(0 1px 2px rgb(15 24 33 / 0.3)); }
 
 	.lock circle { fill: var(--paper); stroke: var(--ink-3); stroke-width: 1.5; }

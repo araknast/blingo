@@ -1,4 +1,5 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
+import { APPLY_SH, CONFLICT, ENSURE_REP, FERGE_SH, MERGES, MERGE_SH, NO_CONFLICT, PATCH_SH, PUSH_SH, REP, readSeries } from "./git-scripts";
 import { validatePlan } from "./tasks";
 
 // Containers re-sign intercepted HTTPS with this CA; git/node/curl must trust it.
@@ -13,99 +14,12 @@ const GIT_ID = {
 const TASK = "/workspace/task";
 const CHECK_MS = 30_000;
 
-// $1 fork remote, then pairs of (bubble rep remote, that bubble's files newline-separated), in order.
-// For each bubble: the files the fork would bring into its rep = changed since their merge base, so
-// history the fork carries from elsewhere counts. Stops at the first bubble none of whose files are
-// in that set and prints its index, then the set. If none fits, prints "new", then every file
-// changed since the repository's starting point (the new bubble's files).
-// ponytail: base repos are always created empty, so "starting point" = the empty tree; diff
-// against the base repo's head instead if repos can ever be imported.
-export const PLACE_SH = `set -e
-d=$(mktemp -d); git clone -q "$1" "$d"; cd "$d"; shift
-empty=$(git hash-object -t tree /dev/null)
-i=0
-while [ $# -ge 2 ]; do
-	git fetch -q "$1" HEAD
-	brings=$(git diff --name-only "$(git merge-base FETCH_HEAD HEAD || echo "$empty")" HEAD)
-	if ! printf '%s\\n' "$brings" | grep -qFxf <(printf '%s\\n' "$2" | sed '/^$/d'); then
-		echo "$i"; printf '%s\\n' "$brings"; exit 0
-	fi
-	i=$((i + 1)); shift 2
-done
-echo new
-git diff --name-only "$empty" HEAD`;
-
-// $1 rep remote (write), then source remotes (read): a bubble's pending members, or one neighbour
-// bubble's rep. Merges them all into the rep with one merge commit (an octopus when there are
-// several). If that fails, merges them one at a time so a source that conflicts doesn't block the
-// rest. Pushes once. Prints "== <i> ok|conflict" then that source's diff, per source, in order.
-// Exit 0 even with conflicts; anything else = infra error.
-export const MERGE_SH = `set -e
-d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
-git clone -q "$1" "$d"; cd "$d"; rep=$(git rev-parse HEAD); shift
-n=0; for src in "$@"; do git fetch -q "$src" "+HEAD:refs/m/$n"; n=$((n + 1)); done
-merge() { msg=$1; shift; git merge -q --no-ff --no-edit --allow-unrelated-histories -m "$msg" "$@" >&2; }
-st=()
-if merge "merge $n forks" $(seq -f 'refs/m/%g' 0 $((n - 1))); then
-	for i in $(seq 0 $((n - 1))); do st[$i]=ok; done
-else
-	git merge --abort 2>/dev/null || true; git reset -q --hard "$rep"
-	for i in $(seq 0 $((n - 1))); do
-		if merge "merge fork" "refs/m/$i"; then st[$i]=ok
-		else git merge --abort 2>/dev/null || git reset -q --hard HEAD; st[$i]=conflict; fi
-	done
-fi
-[ "$(git rev-parse HEAD)" = "$rep" ] || git push -q origin HEAD:refs/heads/main
-empty=$(git hash-object -t tree /dev/null)
-for i in $(seq 0 $((n - 1))); do
-	echo "== $i \${st[$i]}"
-	git diff "$(git merge-base "$rep" "refs/m/$i" || echo "$empty")" "refs/m/$i"
-done`;
-
-export const NO_CONFLICT = 11;
-
-// Ferge. $1 bubble A rep (write), $2 bubble B rep (read), $3 new locked bubble L (write, a fork of A).
-// A ← A + B with the conflicting files removed (one squashed commit, history stays linear).
-// L ← that + the conflicting files with conflict markers. Prints the conflicting files, a "==" line,
-// then every file in L's tree (L's file set: everything it carries since the repo's starting point).
-// Exit ${NO_CONFLICT} = A and B no longer conflict; anything else nonzero = infra error.
-export const FERGE_SH = `set -e
-d=$(mktemp -d); m=$(mktemp -d); git clone -q "$1" "$d"; cd "$d"
-a=$(git rev-parse HEAD)
-git fetch -q "$2" HEAD; b=$(git rev-parse FETCH_HEAD)
-mt() { git merge-tree --write-tree --no-messages --allow-unrelated-histories "$@"; }
-out=$(mt --name-only "$a" "$b") && rc=0 || rc=$?
-[ "$rc" -le 1 ] || exit "$rc"
-F=$(printf '%s\\n' "$out" | tail -n +2)
-[ -n "$F" ] || exit ${NO_CONFLICT}
-# Capture each conflicting file as git leaves it mid-merge: with conflict markers.
-git -c merge.conflictStyle=merge merge -q --no-commit --no-ff --allow-unrelated-histories "$b" >/dev/null 2>&1 || true
-printf '%s\\n' "$F" | while IFS= read -r f; do
-	if [ -e "$f" ]; then mkdir -p "$m/$(dirname "$f")"; cp "$f" "$m/$f"; fi
-done
-git merge --abort 2>/dev/null || git reset -q --hard "$a"
-drop() {
-	git checkout -q --detach "$1"
-	printf '%s\\n' "$F" | git --literal-pathspecs rm -q --ignore-unmatch --pathspec-from-file=-
-	git commit -q --allow-empty -m "ferge: remove conflicting files"
-	git rev-parse HEAD
-}
-ap=$(drop "$a"); bp=$(drop "$b")
-t=$(mt "$ap" "$bp") # its own assignment, so set -e catches a failed merge
-c=$(git commit-tree "$t" -p "$ap" -m "ferge: merge $b without conflicting files")
-git push -q origin "$c:refs/heads/main"
-git checkout -q --detach "$c"
-cp -R "$m/." .
-git add -A
-git commit -q --allow-empty -m "ferge: conflicting files with conflict markers"
-git push -q "$3" HEAD:refs/heads/main
-printf '%s\\n' "$F" ==
-git ls-files`;
-
 // $1 remote, $2 prompt, $3 system prompt (memory items + how to leave notes). Runs Claude Code on a
-// clone, commits, pushes. Notes for future agents land in $TASK/memory, outside the repo.
+// clone, commits, pushes to its own fork. The commit it started from goes in $TASK/base (empty for an
+// empty repo), for its patch series. Notes for future agents land in $TASK/memory, outside the repo.
 const AGENT_SH = `set -e
 rm -rf /workspace/repo; git clone -q "$1" /workspace/repo; cd /workspace/repo
+git rev-parse -q --verify HEAD >${TASK}/base || true
 claude --print --dangerously-skip-permissions --no-session-persistence --model "$MODEL" --append-system-prompt "$3" -- "$2"
 git add -A
 git commit -qm "$2" || true
@@ -180,9 +94,11 @@ export class Outbound extends WorkerEntrypoint<Env> {
 	}
 }
 
-// One Linux sandbox. RepoDO uses one per repo for git work; each agent gets its own.
+// One Linux sandbox. Each agent gets its own; each bubble gets one holding its rep (see REP); RepoDO
+// uses one per repo to turn notagent forks into patch series.
 export class Box extends DurableObject<Env> {
 	private setup?: Promise<void>;
+	private queue: Promise<unknown> = Promise.resolve(); // rep jobs, one at a time
 
 	private get container() {
 		if (!this.ctx.container) throw new Error("container binding not configured");
@@ -210,15 +126,74 @@ export class Box extends DurableObject<Env> {
 		await this.setup;
 	}
 
-	async sh(script: string, args: string[] = []): Promise<Run> {
+	async sh(script: string, args: string[] = [], opts: { stdin?: string; env?: Record<string, string> } = {}): Promise<Run> {
 		await this.start();
 		const p = await this.container.exec(["bash", "-c", script, "sh", ...args], {
 			cwd: "/workspace",
-			env: { ...TRUST, ...GIT_ID },
+			env: { ...TRUST, ...GIT_ID, ...opts.env },
+			stdin: opts.stdin === undefined ? undefined : new Response(opts.stdin).body!,
 		});
 		const out = await p.output();
 		const dec = new TextDecoder();
 		return { exitCode: out.exitCode, stdout: dec.decode(out.stdout), stderr: dec.decode(out.stderr) };
+	}
+
+	// ---- a bubble's rep (this Box is its only writer) ----
+
+	// Runs `jobs` in order on the rep clone, after any earlier rep job here finishes. A job failing with
+	// anything but a conflict drops the clone, so the next job starts again from what was pushed.
+	private rep<T>(remote: string, jobs: (run: (script: string, args?: string[], opts?: { stdin?: string; env?: Record<string, string> }) => Promise<Run>) => Promise<T>) {
+		const go = async () => {
+			const run = async (script: string, args: string[] = [], opts = {}) => {
+				const r = await this.sh(ENSURE_REP + script, [remote, ...args], opts);
+				if (r.exitCode !== 0 && r.exitCode !== CONFLICT && r.exitCode !== NO_CONFLICT) {
+					await this.sh(`rm -rf ${REP}`);
+					throw new Error(`rep job failed (${r.exitCode}): ${r.stderr}`);
+				}
+				return r;
+			};
+			return jobs(run);
+		};
+		const p = this.queue.then(go, go);
+		this.queue = p.catch(() => {});
+		return p;
+	}
+
+	// Applies each fork's patch series in order and pushes once. A series that doesn't apply is left
+	// out whole; the rest still land.
+	async apply(remote: string, series: { fork: string; mbox: string; committer: { name: string; email: string } }[]): Promise<boolean[]> {
+		return this.rep(remote, async (run) => {
+			const ok: boolean[] = [];
+			for (const s of series) {
+				const r = await run(APPLY_SH, [], { stdin: s.mbox, env: { GIT_COMMITTER_NAME: s.committer.name, GIT_COMMITTER_EMAIL: s.committer.email } });
+				ok.push(r.exitCode === 0);
+			}
+			if (ok.some(Boolean)) await run(PUSH_SH);
+			return ok;
+		});
+	}
+
+	// Merges another repo (a neighbour bubble's rep, or a fork from before patch series) into the rep.
+	async mergeFrom(remote: string, src: string, message: string): Promise<{ ok: boolean; diff: string }> {
+		return this.rep(remote, async (run) => {
+			const r = await run(MERGE_SH, [src, message]);
+			return { ok: r.exitCode === 0, diff: r.exitCode === 0 ? r.stdout : "" };
+		});
+	}
+
+	// Ferge with bubble `b` (see FERGE_SH); `locked` is the new locked bubble's repo, a fork of this rep.
+	async ferge(remote: string, b: string, locked: string): Promise<{ files: string[]; tree: string[] } | null> {
+		return this.rep(remote, async (run) => {
+			const r = await run(FERGE_SH, [b, locked]);
+			if (r.exitCode === NO_CONFLICT) return null;
+			const [files, tree] = r.stdout.split(/^==$/m).map((s) => s.split("\n").filter(Boolean));
+			return { files, tree };
+		});
+	}
+
+	// The bubble is gone (absorbed): drop its container.
+	async stop() {
+		if (this.ctx.container?.running) await this.container.destroy().catch(() => {});
 	}
 
 	async startAgent(job: AgentJob): Promise<void> {
@@ -268,7 +243,15 @@ export class Box extends DurableObject<Env> {
 			}
 			if ("error" in plan) return this.finish(job, "failed", `${log}\nplan rejected: ${plan.error}`);
 			await repo.addTasks(job.repo, plan.items, job.fork);
-		} else await repo.place(job.fork);
+		} else {
+			const base = (await this.sh(`cat ${TASK}/base 2>/dev/null || true`)).stdout.trim();
+			const p = await this.sh(PATCH_SH, ["/workspace/repo", base]);
+			if (p.exitCode === MERGES) return this.finish(job, "failed", `${log}\nnot placed: its history has merge commits`);
+			if (p.exitCode !== 0) throw new Error(`patch series of ${job.fork} (${p.exitCode}): ${p.stderr}`);
+			const { files, mbox } = readSeries(p.stdout);
+			const placed = await repo.place(job.fork, files, mbox);
+			if ("error" in placed) return this.finish(job, "failed", `${log}\nnot placed: ${placed.error}`);
+		}
 		// Notes the agent left for future agents (capped: they all go into every prompt).
 		const notes = (await this.sh(`head -c 20000 ${TASK}/memory 2>/dev/null || true`)).stdout;
 		const items = notes.split("\n").map((l) => l.trim().slice(0, 500)).filter(Boolean).slice(0, 10);

@@ -1,7 +1,7 @@
 import type { Bubble, Member } from "./types";
 
 export const MAX_DOTS = 60;
-const ORDER = { rep: 0, conflict: 1, pending: 2, merged: 3 };
+const ORDER = { rep: 0, conflict: 1, failed: 1, pending: 2, merged: 3 };
 
 // Rep first (it sits in the middle), then the others, stable by name.
 export const orderMembers = (ms: Member[]) =>

@@ -2,7 +2,8 @@
 
 export type Me = { username: string; admin: boolean; repos: string[] };
 
-export type MemberStatus = "rep" | "pending" | "merged" | "conflict";
+// pending = its patch series is queued in the bubble; failed = the series didn't apply.
+export type MemberStatus = "rep" | "pending" | "merged" | "conflict" | "failed";
 export type Member = { name: string; bubble: string; status: MemberStatus; files: string[] };
 export type Bubble = { id: string; visible: number | boolean; locked: boolean; members: Member[] };
 export type AgentRun = { fork: string; prompt: string; started: number; status: string; finished: number | null; log: string | null };
@@ -26,6 +27,7 @@ export type MemoryItem = { id: string; text: string; author: string; created: nu
 export type RepoState = {
 	bubbles: Bubble[];
 	conflicts: [string, string][];
+	merging: [string, string][];
 	waiting: string[];
 	placing: string[];
 	agents: AgentRun[];

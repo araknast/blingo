@@ -106,12 +106,26 @@ export function validatePlan(raw: unknown): { items: PlanItem[] } | { error: str
 	return left.size ? { error: `dependency cycle among ${[...left.keys()].join(", ")}` } : { items };
 }
 
-// A completed task's explanation: its fork's commit messages, newest first, down to where it started.
-export function explanation(commits: { hash: string; message: string }[], base: string): string {
-	const msgs: string[] = [];
-	for (const c of commits) {
-		if (c.hash === base) break;
-		msgs.push(c.message.trim());
-	}
-	return msgs.filter(Boolean).join("\n\n");
+// A completed task's explanation: the commit messages in its fork's patch series (`git format-patch`
+// mbox), newest first.
+export function explanation(mbox: string): string {
+	const msgs = mbox.split(/^From [0-9a-f]{40} /m).slice(1).map((patch) => {
+		const blank = patch.indexOf("\n\n");
+		const headers = patch.slice(0, blank).replace(/\n[ \t]+/g, " "); // unfold
+		const subject = decodeWords(headers.match(/^Subject: (.*)$/m)?.[1] ?? "").replace(/^\[PATCH[^\]]*\]\s*/, "");
+		const body = patch.slice(blank + 2).split(/^---$/m)[0];
+		return `${subject}\n\n${body}`.trim();
+	});
+	return msgs.filter(Boolean).reverse().join("\n\n");
+}
+
+// RFC 2047 encoded words, as git writes non-ASCII subjects: =?UTF-8?q?caf=C3=A9?= → café.
+function decodeWords(s: string): string {
+	return s.replace(/=\?([^?]+)\?([qQbB])\?([^?]*)\?=(?:\s+(?==\?))?/g, (_, charset: string, enc: string, text: string) => {
+		const bytes =
+			enc.toLowerCase() === "b"
+				? Uint8Array.from(atob(text), (c) => c.charCodeAt(0))
+				: Uint8Array.from(text.replace(/_/g, " ").replace(/=([0-9A-F]{2})/gi, (_m, h) => String.fromCharCode(parseInt(h, 16))), (c) => c.charCodeAt(0));
+		return new TextDecoder(charset).decode(bytes);
+	});
 }
