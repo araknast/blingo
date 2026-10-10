@@ -53,6 +53,7 @@ export type Settings = {
 	provider: "anthropic" | "openrouter";
 	models: { agent: string; superagent: string; ferge: string };
 	fergeAgents: boolean;
+	autoFerge: boolean;
 	taskApproval: boolean;
 	deploys: DeployConfig[];
 	hasKey: boolean;

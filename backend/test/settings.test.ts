@@ -12,6 +12,8 @@ test("settings updates are validated and merged", () => {
 	expect(updateSettings(DEFAULTS, { ci: { hosts: ["http://evil"] } })).toHaveProperty("error");
 	expect(updateSettings(DEFAULTS, { autoPlaceNotagents: "yes" })).toHaveProperty("error");
 	expect(updateSettings(DEFAULTS, { fergeAgents: true, taskApproval: true })).toMatchObject({ fergeAgents: true, taskApproval: true });
+	expect(updateSettings(DEFAULTS, { autoFerge: true })).toMatchObject({ autoFerge: true });
+	expect(updateSettings(DEFAULTS, { autoFerge: 1 })).toHaveProperty("error");
 });
 
 test("CI egress: listed hosts and their subdomains only", () => {

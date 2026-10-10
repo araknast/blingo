@@ -254,7 +254,10 @@ Then b is absorbed into a (its rep repo and Box deleted), the conflict row goes,
 becomes a **locked ferge bubble** (`ferge = 1`). Its file set is everything in its tree (like any new
 bubble); the API returns just the conflicting files. A fix forked from it only ever goes back into
 it (the home rule lets it change the conflicting files there), and it stays locked until someone
-unlocks it, so the fix merges back with it. A fix that no longer fits there fails. With the setting
+unlocks it, so the fix merges back with it. A fix that no longer fits there fails. With the setting `autoFerge`, the merge loop starts
+ferges itself: when it has no neighbour merge to do, it ferges the first conflicting pair whose bubbles are
+both visible, unlocked and idle (`fergeCandidate`; the older bubble is a), one per tick; a pair that turns out
+not to conflict any more loses its conflict record and merges normally. With the setting
 `fergeAgents`, the ferge also files an agent task on the ferge bubble to resolve its markers, run with
 the `models.ferge` model (task `role` = ferge).
 

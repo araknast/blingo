@@ -2,13 +2,14 @@ import { DurableObject } from "cloudflare:workers";
 import { authRemote, forkRepo, headOf } from "./box";
 import { getAgentByName } from "agents";
 import { COMMIT_FILES_SH, MERGES, PATCH_SH, readSeries } from "./git-scripts";
-import { conflictKey, nearestNeighbour, placeFork, renameConflicts, type Basis, type Bubble } from "./bubbles";
+import { conflictKey, fergeCandidate, nearestNeighbour, placeFork, renameConflicts, type Basis, type Bubble } from "./bubbles";
 import { fergeName, friendlyName, nameText, type Name } from "./names";
 import { DEFAULTS, NO_KEY, deployHeaders, deployKey, deployValues, gate, updateSettings, type Provider, type Role, type Settings } from "./settings";
 import { resolveSkills, type Skill } from "./skills";
 import { explanation, fixPrompt, ready, renameOwed, shortTitle, type Owed, type PlanItem, type TaskState } from "./tasks";
 
 const POLL_MS = 5_000;
+const NO_LONGER_CONFLICT = "those bubbles no longer conflict";
 // A merge or ferge hides its bubbles for seconds. Longer than the alarm's own wall-clock limit means
 // the operation died (cancelled alarm, reset, deploy) without un-hiding them.
 const HIDE_LEASE_MS = 15 * 60_000;
@@ -533,7 +534,7 @@ export class RepoDO extends DurableObject<Env> {
 				authRemote(this.env, l, "write"),
 			]);
 			const r = await this.bubbleBox(a).ferge(ra.url, rb.url, rl.url);
-			if (!r) return { error: "those bubbles no longer conflict" };
+			if (!r) return { error: NO_LONGER_CONFLICT };
 			const names = this.sql.exec<Name & { id: string }>("SELECT id, adj, noun FROM bubble WHERE id IN (?, ?)", a, b).toArray();
 			const name = fergeName(names.find((n) => n.id === a)!, names.find((n) => n.id === b)!); // before b is absorbed
 			this.absorb(a, b);
@@ -1112,7 +1113,22 @@ export class RepoDO extends DurableObject<Env> {
 			}
 			return true;
 		}
-		return false;
+		return this.autoFerge(conflicts, busy);
+	}
+
+	// With the setting autoFerge: no neighbour merge to do, so ferge one conflicting pair that can be
+	// (both visible, unlocked, nothing queued). A pair that no longer conflicts loses its conflict
+	// record, so the loop merges it normally instead of trying again. Returns whether it did either.
+	private async autoFerge(conflicts: Set<string>, busy: Set<string>): Promise<boolean> {
+		const repo = this.ctx.storage.kv.get<string>("repo");
+		const pair = repo && this.settings().autoFerge ? fergeCandidate([...conflicts], this.bubbles(), busy) : null;
+		if (!pair) return false;
+		const r = await this.ferge(repo!, ...pair);
+		if (!("error" in r)) return true;
+		console.error(`auto-ferge ${pair.join(" / ")}: ${r.error}`);
+		if (r.error !== NO_LONGER_CONFLICT) return false;
+		this.sql.exec("DELETE FROM conflict WHERE k = ?", conflictKey(...pair));
+		return true;
 	}
 
 	// `from`'s code is now in `into`'s rep: its members (and its rep) move over, its conflicts and ferge

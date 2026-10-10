@@ -17,6 +17,8 @@ export type Settings = {
 	models: { agent: string; superagent: string; ferge: string };
 	// A ferge also files an agent task (model `models.ferge`) to resolve its conflict markers.
 	fergeAgents: boolean;
+	// The merge loop ferges a conflicting pair by itself, once both are visible, unlocked and idle.
+	autoFerge: boolean;
 	// New tasks wait for a person to approve them (and may be edited until then).
 	taskApproval: boolean;
 	deploys: Deploy[];
@@ -36,6 +38,7 @@ export const DEFAULTS: Settings = {
 	provider: "anthropic",
 	models: { agent: "", superagent: "", ferge: "" },
 	fergeAgents: false,
+	autoFerge: false,
 	taskApproval: false,
 	deploys: [],
 };
@@ -57,7 +60,7 @@ export function updateSettings(current: Settings, body: unknown): Settings | { e
 			next.models[role] = m[role] as string;
 		}
 	}
-	for (const k of ["autoPlaceNotagents", "fergeAgents", "taskApproval"] as const) {
+	for (const k of ["autoPlaceNotagents", "fergeAgents", "autoFerge", "taskApproval"] as const) {
 		if (b[k] === undefined) continue;
 		if (typeof b[k] !== "boolean") return { error: `${k} must be true or false` };
 		next[k] = b[k];

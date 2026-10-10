@@ -50,6 +50,22 @@ export function renameConflicts(keys: string[], from: string, into: string): str
 	return [...out];
 }
 
+// With auto-ferge on: the conflicting pair to ferge next, as [a, b] for ferge(a, b) (a, the older
+// bubble, takes b's changes and keeps its name). The first pair whose bubbles both exist, are visible
+// and unlocked, and have nothing queued (`busy`); `bubbles` come oldest first.
+export function fergeCandidate(conflicts: string[], bubbles: Bubble[], busy: Set<string>): [string, string] | null {
+	const age = new Map(bubbles.map((h, i) => [h.id, i]));
+	const ok = (id: string) => {
+		const h = bubbles[age.get(id) ?? -1];
+		return !!h && h.visible && !h.locked && !busy.has(id);
+	};
+	for (const k of conflicts) {
+		const [x, y] = k.split("|");
+		if (ok(x) && ok(y)) return age.get(x)! < age.get(y)! ? [x, y] : [y, x];
+	}
+	return null;
+}
+
 // Nearest visible, unlocked, non-conflicting neighbour of `id` (ties → earliest), or null.
 export function nearestNeighbour(id: string, bubbles: Bubble[], conflicts: Set<string>): string | null {
 	const self = bubbles.find((h) => h.id === id);

@@ -1,5 +1,15 @@
 import { expect, test } from "vitest";
-import { conflictKey, distance, nearestNeighbour, placeFork, renameConflicts, type Bubble, type Table } from "../src/bubbles";
+import { conflictKey, distance, fergeCandidate, nearestNeighbour, placeFork, renameConflicts, type Bubble, type Table } from "../src/bubbles";
+
+test("auto-ferge picks a conflicting pair whose bubbles are visible, unlocked and idle, older first", () => {
+	const h = (id: string, o: Partial<Bubble> = {}): Bubble => ({ id, files: new Set(), visible: true, ...o });
+	const hs = [h("old"), h("mid"), h("new"), h("hid", { visible: false }), h("lock", { locked: true })];
+	expect(fergeCandidate([conflictKey("new", "old")], hs, new Set())).toEqual(["old", "new"]);
+	expect(fergeCandidate([conflictKey("old", "hid"), conflictKey("mid", "lock"), conflictKey("mid", "new")], hs, new Set())).toEqual(["mid", "new"]);
+	expect(fergeCandidate([conflictKey("mid", "new")], hs, new Set(["new"]))).toBeNull(); // queued
+	expect(fergeCandidate([conflictKey("mid", "gone")], hs, new Set())).toBeNull();
+	expect(fergeCandidate([], hs, new Set())).toBeNull();
+});
 
 const h = (id: string, files: string[], visible = true): Bubble => ({ id, files: new Set(files), visible });
 // A bubble from its members' change tables (seq null = queued, not applied yet).

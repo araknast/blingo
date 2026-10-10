@@ -191,6 +191,7 @@
 
 				<section>
 					<h2>Agents and tasks</h2>
+					<label class="check"><input type="checkbox" bind:checked={form.autoFerge} /> Ferge conflicting bubbles automatically</label>
 					<label class="check"><input type="checkbox" bind:checked={form.fergeAgents} /> After a ferge, start an agent to resolve its conflicts</label>
 					<label class="check"><input type="checkbox" bind:checked={form.taskApproval} /> New tasks wait for approval before they start</label>
 				</section>
