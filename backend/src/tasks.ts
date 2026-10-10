@@ -119,6 +119,18 @@ export function fixPrompt(f: { title: string; description: string; failed: strin
 	return parts.join("\n\n");
 }
 
+// Appended to a retried task's prompt: the attempt before it failed, for whatever reason, and its
+// whole run is in `file`. Whether any of it is worth using is the new agent's call.
+export function retryNote(p: { file: string; status: string; reason?: string; log?: string }): string {
+	const parts = [
+		`## An earlier attempt`,
+		`This task was attempted before and that attempt ended as "${p.status}"${p.reason ? `: ${p.reason}` : ""}. None of its changes are in this repository.`,
+		`Its whole run (every message, tool call and result) is in ${p.file}, as Claude Code stream-json, one event per line; most "system" lines are hook output. Before relying on it, work out why it failed: it may have done the task well and lost its work afterwards, gone wrong partway, or misjudged the task. Use what is sound, ignore what isn't, and don't repeat what made it fail.`,
+	];
+	if (p.log) parts.push(`Its log:\n\n\`\`\`\n${p.log}\n\`\`\``);
+	return parts.join("\n\n");
+}
+
 // A completed task's explanation: the commit messages in its fork's patch series (`git format-patch`
 // mbox), newest first.
 export function explanation(mbox: string): string {

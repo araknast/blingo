@@ -54,6 +54,7 @@ type TaskRow = TaskState & {
 	finished: number | null;
 	role: Role | null; // which model its agent uses (NULL = agent)
 	model: string | null; // a model chosen for this task alone, over the role's
+	prev_fork: string | null; // retried: the failed attempt's run, whose context the next agent gets
 };
 // A task to add: a superagent's plan item (deps by key within the batch), or one from the API.
 export type NewTask = Omit<PlanItem, "key"> & { key?: string; bubble?: string | null; role?: Role; model?: string };
@@ -115,6 +116,7 @@ export class RepoDO extends DurableObject<Env> {
 		}
 		this.addColumn("task", "role", "TEXT");
 		this.addColumn("task", "model", "TEXT");
+		this.addColumn("task", "prev_fork", "TEXT"); // a retried task's failed attempt (its Box keeps the run)
 		for (const [c, d] of [["kind", "TEXT NOT NULL DEFAULT 'notagent'"], ["ci", "TEXT"], ["ci_log", "TEXT"], ["review_auto", "TEXT"], ["review_manual", "TEXT"], ["review_note", "TEXT"], ["agent_pushes", "INTEGER NOT NULL DEFAULT 0"]]) {
 			this.addColumn("loose", c, d);
 		}
@@ -326,7 +328,7 @@ export class RepoDO extends DurableObject<Env> {
 	}
 
 	async retryTask(id: string): Promise<boolean> {
-		const n = this.sql.exec("UPDATE task SET status = 'open', fork = NULL, finished = NULL WHERE id = ? AND status = 'failed'", id).rowsWritten;
+		const n = this.sql.exec("UPDATE task SET status = 'open', prev_fork = fork, fork = NULL, finished = NULL WHERE id = ? AND status = 'failed'", id).rowsWritten;
 		if (n) await this.schedule();
 		return n > 0;
 	}
@@ -413,7 +415,7 @@ export class RepoDO extends DurableObject<Env> {
 					this.sql.exec("UPDATE task SET fork = ?, base_head = ? WHERE id = ?", fork, base, t.id);
 					const { url: remote } = await authRemote(this.env, fork, "write", 3 * 3600);
 					const prompt = `# ${t.title}\n\n${t.description}`;
-					await this.env.BOX.getByName(fork).startAgent({ repo, fork, remote, prompt, kind: "agent", memory, ...this.agentConfig(t.role ?? "agent", t.model) });
+					await this.env.BOX.getByName(fork).startAgent({ repo, fork, remote, prompt, kind: "agent", memory, previous: t.prev_fork ?? undefined, ...this.agentConfig(t.role ?? "agent", t.model) });
 					this.agentStarted(fork, t.title);
 				} catch (e) {
 					console.error(`starting task ${t.id}`, e);

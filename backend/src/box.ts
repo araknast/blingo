@@ -1,7 +1,7 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { APPLY_SH, CONFLICT, ENSURE_REP, FERGE_SH, MEMORY_HOOK_SH, MERGES, MERGE_SH, NO_CONFLICT, PATCH_SH, PUSH_SH, REP, readSeries } from "./git-scripts";
 import { MODEL_HOSTS, egress, type Provider } from "./settings";
-import { validatePlan } from "./tasks";
+import { retryNote, validatePlan } from "./tasks";
 import { completeLines } from "./transcript";
 
 // Containers re-sign intercepted HTTPS with this CA; git/node/curl must trust it.
@@ -82,6 +82,7 @@ export type AgentJob = {
 	memory?: string[];
 	model?: string;
 	provider?: Provider;
+	previous?: string; // a retry: the run id of the failed attempt, whose transcript and log it gets
 };
 // A CI run on a loose fork at `head`, in a Box named ci-<fork> that can reach only Artifacts and `hosts`.
 export type CiJob = { repo: string; fork: string; head: string; remote: string; command: string; hosts: string[] };
@@ -250,6 +251,16 @@ export class Box extends DurableObject<Env> {
 		await this.start();
 		await this.sh(`rm -rf ${TASK} && mkdir -p ${TASK}`);
 		await this.sh(`cat > ${TASK}/memory-hook.sh`, [], { stdin: MEMORY_HOOK_SH });
+		let prompt = job.prompt;
+		if (job.previous) {
+			const prev = this.env.BOX.getByName(job.previous);
+			const [text, s] = await Promise.all([prev.transcriptText(), prev.status()]);
+			if (text) {
+				const file = `${TASK}/previous.jsonl`;
+				await this.sh(`cat > ${file}`, [], { stdin: text });
+				prompt += `\n\n${retryNote({ file, ...s })}`;
+			}
+		}
 		this.transcriptTable();
 		this.sql.exec("DELETE FROM transcript");
 		const script = job.kind === "superagent" ? SUPER_SH : AGENT_SH;
@@ -258,7 +269,7 @@ export class Box extends DurableObject<Env> {
 			job.provider === "openrouter"
 				? { ANTHROPIC_BASE_URL: "https://openrouter.ai/api", ANTHROPIC_AUTH_TOKEN: "added-by-outbound", ANTHROPIC_API_KEY: "" }
 				: { ANTHROPIC_API_KEY: "added-by-outbound" };
-		await this.container.exec(["bash", "-c", BG_SH, script, job.remote, job.prompt, systemPrompt(job.kind, job.memory ?? []), AGENT_SETTINGS], {
+		await this.container.exec(["bash", "-c", BG_SH, script, job.remote, prompt, systemPrompt(job.kind, job.memory ?? []), AGENT_SETTINGS], {
 			cwd: "/workspace",
 			env: {
 				...TRUST,
@@ -333,7 +344,14 @@ export class Box extends DurableObject<Env> {
 	}
 
 	status() {
-		return { status: this.ctx.storage.kv.get<string>("status") ?? "none", log: this.ctx.storage.kv.get<string>("log") };
+		const kv = this.ctx.storage.kv;
+		return { status: kv.get<string>("status") ?? "none", log: kv.get<string>("log"), reason: kv.get<string>("reason") };
+	}
+
+	// The finished run's stored transcript as JSONL (for a retry of it).
+	transcriptText(): string {
+		this.transcriptTable();
+		return this.sql.exec<{ line: string }>("SELECT line FROM transcript ORDER BY seq").toArray().map((r) => r.line).join("\n");
 	}
 
 	async alarm(): Promise<void> {

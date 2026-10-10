@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { explanation, fixPrompt, ready, renameOwed, shortTitle, validatePlan, type ForkState, type TaskState } from "../src/tasks";
+import { explanation, fixPrompt, ready, renameOwed, retryNote, shortTitle, validatePlan, type ForkState, type TaskState } from "../src/tasks";
 
 const t = (id: string, status: TaskState["status"], deps: string[] = [], fork: string | null = null, bubble: string | null = null): TaskState => ({
 	id,
@@ -124,4 +124,12 @@ test("a fixer's prompt carries the task, what failed, the CI output and review c
 	expect(p).toContain("1 failing");
 	expect(p).not.toContain("Review comments");
 	expect(fixPrompt({ title: "t", description: "d", failed: ["automatic review"], command: "", log: null, review: "Automatic review: no" })).toContain("## Review comments");
+});
+
+test("a retry's note points at the earlier run and says why it failed, when that's known", () => {
+	const p = retryNote({ file: "/t/previous.jsonl", status: "failed", reason: "not placed: x", log: "boom" });
+	expect(p).toContain("/t/previous.jsonl");
+	expect(p).toContain(`"failed": not placed: x`);
+	expect(p).toContain("boom");
+	expect(retryNote({ file: "f", status: "lost" })).not.toContain("Its log");
 });
