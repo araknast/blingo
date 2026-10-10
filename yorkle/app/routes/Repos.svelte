@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Dialog from "../lib/Dialog.svelte";
+	import Pager, { PAGE } from "../lib/Pager.svelte";
 	import Shell from "../lib/Shell.svelte";
 	import { navigate } from "../lib/router.svelte";
 	import { api, loadMe, session } from "../lib/session.svelte";
@@ -27,6 +28,13 @@
 			.filter((r) => `${nameOf(r)} ${r}`.toLowerCase().includes(filter.trim().toLowerCase()))
 			.toSorted((a, b) => nameOf(a).localeCompare(nameOf(b))),
 	);
+
+	let page = $state(0);
+	$effect(() => {
+		filter;
+		page = 0;
+	});
+	const visible = $derived(repos.slice(page * PAGE, (page + 1) * PAGE));
 
 	let createOpen = $state(false);
 	let newName = $state("");
@@ -69,7 +77,7 @@
 					<tr><th>Name</th><th>Bubbles</th><th>Agents working</th><th>Conflicts</th></tr>
 				</thead>
 				<tbody>
-					{#each repos as r (r)}
+					{#each visible as r (r)}
 						{@const s = summaries[r]}
 						<tr>
 							<td><a class="name" href="/repos/{r}">{nameOf(r)}</a>{#if nameOf(r) !== r}<span class="muted id mono">{r}</span>{/if}</td>
@@ -89,6 +97,7 @@
 					{/each}
 				</tbody>
 			</table>
+			<Pager bind:page total={repos.length} />
 		{/if}
 	</div>
 </Shell>

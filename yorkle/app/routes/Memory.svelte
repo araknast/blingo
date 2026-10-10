@@ -4,12 +4,16 @@
 	import { repoState } from "../lib/repoState.svelte";
 	import { api, session } from "../lib/session.svelte";
 	import { toastError } from "../lib/toast.svelte";
+	import Pager, { PAGE } from "../lib/Pager.svelte";
 	import { ago, repoName } from "../lib/util";
 
 	let { repo }: { repo: string } = $props();
 	// svelte-ignore state_referenced_locally (the page is keyed by repo in App)
 	const rd = repoState(repo, 5000);
 	const items = $derived(rd.data?.memory ?? []);
+	let page = $state(0);
+	// Deleting the last note on a page steps back.
+	const shown = $derived(items.slice(Math.min(page, Math.max(0, Math.ceil(items.length / PAGE) - 1)) * PAGE).slice(0, PAGE));
 
 	let note = $state("");
 	let busy = $state(false);
@@ -54,7 +58,7 @@
 			<p class="muted">No notes yet.</p>
 		{:else}
 			<ul class="notes">
-				{#each items as m (m.id)}
+				{#each shown as m (m.id)}
 					<li>
 						<p>{m.text}</p>
 						<span class="muted small">{author(m.author)}, {ago(m.created)}</span>
@@ -62,6 +66,7 @@
 					</li>
 				{/each}
 			</ul>
+			<Pager bind:page total={items.length} />
 		{/if}
 	</div>
 </Shell>

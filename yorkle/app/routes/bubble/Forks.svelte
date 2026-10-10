@@ -4,11 +4,14 @@
 	import { forkDiff } from "../../lib/git";
 	import { orderMembers } from "../../lib/layout";
 	import type { Member } from "../../lib/types";
+	import Pager, { PAGE } from "../../lib/Pager.svelte";
 	import { plural, short } from "../../lib/util";
 
 	let { repo, members }: { repo: string; members: Member[] } = $props();
 
 	const sorted = $derived(orderMembers(members));
+	let page = $state(0);
+	const shown = $derived(sorted.slice(page * PAGE, (page + 1) * PAGE));
 	let diffs = $state<Record<string, ReturnType<typeof parsePatch> | string>>({});
 	let open = $state<Record<string, boolean>>({});
 
@@ -35,7 +38,7 @@
 	<div class="panel note">No forks in this bubble.</div>
 {:else}
 	<ul class="forks">
-		{#each sorted as m (m.name)}
+		{#each shown as m (m.name)}
 			<li class="panel">
 				<div class="row">
 					<i class="dot {m.status}"></i>
@@ -71,6 +74,7 @@
 			</li>
 		{/each}
 	</ul>
+	<Pager bind:page total={sorted.length} />
 {/if}
 
 <style>

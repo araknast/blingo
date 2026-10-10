@@ -5,6 +5,7 @@
 	import { repoState } from "../lib/repoState.svelte";
 	import { session } from "../lib/session.svelte";
 	import type { AgentRun } from "../lib/types";
+	import Pager, { PAGE } from "../lib/Pager.svelte";
 	import { agentLabel, ago, allRuns, duration, repoName, runDot } from "../lib/util";
 	import AgentView from "./agents/AgentView.svelte";
 
@@ -12,6 +13,8 @@
 	// svelte-ignore state_referenced_locally (the page is keyed by repo in App)
 	const rd = repoState(repo, 4000);
 	const runs = $derived(rd.data ? allRuns(rd.data) : []);
+	let page = $state(0);
+	const shown = $derived(runs.slice(page * PAGE, (page + 1) * PAGE));
 	const run = $derived(id ? runs.find((r) => r.fork === id) : undefined);
 	// The agent task this run is working on, if any: it can be stopped.
 	const task = $derived(id ? rd.data?.tasks.find((t) => t.kind === "agent" && t.status === "in-progress" && t.fork === id)?.id : undefined);
@@ -43,7 +46,7 @@
 				<p class="muted">No agent has run here yet, and nobody has taken a task. Start one from the map or the Tasks tab.</p>
 			{:else}
 				<ul class="runs">
-					{#each runs as r (r.fork)}
+					{#each shown as r (r.fork)}
 						<li>
 							<a href={href(r)}>
 								<span class="status"><i class="dot {runDot(r)}"></i>{agentLabel(r.status)}</span>
@@ -53,6 +56,7 @@
 						</li>
 					{/each}
 				</ul>
+				<Pager bind:page total={runs.length} />
 			{/if}
 		{/if}
 	</div>

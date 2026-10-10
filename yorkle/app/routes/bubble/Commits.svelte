@@ -1,29 +1,28 @@
 <script lang="ts">
 	import { log } from "../../lib/git";
 	import type { Commit } from "../../lib/types";
+	import Pager, { PAGE } from "../../lib/Pager.svelte";
 	import { ago, firstLine } from "../../lib/util";
 
 	let { repo, bubble, base }: { repo: string; bubble: string; base: string } = $props();
 
-	const PAGE = 30;
 	let commits = $state<Commit[]>([]);
-	let more = $state(true);
+	let page = $state(0);
+	let more = $state(false);
 	let loading = $state(false);
 	let error = $state("");
 
-	async function next() {
+	// One page at a time; a full page means there may be another.
+	$effect(() => {
 		loading = true;
-		try {
-			const page = await log(repo, bubble, commits.length, PAGE);
-			commits.push(...page);
-			more = page.length === PAGE;
-		} catch (e) {
-			error = e instanceof Error ? e.message : String(e);
-		} finally {
-			loading = false;
-		}
-	}
-	next();
+		log(repo, bubble, page * PAGE, PAGE)
+			.then((c) => {
+				commits = c;
+				more = c.length === PAGE;
+			})
+			.catch((e) => (error = e instanceof Error ? e.message : String(e)))
+			.finally(() => (loading = false));
+	});
 
 	const day = (c: Commit) => new Date(c.committedAt * 1000).toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" });
 	const groups = $derived.by(() => {
@@ -64,9 +63,7 @@
 	</ol>
 {/each}
 
-{#if more && commits.length}
-	<button onclick={next} disabled={loading}>{loading ? "Loading" : "Show older commits"}</button>
-{/if}
+<Pager bind:page {more} />
 
 <style>
 	.panel { background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; margin: 0 0 1.25rem; }

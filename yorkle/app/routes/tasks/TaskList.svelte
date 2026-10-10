@@ -2,6 +2,7 @@
 	import TaskIcon from "../../lib/TaskIcon.svelte";
 	import { route } from "../../lib/router.svelte";
 	import type { RepoState, Task } from "../../lib/types";
+	import Pager, { PAGE } from "../../lib/Pager.svelte";
 	import { ago, plural } from "../../lib/util";
 
 	let {
@@ -21,13 +22,20 @@
 	} = $props();
 
 	// Open = everything not completed (waiting, in progress, failed), like an issue tracker's open/closed.
-	const state = $derived(new URLSearchParams(route.search).get("state") === "completed" ? "completed" : "open");
+	const tab = $derived(new URLSearchParams(route.search).get("state") === "completed" ? "completed" : "open");
 	const byId = $derived(new Map(data.tasks.map((t) => [t.id, t])));
 	const openCount = $derived(data.tasks.filter((t) => t.status !== "completed").length);
 	// Newest first; a plan's tasks share a timestamp, and the stable sort keeps them in plan order.
 	const shown = $derived(
-		data.tasks.filter((t) => (state === "completed") === (t.status === "completed")).sort((a, b) => b.created - a.created),
+		data.tasks.filter((t) => (tab === "completed") === (t.status === "completed")).sort((a, b) => b.created - a.created),
 	);
+	let page = $state(0);
+	// Switching between open and completed starts over.
+	$effect(() => {
+		tab;
+		page = 0;
+	});
+	const visible = $derived(shown.slice(page * PAGE, (page + 1) * PAGE));
 	const blockedBy = (t: Task) => t.deps.filter((d) => byId.get(d)?.status !== "completed").length;
 	const planner = (t: Task) => (t.superagent ? data.agents.find((a) => a.fork === t.superagent)?.prompt : undefined);
 </script>
@@ -39,12 +47,12 @@
 
 <section class="box" aria-label="Tasks">
 	<header class="box-head">
-		<a href="?state=open" aria-current={state === "open" ? "page" : undefined}><span class="ring"></span>{openCount} Open</a>
-		<a href="?state=completed" aria-current={state === "completed" ? "page" : undefined}>✓ {data.tasks.length - openCount} Completed</a>
+		<a href="?state=open" aria-current={tab === "open" ? "page" : undefined}><span class="ring"></span>{openCount} Open</a>
+		<a href="?state=completed" aria-current={tab === "completed" ? "page" : undefined}>✓ {data.tasks.length - openCount} Completed</a>
 	</header>
 	{#if !shown.length}
 		<div class="empty">
-			{#if state === "open"}
+			{#if tab === "open"}
 				<h2>No open tasks</h2>
 				<p class="muted">Create one with <b>New task</b>, or describe a bigger change and let a superagent split it into tasks.</p>
 			{:else}
@@ -54,7 +62,7 @@
 		</div>
 	{:else}
 		<ul>
-			{#each shown as t (t.id)}
+			{#each visible as t (t.id)}
 				{@const blocked = blockedBy(t)}
 				<li>
 					<TaskIcon status={t.status} />
@@ -86,6 +94,7 @@
 				</li>
 			{/each}
 		</ul>
+		<Pager bind:page total={shown.length} />
 	{/if}
 </section>
 
