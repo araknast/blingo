@@ -8,6 +8,7 @@
 	import { toast, toastError } from "../../lib/toast.svelte";
 	import type { AgentRun } from "../../lib/types";
 	import { agentLabel, ago, compact, duration, poll } from "../../lib/util";
+	import { elapsed as fmtElapsed } from "../../lib/elapsed";
 
 	let { repo, id, run, task, kind }: { repo: string; id: string; run?: AgentRun; task?: string; kind: string } = $props();
 
@@ -65,8 +66,7 @@
 	onDestroy(() => clearInterval(timer));
 	const elapsed = $derived.by(() => {
 		tick;
-		const s = Math.max(0, Math.floor((Date.now() - (run?.started ?? Date.now())) / 1000));
-		return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+		return fmtElapsed(Date.now() - (run?.started ?? Date.now()));
 	});
 	const live = $derived((run?.status ?? status) === "running");
 

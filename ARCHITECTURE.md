@@ -206,8 +206,13 @@ the Worker's `MODEL`). An agent's Box binds `Outbound` with its repository (prop
 `RepoDO.credentials` and adds that key (there is no fallback: without a key no agent, superagent,
 CI fixer or review starts, and queued tasks wait for one): as
 `x-api-key` for `api.anthropic.com`, or as a bearer token for `openrouter.ai`, which Claude Code
-reaches through `ANTHROPIC_BASE_URL`. A request to the other provider is refused. The Reviewer uses
-the same key and the agent model. Claude Code runs with `--output-format stream-json`: each run's events
+reaches through `ANTHROPIC_BASE_URL`. A request to the other provider is refused. A third provider,
+`claude-subscription`, takes a `claude setup-token` token: the sandbox gets `CLAUDE_CODE_OAUTH_TOKEN=added-by-outbound`
+and Outbound sets `authorization: Bearer` plus the `oauth-2025-04-20` beta for `api.anthropic.com`. The Reviewer calls the
+SDK, which a subscription token can't, so it uses its own key (`PUT …/settings {reviewerKey, reviewerProvider}`, stored
+apart, API says `hasReviewerKey`; `RepoDO.reviewerCredentials`), else the repository's key when that is an API key;
+automatic review with a subscription and no reviewer key is refused. It uses the agent model.
+The repository list reads `GET /repos/:r/summary` (counts only), not the full state. Claude Code runs with `--output-format stream-json`: each run's events
 go to `$TASK/transcript.jsonl` and are stored in the Box's SQLite when it ends (lines over 256 KB become
 stubs). `GET /agents/:id/transcript` serves them, live from the container while it runs.
 

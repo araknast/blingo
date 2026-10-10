@@ -5,21 +5,42 @@
 	import { navigate } from "../lib/router.svelte";
 	import { api, loadMe, session } from "../lib/session.svelte";
 	import { toastError } from "../lib/toast.svelte";
-	import type { RepoState } from "../lib/types";
+	import type { RepoSummary } from "../lib/types";
 	import { plural, repoName } from "../lib/util";
 
 	let creating = $state(false);
 	let filter = $state("");
-	let summaries = $state<Record<string, RepoState | "error">>({});
+	let summaries = $state<Record<string, RepoSummary | "error">>({});
 
-	// ponytail: one request per repository for its summary; add a summary endpoint if lists grow long.
+	// A small count-only summary per repository, four at a time, retried: the busy ones are slow or briefly 503.
+	const queue: string[] = [];
+	let running = 0;
+	async function load(r: string) {
+		for (let i = 0; i < 4; i++) {
+			try {
+				summaries[r] = await api<RepoSummary>("GET", `/repos/${r}/summary`);
+				return;
+			} catch {
+				await new Promise((ok) => setTimeout(ok, 1000 * 2 ** i));
+			}
+		}
+		summaries[r] = "error";
+	}
+	function pump() {
+		while (running < 4 && queue.length) {
+			running++;
+			load(queue.shift()!).finally(() => {
+				running--;
+				pump();
+			});
+		}
+	}
 	$effect(() => {
 		for (const r of session.me?.repos ?? []) {
-			if (r in summaries) continue;
-			api<RepoState>("GET", `/repos/${r}`)
-				.then((s) => (summaries[r] = s))
-				.catch(() => (summaries[r] = "error"));
+			if (r in summaries || queue.includes(r)) continue;
+			queue.push(r);
 		}
+		pump();
 	});
 
 	const nameOf = (r: string) => repoName(r, session.me?.names);
@@ -86,10 +107,9 @@
 							{:else if !s}
 								<td colspan="3" class="muted">Loading</td>
 							{:else}
-								{@const working = s.agents.filter((a) => a.status === "running").length}
-								<td>{s.bubbles.length}<span class="muted forks">{plural(s.bubbles.reduce((n, b) => n + b.members.length, 0), "fork")}</span></td>
-								<td>{#if working}<i class="dot working"></i> {working}{:else}<span class="muted">None</span>{/if}</td>
-								<td>{#if s.conflicts.length}<i class="dot conflict"></i> {s.conflicts.length}{:else}<span class="muted">None</span>{/if}</td>
+								<td>{s.bubbles}<span class="muted forks">{plural(s.forks, "fork")}</span></td>
+								<td>{#if s.working}<i class="dot working"></i> {s.working}{:else}<span class="muted">None</span>{/if}</td>
+								<td>{#if s.conflicts}<i class="dot conflict"></i> {s.conflicts}{:else}<span class="muted">None</span>{/if}</td>
 							{/if}
 						</tr>
 					{:else}

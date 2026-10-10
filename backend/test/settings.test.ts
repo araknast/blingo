@@ -89,3 +89,12 @@ test("a deployment's headers go only to their host (and its subdomains)", () => 
 	expect(deployHeaders(d, "api.example.com", {})).toEqual([]); // no value stored
 	expect(deployHeaders(undefined, "api.example.com", values)).toEqual([]);
 });
+
+test("claude-subscription provider: accepted, and its key only goes to api.anthropic.com", () => {
+	expect(updateSettings(DEFAULTS, { provider: "claude-subscription" })).toMatchObject({ provider: "claude-subscription" });
+	expect(updateSettings(DEFAULTS, { reviewerProvider: "openrouter" })).toMatchObject({ reviewerProvider: "openrouter" });
+	expect(updateSettings(DEFAULTS, { reviewerProvider: "claude-subscription" })).toHaveProperty("error");
+	const sub = { agent: true, provider: "claude-subscription" as const };
+	expect(egress(new URL("https://api.anthropic.com/v1/messages"), sub)).toBe("key");
+	expect(egress(new URL("https://openrouter.ai/api/v1/messages"), sub)).toHaveProperty("deny");
+});

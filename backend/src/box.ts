@@ -153,8 +153,14 @@ export class Outbound extends WorkerEntrypoint<Env, { ci?: string[]; repo?: stri
 		const headers = new Headers(request.headers);
 		headers.delete("x-api-key");
 		headers.delete("authorization");
-		if (creds!.provider === "openrouter") headers.set("authorization", `Bearer ${creds!.key}`);
-		else headers.set("x-api-key", creds!.key);
+		if (creds!.provider === "anthropic") headers.set("x-api-key", creds!.key);
+		else headers.set("authorization", `Bearer ${creds!.key}`);
+		if (creds!.provider === "claude-subscription") {
+			// A subscription token is only accepted with the OAuth beta flag.
+			const betas = (headers.get("anthropic-beta") ?? "").split(",").map((b) => b.trim()).filter(Boolean);
+			if (!betas.includes("oauth-2025-04-20")) betas.push("oauth-2025-04-20");
+			headers.set("anthropic-beta", betas.join(","));
+		}
 		const res = await fetch(new Request(request, { headers }));
 		if (!box || !res.body) return res;
 		// Read a copy of the body for its token use; the agent gets the other copy as it streams.
@@ -311,7 +317,9 @@ export class Box extends DurableObject<Env> {
 		const auth: Record<string, string> =
 			job.provider === "openrouter"
 				? { ANTHROPIC_BASE_URL: "https://openrouter.ai/api", ANTHROPIC_AUTH_TOKEN: "added-by-outbound", ANTHROPIC_API_KEY: "" }
-				: { ANTHROPIC_API_KEY: "added-by-outbound" };
+				: job.provider === "claude-subscription"
+					? { CLAUDE_CODE_OAUTH_TOKEN: "added-by-outbound", ANTHROPIC_API_KEY: "" }
+					: { ANTHROPIC_API_KEY: "added-by-outbound" };
 		await this.container.exec(["bash", "-c", BG_SH, script, job.remote, prompt, systemPrompt(job.kind, job.memory ?? [], job.skills ?? []), AGENT_SETTINGS], {
 			cwd: "/workspace",
 			env: {

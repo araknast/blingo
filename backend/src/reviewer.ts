@@ -43,8 +43,8 @@ export class Reviewer extends Agent<Env, State> {
 
 	// The repository's own key and provider (RepoDO.credentials); there is no fallback key.
 	private async verdict(job: ReviewJob): Promise<{ approve: boolean; comments: string }> {
-		const creds = await this.env.REPO.getByName(job.repo).credentials();
-		if (!creds) return { approve: false, comments: `Not reviewed: ${NO_KEY}.` };
+		const creds = await this.env.REPO.getByName(job.repo).reviewerCredentials();
+		if (!creds) return { approve: false, comments: `Not reviewed: ${NO_KEY} (a subscription token can't review: set a reviewer key).` };
 		const openrouter = creds.provider === "openrouter";
 		const client = openrouter
 			? new Anthropic({ baseURL: "https://openrouter.ai/api", authToken: creds.key, apiKey: null })

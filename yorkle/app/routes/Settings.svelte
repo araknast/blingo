@@ -27,6 +27,7 @@
 			};
 	});
 	let apiKey = $state("");
+	let reviewerKey = $state("");
 	let busy = $state(false);
 
 	async function save(e: SubmitEvent) {
@@ -34,10 +35,11 @@
 		if (!form) return;
 		busy = true;
 		try {
-			const { ci, deploys, hasKey: _, ...rest } = form;
+			const { ci, deploys, hasKey: _, hasReviewerKey: __, ...rest } = form;
 			const hosts = ci.hostsText.split(/[\s,]+/).filter(Boolean);
-			await api("PUT", `/repos/${repo}/settings`, { ...rest, ci: { enabled: ci.enabled, command: ci.command, hosts }, deploys: deploys.map(deployBody), ...(apiKey ? { apiKey } : {}) });
+			await api("PUT", `/repos/${repo}/settings`, { ...rest, ci: { enabled: ci.enabled, command: ci.command, hosts }, deploys: deploys.map(deployBody), ...(apiKey ? { apiKey } : {}), ...(reviewerKey ? { reviewerKey } : {}) });
 			apiKey = "";
+			reviewerKey = "";
 			form = null; // take the saved values
 			await rd.refresh();
 			toast("Settings saved");
@@ -59,6 +61,17 @@
 			form = null;
 			await rd.refresh();
 			toast("API key removed");
+		} catch (err) {
+			toastError(err);
+		}
+	}
+
+	async function removeReviewerKey() {
+		try {
+			await api("PUT", `/repos/${repo}/settings`, { reviewerKey: "" });
+			form = null;
+			await rd.refresh();
+			toast("Reviewer key removed");
 		} catch (err) {
 			toastError(err);
 		}
@@ -123,6 +136,20 @@
 							<option value="both">Both</option>
 						</select>
 					</div>
+					{#if form.review === "auto" || form.review === "both"}
+						<div class="field">
+							<label for="reviewer-key">Reviewer API key{form.provider === "claude-subscription" ? "" : " (optional)"}</label>
+							<div class="row">
+								<select id="reviewer-provider" bind:value={form.reviewerProvider} aria-label="Reviewer API">
+									<option value="anthropic">Anthropic</option>
+									<option value="openrouter">OpenRouter</option>
+								</select>
+								<input id="reviewer-key" type="password" autocomplete="off" bind:value={reviewerKey} placeholder={form.hasReviewerKey ? "A key is set. Type a new one to replace it" : form.provider === "claude-subscription" ? "Required: a subscription token can't review" : "Defaults to the repository's key"} />
+								{#if form.hasReviewerKey}<button type="button" onclick={removeReviewerKey}>Remove</button>{/if}
+							</div>
+							<p class="hint">The reviewer calls the API directly. Stored for this repository only and never shown again.</p>
+						</div>
+					{/if}
 					<div class="field">
 						<label for="pushes">Pushes an agent gets to pass CI</label>
 						<input id="pushes" type="number" min="1" max="20" bind:value={form.maxAgentPushes} />
@@ -171,15 +198,16 @@
 						<select id="provider" bind:value={form.provider}>
 							<option value="anthropic">Anthropic</option>
 							<option value="openrouter">OpenRouter</option>
+							<option value="claude-subscription">Claude subscription</option>
 						</select>
 					</div>
 					<div class="field">
-						<label for="api-key">API key</label>
+						<label for="api-key">{form.provider === "claude-subscription" ? "Subscription token" : "API key"}</label>
 						<div class="row">
 							<input id="api-key" type="password" autocomplete="off" bind:value={apiKey} placeholder={form.hasKey ? "A key is set. Type a new one to replace it" : "Required: agents don't start without one"} />
 							{#if form.hasKey}<button type="button" onclick={removeKey}>Remove</button>{/if}
 						</div>
-						<p class="hint">Stored for this repository only, never shown again, and never given to a sandbox.</p>
+						<p class="hint">Stored for this repository only, never shown again, and never given to a sandbox.{#if form.provider === "claude-subscription"} Run <span class="mono">claude setup-token</span> locally and paste the result. Agents bill to your subscription and share its usage limits, so many at once may be rate limited.{/if}</p>
 					</div>
 					{#each [["agent", "Agents"], ["superagent", "Superagents"], ["ferge", "Ferge agents"]] as [role, label] (role)}
 						<div class="field">

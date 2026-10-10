@@ -14,6 +14,8 @@ export type Settings = {
 	// Whose API the repository's API key is for, and the model each kind of agent uses ("" = the
 	// Worker's MODEL). The key itself is stored apart and never returned.
 	provider: Provider;
+	// The Reviewer calls the API directly, so it has its own provider (its key is stored apart).
+	reviewerProvider: ReviewerProvider;
 	models: { agent: string; superagent: string; ferge: string };
 	// A ferge also files an agent task (model `models.ferge`) to resolve its conflict markers.
 	fergeAgents: boolean;
@@ -27,7 +29,9 @@ export type Settings = {
 // `auth` entry names a header Outbound adds to requests to that host (the value is kept apart, in
 // RepoDO, and never returned), so no credential enters the sandbox.
 export type Deploy = { name: string; command: string; hosts: string[]; auth: { host: string; header: string }[] };
-export type Provider = "anthropic" | "openrouter";
+// "claude-subscription": a `claude setup-token` token for Claude Code (api.anthropic.com, bearer auth).
+export type Provider = "anthropic" | "openrouter" | "claude-subscription";
+export type ReviewerProvider = "anthropic" | "openrouter";
 export type Role = keyof Settings["models"];
 
 export const DEFAULTS: Settings = {
@@ -36,6 +40,7 @@ export const DEFAULTS: Settings = {
 	review: "none",
 	maxAgentPushes: 3,
 	provider: "anthropic",
+	reviewerProvider: "anthropic",
 	models: { agent: "", superagent: "", ferge: "" },
 	fergeAgents: false,
 	autoFerge: false,
@@ -48,8 +53,12 @@ export function updateSettings(current: Settings, body: unknown): Settings | { e
 	const b = (body ?? {}) as Record<string, unknown>;
 	const next: Settings = { ...current, ci: { ...current.ci }, models: { ...current.models } };
 	if (b.provider !== undefined) {
-		if (b.provider !== "anthropic" && b.provider !== "openrouter") return { error: "provider must be anthropic or openrouter" };
+		if (b.provider !== "anthropic" && b.provider !== "openrouter" && b.provider !== "claude-subscription") return { error: "provider must be anthropic, openrouter or claude-subscription" };
 		next.provider = b.provider;
+	}
+	if (b.reviewerProvider !== undefined) {
+		if (b.reviewerProvider !== "anthropic" && b.reviewerProvider !== "openrouter") return { error: "reviewerProvider must be anthropic or openrouter" };
+		next.reviewerProvider = b.reviewerProvider;
 	}
 	if (b.models !== undefined) {
 		const m = b.models as Record<string, unknown>;
@@ -150,7 +159,7 @@ export const ciHostAllowed = (hosts: string[], hostname: string) => hosts.some((
 // A model id as the provider names it ("" = the default).
 export const isModelId = (m: unknown): m is string => typeof m === "string" && /^[\w./:-]{0,100}$/.test(m);
 
-export const MODEL_HOSTS: Record<Provider, string> = { anthropic: "api.anthropic.com", openrouter: "openrouter.ai" };
+export const MODEL_HOSTS: Record<Provider, string> = { anthropic: "api.anthropic.com", openrouter: "openrouter.ai", "claude-subscription": "api.anthropic.com" };
 export const NO_KEY = "this repository has no API key: set one in its settings";
 
 // Where a request out of a Box may go: "pass" = straight out, "key" = to the repository's model API
@@ -164,10 +173,9 @@ export function egress(url: URL, box: { ci?: string[]; agent?: boolean; provider
 	if (https && host.endsWith(".artifacts.cloudflare.net")) return "pass";
 	if (box.ci) return https && ciHostAllowed(box.ci, host) ? "pass" : { deny: `${host} not reachable from CI` };
 	if (!box.agent) return { deny: `${host} not reachable` };
-	const model = (Object.keys(MODEL_HOSTS) as Provider[]).find((p) => MODEL_HOSTS[p] === host);
-	if (!model) return "pass";
+	if (!Object.values(MODEL_HOSTS).includes(host)) return "pass";
 	if (!box.provider) return { deny: NO_KEY };
-	if (model !== box.provider) return { deny: `${host} not reachable: this repository uses ${box.provider}` };
+	if (MODEL_HOSTS[box.provider] !== host) return { deny: `${host} not reachable: this repository uses ${box.provider}` };
 	return https ? "key" : { deny: "https only" };
 }
 

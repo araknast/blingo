@@ -50,14 +50,17 @@ export type Settings = {
 	ci: { enabled: boolean; command: string; hosts: string[] };
 	review: "none" | "auto" | "manual" | "both";
 	maxAgentPushes: number;
-	provider: "anthropic" | "openrouter";
+	provider: "anthropic" | "openrouter" | "claude-subscription";
+	reviewerProvider: "anthropic" | "openrouter";
 	models: { agent: string; superagent: string; ferge: string };
 	fergeAgents: boolean;
 	autoFerge: boolean;
 	taskApproval: boolean;
 	deploys: DeployConfig[];
 	hasKey: boolean;
+	hasReviewerKey: boolean;
 };
+export type RepoSummary = { bubbles: number; forks: number; working: number; conflicts: number };
 export type Skill = { name: string; description: string; created: number };
 export type MemoryItem = { id: string; text: string; author: string; created: number };
 export type RepoState = {

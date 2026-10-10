@@ -230,6 +230,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
 
 	if (request.method === "GET" && a === "agents" && b && c === "transcript" && !d) return Response.json(await env.BOX.getByName(b).transcript(Number(url.searchParams.get("from"))));
 	if (request.method === "GET" && a === "agents" && b && !c) return Response.json(await env.BOX.getByName(b).status());
+	if (request.method === "GET" && a === "repos" && b && c === "summary" && !d) return Response.json(await env.REPO.getByName(b).summary());
 	if (request.method === "GET" && a === "repos" && b && !c) return Response.json(await env.REPO.getByName(b).list());
 	if (request.method === "DELETE" && a === "repos" && b && !c) {
 		const deleted = await env.REPO.getByName(b).destroy(b);

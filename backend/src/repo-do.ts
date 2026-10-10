@@ -4,7 +4,7 @@ import { getAgentByName } from "agents";
 import { COMMIT_FILES_SH, MERGES, PATCH_SH, readSeries } from "./git-scripts";
 import { conflictKey, fergeCandidate, nearestNeighbour, placeFork, renameConflicts, type Basis, type Bubble } from "./bubbles";
 import { fergeName, friendlyName, nameText, type Name } from "./names";
-import { DEFAULTS, NO_KEY, deployHeaders, deployKey, deployValues, gate, updateSettings, type Provider, type Role, type Settings } from "./settings";
+import { DEFAULTS, NO_KEY, deployHeaders, deployKey, deployValues, gate, updateSettings, type Provider, type ReviewerProvider, type Role, type Settings } from "./settings";
 import { resolveSkills, type Skill } from "./skills";
 import { explanation, fixPrompt, ready, renameOwed, shortTitle, type Owed, type PlanItem, type TaskState } from "./tasks";
 
@@ -599,6 +599,17 @@ export class RepoDO extends DurableObject<Env> {
 		return this.sql.exec<{ id: string }>("SELECT id FROM bubble ORDER BY visible DESC, seq LIMIT 1").toArray()[0]?.id ?? null;
 	}
 
+	// Counts only, for the repository list (list() is far too big to fetch per repository there).
+	summary() {
+		const n = (q: string) => this.sql.exec<{ n: number }>(q).one().n;
+		return {
+			bubbles: n("SELECT COUNT(*) AS n FROM bubble"),
+			forks: n("SELECT COUNT(*) AS n FROM fork WHERE bubble IN (SELECT id FROM bubble)"),
+			working: n("SELECT COUNT(*) AS n FROM agent_run WHERE status = 'running'"),
+			conflicts: n("SELECT COUNT(*) AS n FROM conflict"),
+		};
+	}
+
 	list() {
 		const forks = this.sql.exec<Fork>("SELECT name, bubble, status, files FROM fork").toArray();
 		const startable = this.startable();
@@ -706,7 +717,7 @@ export class RepoDO extends DurableObject<Env> {
 		this.sql.exec(
 			"DELETE FROM bubble; DELETE FROM fork; DELETE FROM conflict; DELETE FROM locked; DELETE FROM hidden; DELETE FROM loose; DELETE FROM agent_run; DELETE FROM task; DELETE FROM task_dep; DELETE FROM memory; DELETE FROM skill; DELETE FROM skill_file; DELETE FROM deploy; DELETE FROM owed; DELETE FROM basis; DELETE FROM renamed; DELETE FROM merging;",
 		);
-		for (const k of ["repo", "seq", "name", "namedFirst", "settings", "apiKey", "deployAuth"]) this.ctx.storage.kv.delete(k);
+		for (const k of ["repo", "seq", "name", "namedFirst", "settings", "apiKey", "reviewerKey", "deployAuth"]) this.ctx.storage.kv.delete(k);
 		return deleted;
 	}
 
@@ -742,7 +753,7 @@ export class RepoDO extends DurableObject<Env> {
 		const values = this.ctx.storage.kv.get<Record<string, string>>("deployAuth") ?? {};
 		const s = this.settings();
 		const deploys = s.deploys.map((d) => ({ ...d, auth: d.auth.map((a) => ({ ...a, hasValue: !!values[deployKey(d.name, a.host, a.header)] })) }));
-		return { ...s, deploys, hasKey: !!this.ctx.storage.kv.get<string>("apiKey") };
+		return { ...s, deploys, hasKey: !!this.ctx.storage.kv.get<string>("apiKey"), hasReviewerKey: !!this.ctx.storage.kv.get<string>("reviewerKey") };
 	}
 
 	// `apiKey` (a string; "" removes it) is kept apart from the other settings and never returned.
@@ -751,7 +762,14 @@ export class RepoDO extends DurableObject<Env> {
 		if ("error" in next) return next;
 		const key = (body as { apiKey?: unknown } | null)?.apiKey;
 		if (key !== undefined && (typeof key !== "string" || key.length > 500)) return { error: "apiKey must be a string" };
+		const rkey = (body as { reviewerKey?: unknown } | null)?.reviewerKey;
+		if (rkey !== undefined && (typeof rkey !== "string" || rkey.length > 500)) return { error: "reviewerKey must be a string" };
+		const hasRKey = typeof rkey === "string" ? !!rkey.trim() : !!this.ctx.storage.kv.get<string>("reviewerKey");
+		if (next.provider === "claude-subscription" && (next.review === "auto" || next.review === "both") && !hasRKey) {
+			return { error: "automatic review can't use a Claude subscription token: set a reviewer API key, or use manual review" };
+		}
 		this.ctx.storage.kv.put("settings", next);
+		if (typeof rkey === "string") rkey.trim() ? this.ctx.storage.kv.put("reviewerKey", rkey.trim()) : this.ctx.storage.kv.delete("reviewerKey");
 		// Deployment credentials: the values sent now, else the ones kept, for the headers still listed.
 		const sent = deployValues(body);
 		const kept = this.ctx.storage.kv.get<Record<string, string>>("deployAuth") ?? {};
@@ -812,6 +830,15 @@ export class RepoDO extends DurableObject<Env> {
 	credentials(): { provider: Provider; key: string } | null {
 		const key = this.ctx.storage.kv.get<string>("apiKey");
 		return key ? { provider: this.settings().provider, key } : null;
+	}
+
+	// The Reviewer's key: its own if set (a subscription token can't call the SDK), else the
+	// repository's key when that is an API key. Never sent to a sandbox.
+	reviewerCredentials(): { provider: ReviewerProvider; key: string } | null {
+		const own = this.ctx.storage.kv.get<string>("reviewerKey");
+		if (own) return { provider: this.settings().reviewerProvider, key: own };
+		const c = this.credentials();
+		return c && c.provider !== "claude-subscription" ? { provider: c.provider, key: c.key } : null;
 	}
 
 	// How to run an agent of `role` here: its model (`model` if one was chosen for it), and whose API it talks to.
