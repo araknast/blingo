@@ -158,7 +158,12 @@ async function handle(request: Request, env: Env): Promise<Response> {
 		const [task] = added.ids;
 		if ((await repoDO.task(task))?.status === "awaiting-approval") return Response.json({ repo: src.repo, task, awaitingApproval: true }, { status: 202 });
 		if (a === "notagents") {
-			const r = await repoDO.takeTask(task);
+			// A failed request leaves no task behind: the client will retry with a new one.
+			const r = await repoDO.takeTask(task).catch(async (e) => {
+				await repoDO.dropTask(task);
+				throw e;
+			});
+			if ("error" in r) await repoDO.dropTask(task);
 			return "error" in r ? Response.json(r, { status: 409 }) : Response.json(r, { status: 201 });
 		}
 		// fork null: the start failed and the task is queued; RepoDO retries it.

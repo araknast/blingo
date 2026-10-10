@@ -260,6 +260,8 @@ export class RepoDO extends DurableObject<Env> {
 			Date.now(),
 			fork,
 		);
+		// Placed: no longer loose, in the same step its task completes (no window where it is both).
+		this.sql.exec("DELETE FROM loose WHERE fork = ?", fork);
 		// The series carries the fork's work now; its repo is only kept as a new bubble's rep.
 		if (target !== "new") await this.env.ARTIFACTS.delete(fork).catch(() => false);
 		await this.kick(); // applies the series; also schedules tasks this unblocks, once their deps land
@@ -315,6 +317,12 @@ export class RepoDO extends DurableObject<Env> {
 		const n = this.sql.exec("UPDATE task SET status = 'open' WHERE id = ? AND status = 'awaiting-approval'", id).rowsWritten;
 		if (n) await this.schedule();
 		return n > 0;
+	}
+
+	// Undoes a task added for a request that then failed (its notagent fork couldn't be made), so a
+	// retried request doesn't leave an orphan open task behind. Only while nothing has started it.
+	dropTask(id: string) {
+		this.sql.exec("DELETE FROM task WHERE id = ? AND status = 'open' AND fork IS NULL AND NOT EXISTS (SELECT 1 FROM task_dep WHERE dep = ?)", id, id);
 	}
 
 	async retryTask(id: string): Promise<boolean> {
@@ -906,11 +914,7 @@ export class RepoDO extends DurableObject<Env> {
 						p.exitCode === MERGES
 							? { error: "its history has merge commits; rebase it onto where it started" }
 							: await this.place(l.fork, readSeries(p.stdout).files, readSeries(p.stdout).mbox);
-					if ("error" in placed) {
-						this.sql.exec("UPDATE loose SET placing = 0, reason = ? WHERE fork = ?", placed.error, l.fork);
-						return;
-					}
-					this.sql.exec("DELETE FROM loose WHERE fork = ?", l.fork);
+					if ("error" in placed) this.sql.exec("UPDATE loose SET placing = 0, reason = ? WHERE fork = ?", placed.error, l.fork);
 				}),
 		);
 		const failed = results.find((r) => r.status === "rejected");
