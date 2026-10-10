@@ -944,8 +944,8 @@ export class RepoDO extends DurableObject<Env> {
 	// should make that impossible). Forks from before patch series are merged in as before.
 	private async applyQueues(): Promise<boolean> {
 		const queued = this.sql
-			.exec<{ name: string; bubble: string; diff: string | null; kind: string | null }>(
-				"SELECT f.name, f.bubble, f.diff, t.kind FROM fork f JOIN bubble b ON b.id = f.bubble LEFT JOIN task t ON t.fork = f.name WHERE f.status = 'pending' AND b.visible = 1 ORDER BY f.rowid",
+			.exec<{ name: string; bubble: string; diff: string | null; kind: string | null; role: string | null }>(
+				"SELECT f.name, f.bubble, f.diff, t.kind, t.role FROM fork f JOIN bubble b ON b.id = f.bubble LEFT JOIN task t ON t.fork = f.name WHERE f.status = 'pending' AND b.visible = 1 ORDER BY f.rowid",
 			)
 			.toArray();
 		const byBubble = Map.groupBy(queued, (f) => f.bubble);
@@ -969,6 +969,8 @@ export class RepoDO extends DurableObject<Env> {
 				series.forEach((f, i) => {
 					if (!ok[i]) console.error(`series of ${f.name} did not apply to ${bubble}`);
 					this.sql.exec("UPDATE fork SET status = ?, seq = ? WHERE name = ?", ok[i] ? "merged" : "failed", ok[i] ? this.nextSeq() : null, f.name);
+					// A ferge agent's resolution has landed in its bubble: the conflicts are gone, so unlock it.
+					if (ok[i] && f.role === "ferge") this.sql.exec("DELETE FROM locked WHERE id = ?", bubble);
 				});
 			}),
 		);
