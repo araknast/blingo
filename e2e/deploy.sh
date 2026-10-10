@@ -30,7 +30,11 @@ until_ "[x['status'] for x in d['deploys'] if x['id']=='$D2'] == ['failed']" "de
 ok "a failing command is marked failed with its output"
 
 # The sandbox reaches only the listed hosts; the credential header is added outside it.
-settings '{"deploys":[{"name":"hdr","command":"curl -s -o /dev/null -w \"%{http_code}\" https://httpbin.org/headers > code.txt; curl -s https://httpbin.org/headers | tee out.txt; env | grep -ci s3cret && exit 9; grep -q s3cret out.txt","hosts":["httpbin.org"],"auth":[{"host":"httpbin.org","header":"X-Deploy-Key","value":"s3cret"}]}]}'
+HDR=$(python3 -c '
+import json
+js = "fetch(\"https://httpbin.org/headers\").then(r => r.text()).then(t => { console.log(t); process.exit(t.includes(\"s3cret\") && !JSON.stringify(process.env).includes(\"s3cret\") ? 0 : 1); })"
+print(json.dumps({"deploys": [{"name": "hdr", "command": "node -e \x27" + js + "\x27", "hosts": ["httpbin.org"], "auth": [{"host": "httpbin.org", "header": "X-Deploy-Key", "value": "s3cret"}]}]}))')
+settings "$HDR"
 api -X POST --json "{\"name\":\"hdr\",\"bubble\":\"$A\"}" $U/repos/$R/deploys > d3.json; D3=$(j d3.json id)
 until_ "[x['status'] for x in d['deploys'] if x['id']=='$D3'] == ['succeeded']" "credential deployment succeeded" 300
 ok "the header reached the host and the sandbox's environment never held it"
