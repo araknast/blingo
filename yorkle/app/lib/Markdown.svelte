@@ -1,13 +1,36 @@
 <script lang="ts">
 	import DOMPurify from "dompurify";
 	import { marked } from "marked";
+	import { onDestroy } from "svelte";
+	import { file } from "./git";
 
-	let { text }: { text: string } = $props();
-	// ponytail: relative links and images inside the file aren't rewritten to the code browser.
+	// src: where the file lives, so its relative images load from the code browser (the API needs the
+	// Bearer header, so they're fetched and shown as object URLs).
+	let { text, src }: { text: string; src?: { repo: string; bubble: string; dir: string; at?: string } } = $props();
+	// ponytail: relative links inside the file aren't rewritten to the code browser.
 	const html = $derived(DOMPurify.sanitize(marked.parse(text, { async: false })));
+
+	let el = $state<HTMLDivElement>();
+	let urls: string[] = [];
+	onDestroy(() => urls.forEach(URL.revokeObjectURL));
+
+	$effect(() => {
+		void html;
+		if (!el || !src) return;
+		const { repo, bubble, dir, at } = src;
+		for (const img of el.querySelectorAll("img")) {
+			const s = img.getAttribute("src");
+			if (!s || /^([a-z][\w+.-]*:|\/)/i.test(s)) continue; // absolute URL, data:, or site path
+			const path = decodeURIComponent(new URL(s, `x:/${dir ? dir + "/" : ""}`).pathname.slice(1));
+			img.removeAttribute("src");
+			file(repo, bubble, path, at)
+				.then((b) => (urls.push(URL.createObjectURL(b)), (img.src = urls.at(-1)!)))
+				.catch(() => (img.alt ||= path));
+		}
+	});
 </script>
 
-<div class="md">{@html html}</div>
+<div class="md" bind:this={el}>{@html html}</div>
 
 <style>
 	.md { padding: 1.5rem 2rem; max-width: 52rem; line-height: 1.65; overflow-wrap: anywhere; }

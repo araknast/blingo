@@ -117,7 +117,7 @@
 		{#if view.readme}
 			<div class="panel readme">
 				<header class="file-head"><strong>{view.readme.name}</strong></header>
-				{#if /\.txt$/i.test(view.readme.name) || !/\./.test(view.readme.name)}<Code text={view.readme.text} path={view.readme.name} />{:else}<Markdown text={view.readme.text} />{/if}
+				{#if /\.txt$/i.test(view.readme.name) || !/\./.test(view.readme.name)}<Code text={view.readme.text} path={view.readme.name} />{:else}<Markdown text={view.readme.text} src={{ repo, bubble, dir: path, at }} />{/if}
 			</div>
 		{/if}
 	{/if}
@@ -137,7 +137,7 @@
 		{:else if view.binary}
 			<p class="note">This is a binary file. Download it to open it.</p>
 		{:else if isMarkdown && !showSource}
-			<Markdown text={view.text ?? ""} />
+			<Markdown text={view.text ?? ""} src={{ repo, bubble, dir: parts.slice(0, -1).join("/"), at }} />
 		{:else}
 			<Code text={view.text ?? ""} {path} />
 			{#if view.truncated}<p class="note">Showing the first {size(MAX_SHOWN)}. Download the file to see all of it.</p>{/if}
