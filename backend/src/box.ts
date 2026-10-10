@@ -19,15 +19,15 @@ const CI_CHECK_MS = 10_000;
 
 // $1 remote, $2 prompt, $3 system prompt (memory items + how to leave notes), $4 Claude Code settings
 // (the memory hook). Runs Claude Code on a clone, its whole run as stream-json in $TASK/transcript.jsonl,
-// then commits and pushes to its own fork. The commit it started from goes in $TASK/base (empty for an
+// then commits. The Box pushes it to its own fork afterwards with a fresh token (a run can outlive the
+// clone's). The commit it started from goes in $TASK/base (empty for an
 // empty repo), for its patch series. Notes for future agents land in $TASK/memory, outside the repo.
 const AGENT_SH = `set -e
 rm -rf /workspace/repo; git clone -q "$1" /workspace/repo; cd /workspace/repo
 git rev-parse -q --verify HEAD >${TASK}/base || true
 claude --print --dangerously-skip-permissions --no-session-persistence --output-format stream-json --verbose --settings "$4" --model "$MODEL" --append-system-prompt "$3" -- "$2" >${TASK}/transcript.jsonl
 git add -A
-git commit -qm "$2" || true
-git push -q origin HEAD:refs/heads/main`;
+git commit -qm "$2" || true`;
 
 // Superagent: same args, but a read-only clone and nothing is pushed; its plan is $TASK/tasks.json.
 const SUPER_SH = `set -e
@@ -360,6 +360,9 @@ export class Box extends DurableObject<Env> {
 			if ("error" in plan) return this.finish(job, "failed", `${log}\nplan rejected: ${plan.error}`);
 			await repo.addTasks(job.repo, plan.items, job.fork);
 		} else {
+			const { url } = await authRemote(this.env, job.fork, "write");
+			const push = await this.sh(`cd /workspace/repo && git push -q "$1" HEAD:refs/heads/main`, [url]);
+			if (push.exitCode !== 0) throw new Error(`push of ${job.fork} (${push.exitCode}): ${push.stderr}`);
 			const base = (await this.sh(`cat ${TASK}/base 2>/dev/null || true`)).stdout.trim();
 			const p = await this.sh(PATCH_SH, ["/workspace/repo", base]);
 			if (p.exitCode === MERGES) return this.finish(job, "failed", `${log}\nnot placed: its history has merge commits`);
