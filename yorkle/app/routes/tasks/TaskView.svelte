@@ -11,6 +11,7 @@
 		repo,
 		ontake,
 		onretry,
+		onstop,
 		onapprove,
 		onedit,
 	}: {
@@ -20,6 +21,7 @@
 		repo: string;
 		ontake: (id: string) => void;
 		onretry: (id: string) => void;
+		onstop: (id: string) => void;
 		onapprove: (id: string) => void;
 		onedit: (id: string, title: string, description: string) => Promise<boolean>;
 	} =
@@ -105,6 +107,8 @@
 			<button class="primary wide" onclick={() => ontake(t.id)}>Take this task</button>
 		{:else if t.status === "failed"}
 			<button class="primary wide" onclick={() => onretry(t.id)}>Retry</button>
+		{:else if t.status === "in-progress" && t.kind === "agent"}
+			<button class="wide" onclick={() => onstop(t.id)}>Stop agent</button>
 		{/if}
 
 		<dl>

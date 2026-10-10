@@ -73,6 +73,17 @@
 		}
 	}
 
+	async function stopAgent(t: string) {
+		if (!confirm("Stop this task's agent? Its work so far is discarded; its transcript is kept for a retry.")) return;
+		try {
+			await api("POST", `/repos/${repo}/tasks/${t}/stop`);
+			toast("Agent stopped");
+			refresh();
+		} catch (e) {
+			toastError(e);
+		}
+	}
+
 	// ---- New task ----
 	let newOpen = $state(false);
 	let superOpen = $state(false);
@@ -123,7 +134,7 @@
 			<p class="muted">Loading…</p>
 		{:else if id}
 			{#if task}
-				<TaskView {task} {data} {href} {repo} ontake={take} onretry={retry} onapprove={approve} onedit={editTask} />
+				<TaskView {task} {data} {href} {repo} ontake={take} onretry={retry} onstop={stopAgent} onapprove={approve} onedit={editTask} />
 			{:else}
 				<h1>No such task</h1>
 				<p class="muted"><a href="/repos/{repo}/tasks">Back to the tasks</a></p>

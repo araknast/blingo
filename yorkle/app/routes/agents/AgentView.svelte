@@ -5,10 +5,25 @@
 	import Code from "../../lib/Code.svelte";
 	import Markdown from "../../lib/Markdown.svelte";
 	import { api } from "../../lib/session.svelte";
+	import { toast, toastError } from "../../lib/toast.svelte";
 	import type { AgentRun } from "../../lib/types";
 	import { agentLabel, ago, duration, poll } from "../../lib/util";
 
-	let { repo, id, run, kind }: { repo: string; id: string; run?: AgentRun; kind: string } = $props();
+	let { repo, id, run, task, kind }: { repo: string; id: string; run?: AgentRun; task?: string; kind: string } = $props();
+
+	let stopping = $state(false);
+	async function stopAgent() {
+		if (!task || !confirm("Stop this agent? Its work so far is discarded; its transcript is kept for a retry.")) return;
+		stopping = true;
+		try {
+			await api("POST", `/repos/${repo}/tasks/${task}/stop`);
+			toast("Agent stopped");
+		} catch (e) {
+			toastError(e);
+		} finally {
+			stopping = false;
+		}
+	}
 
 	type Block = { type: string; text?: string; thinking?: string; name?: string; input?: unknown; content?: unknown; is_error?: boolean; tool_use_id?: string; id?: string };
 	type Event = { type: string; subtype?: string; model?: string; message?: { content?: Block[] | string }; result?: string; is_error?: boolean; total_cost_usd?: number; num_turns?: number; duration_ms?: number; hook_event?: string; output?: string; text?: string; bytes?: number };
@@ -157,6 +172,7 @@
 			.filter(Boolean)
 			.join(" · ")}
 	</p>
+	{#if live && task}<button class="stop" onclick={stopAgent} disabled={stopping}>{stopping ? "Stopping…" : "Stop agent"}</button>{/if}
 </header>
 
 {#snippet tool(t: Tool)}
@@ -251,6 +267,7 @@
 
 <style>
 	.head { margin-bottom: 1.25rem; }
+	.stop { margin-top: 0.25rem; }
 	.kind { font-size: 0.8125rem; text-transform: uppercase; letter-spacing: 0.04em; }
 	.head h1 { margin: 0.2rem 0 0.4rem; overflow-wrap: anywhere; }
 	.head .dot { vertical-align: 0.05em; margin-right: 0.2rem; }

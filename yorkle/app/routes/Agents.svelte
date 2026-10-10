@@ -13,6 +13,8 @@
 	const rd = repoState(repo, 4000);
 	const runs = $derived(rd.data ? allRuns(rd.data) : []);
 	const run = $derived(id ? runs.find((r) => r.fork === id) : undefined);
+	// The agent task this run is working on, if any: it can be stopped.
+	const task = $derived(id ? rd.data?.tasks.find((t) => t.kind === "agent" && t.status === "in-progress" && t.fork === id)?.id : undefined);
 	const kind = (fork: string) => (fork.includes("-s-") ? "Superagent" : /-c\d+$/.test(fork) ? "CI fixer" : "Agent");
 	const kindOf = (r: AgentRun) => (r.kind === "notagent" ? "Person" : kind(r.fork));
 	const href = (r: AgentRun) => (r.kind === "notagent" ? `/repos/${repo}/forks/${r.fork}` : `/repos/${repo}/agents/${r.fork}`);
@@ -32,7 +34,7 @@
 			<h1>This repository isn't available</h1>
 			<p class="muted">It doesn't exist, or it belongs to someone else. <a href="/repos">Go to your repositories</a>.</p>
 		{:else if id}
-			<AgentView {repo} {id} {run} kind={kind(id)} />
+			<AgentView {repo} {id} {run} {task} kind={kind(id)} />
 		{:else}
 			<h1>Agents</h1>
 			{#if !rd.data}
