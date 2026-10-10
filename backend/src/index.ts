@@ -2,7 +2,7 @@ import { invalidSignup, type Signup } from "./auth";
 import { authRemote } from "./box";
 import { diffTrees, resolvePath } from "./git";
 import { friendlyName, nameText, repoName } from "./names";
-import { NO_KEY } from "./settings";
+import { NO_KEY, isModelId } from "./settings";
 import { shortTitle } from "./tasks";
 
 export { Box, Outbound } from "./box";
@@ -12,7 +12,7 @@ export { UsersDO } from "./users-do";
 
 const id = () => crypto.randomUUID().slice(0, 8);
 
-type Body = { prompt?: string; title?: string; description?: string; repo?: string; bubble?: string; name?: string };
+type Body = { prompt?: string; title?: string; description?: string; repo?: string; bubble?: string; name?: string; model?: string };
 type Auth = { user: string; admin: boolean };
 
 const users = (env: Env) => env.USERS.getByName("users");
@@ -146,13 +146,14 @@ async function handle(request: Request, env: Env): Promise<Response> {
 		const body = (await request.json()) as Body;
 		const description = (a === "agents" ? body.prompt : body.description)?.trim();
 		if (!description) return Response.json({ error: a === "agents" ? "prompt required" : "description required" }, { status: 400 });
+		if (a === "agents" && body.model !== undefined && !isModelId(body.model)) return Response.json({ error: "model must be a model id" }, { status: 400 });
 		if (a === "agents" && !(await hasKey(env, body))) return Response.json({ error: NO_KEY }, { status: 400 });
 		const src = await source(env, auth, body);
 		if (src instanceof Response) return src;
 		const repoDO = env.REPO.getByName(src.repo);
 		const kind = a === "agents" ? "agent" : "notagent";
 		const title = shortTitle(body.title?.trim() || description);
-		const added = await repoDO.addTasks(src.repo, [{ title, description, kind, deps: [], bubble: src.bubble }]);
+		const added = await repoDO.addTasks(src.repo, [{ title, description, kind, deps: [], bubble: src.bubble, model: body.model }]);
 		if ("error" in added) return Response.json(added, { status: 400 });
 		const [task] = added.ids;
 		if ((await repoDO.task(task))?.status === "awaiting-approval") return Response.json({ repo: src.repo, task, awaitingApproval: true }, { status: 202 });
@@ -169,6 +170,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
 		const body = (await request.json()) as Body;
 		const prompt = body.prompt?.trim();
 		if (!prompt) return Response.json({ error: "prompt required" }, { status: 400 });
+		if (body.model !== undefined && !isModelId(body.model)) return Response.json({ error: "model must be a model id" }, { status: 400 });
 		if (!(await hasKey(env, body))) return Response.json({ error: NO_KEY }, { status: 400 });
 		const src = await source(env, auth, body);
 		if (src instanceof Response) return src;
@@ -177,7 +179,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
 		const from = src.bubble ?? (await repoDO.anyBubble()) ?? src.repo;
 		const { url: remote } = await authRemote(env, from, "read", 3 * 3600);
 		const memory = await repoDO.memories();
-		const config = await repoDO.agentConfig("superagent");
+		const config = await repoDO.agentConfig("superagent", body.model);
 		await env.BOX.getByName(run).startAgent({ repo: src.repo, fork: run, remote, prompt, kind: "superagent", memory, ...config });
 		await repoDO.agentStarted(run, prompt);
 		return Response.json({ repo: src.repo, superagent: run }, { status: 202 });

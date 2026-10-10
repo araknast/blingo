@@ -47,7 +47,7 @@ export function updateSettings(current: Settings, body: unknown): Settings | { e
 		if (typeof m !== "object" || m === null) return { error: "models must be an object" };
 		for (const role of ["agent", "superagent", "ferge"] as const) {
 			if (m[role] === undefined) continue;
-			if (typeof m[role] !== "string" || !/^[\w./:-]{0,100}$/.test(m[role] as string)) return { error: `models.${role} must be a model id` };
+			if (!isModelId(m[role])) return { error: `models.${role} must be a model id` };
 			next.models[role] = m[role] as string;
 		}
 	}
@@ -87,6 +87,9 @@ export function updateSettings(current: Settings, body: unknown): Settings | { e
 
 // May a request to `hostname` leave a CI Box? Exactly a listed host or one of its subdomains.
 export const ciHostAllowed = (hosts: string[], hostname: string) => hosts.some((h) => hostname === h || hostname.endsWith(`.${h}`));
+
+// A model id as the provider names it ("" = the default).
+export const isModelId = (m: unknown): m is string => typeof m === "string" && /^[\w./:-]{0,100}$/.test(m);
 
 export const MODEL_HOSTS: Record<Provider, string> = { anthropic: "api.anthropic.com", openrouter: "openrouter.ai" };
 export const NO_KEY = "this repository has no API key: set one in its settings";

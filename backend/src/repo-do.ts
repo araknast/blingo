@@ -53,9 +53,10 @@ type TaskRow = TaskState & {
 	created: number;
 	finished: number | null;
 	role: Role | null; // which model its agent uses (NULL = agent)
+	model: string | null; // a model chosen for this task alone, over the role's
 };
 // A task to add: a superagent's plan item (deps by key within the batch), or one from the API.
-export type NewTask = Omit<PlanItem, "key"> & { key?: string; bubble?: string | null; role?: Role };
+export type NewTask = Omit<PlanItem, "key"> & { key?: string; bubble?: string | null; role?: Role; model?: string };
 
 // One per blingo repository: placement, the bubbles' patch queues and bubble merges. Each bubble's rep
 // is written only by that bubble's own Box (see Box.rep), which applies its queue and runs its merges.
@@ -113,6 +114,7 @@ export class RepoDO extends DurableObject<Env> {
 			this.ctx.storage.kv.put("namedFirst", true);
 		}
 		this.addColumn("task", "role", "TEXT");
+		this.addColumn("task", "model", "TEXT");
 		for (const [c, d] of [["kind", "TEXT NOT NULL DEFAULT 'notagent'"], ["ci", "TEXT"], ["ci_log", "TEXT"], ["review_auto", "TEXT"], ["review_manual", "TEXT"], ["review_note", "TEXT"], ["agent_pushes", "INTEGER NOT NULL DEFAULT 0"]]) {
 			this.addColumn("loose", c, d);
 		}
@@ -279,7 +281,7 @@ export class RepoDO extends DurableObject<Env> {
 		items.forEach((i, n) => {
 			const id = ids.get(i.key ?? String(n))!;
 			this.sql.exec(
-				"INSERT INTO task (id, title, description, kind, status, bubble, superagent, created, role) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				"INSERT INTO task (id, title, description, kind, status, bubble, superagent, created, role, model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 				id,
 				i.title,
 				i.description,
@@ -289,6 +291,7 @@ export class RepoDO extends DurableObject<Env> {
 				superagent,
 				Date.now(),
 				i.role ?? null,
+				i.model || null,
 			);
 			for (const d of i.deps) this.sql.exec("INSERT OR IGNORE INTO task_dep (task, dep) VALUES (?, ?)", id, dep(d));
 		});
@@ -402,7 +405,7 @@ export class RepoDO extends DurableObject<Env> {
 					this.sql.exec("UPDATE task SET fork = ?, base_head = ? WHERE id = ?", fork, base, t.id);
 					const { url: remote } = await authRemote(this.env, fork, "write", 3 * 3600);
 					const prompt = `# ${t.title}\n\n${t.description}`;
-					await this.env.BOX.getByName(fork).startAgent({ repo, fork, remote, prompt, kind: "agent", memory, ...this.agentConfig(t.role ?? "agent") });
+					await this.env.BOX.getByName(fork).startAgent({ repo, fork, remote, prompt, kind: "agent", memory, ...this.agentConfig(t.role ?? "agent", t.model) });
 					this.agentStarted(fork, t.title);
 				} catch (e) {
 					console.error(`starting task ${t.id}`, e);
@@ -661,10 +664,10 @@ export class RepoDO extends DurableObject<Env> {
 		return key ? { provider: this.settings().provider, key } : null;
 	}
 
-	// How to run an agent of `role` here: its model, and whose API it talks to.
-	agentConfig(role: Role): { model: string; provider: Provider } {
+	// How to run an agent of `role` here: its model (`model` if one was chosen for it), and whose API it talks to.
+	agentConfig(role: Role, model?: string | null): { model: string; provider: Provider } {
 		const s = this.settings();
-		return { model: s.models[role] || this.env.MODEL, provider: this.credentials()?.provider ?? "anthropic" };
+		return { model: model || s.models[role] || this.env.MODEL, provider: this.credentials()?.provider ?? "anthropic" };
 	}
 
 	private loose(fork: string): Loose | undefined {
@@ -797,14 +800,14 @@ export class RepoDO extends DurableObject<Env> {
 	// A new agent run on the same fork, told what the task was and what failed.
 	private async startFixer(fork: string, steps: string[]) {
 		const l = this.loose(fork)!;
-		const t = this.sql.exec<{ title: string; description: string }>("SELECT title, description FROM task WHERE fork = ?", fork).toArray()[0];
+		const t = this.sql.exec<{ title: string; description: string; model: string | null }>("SELECT title, description, model FROM task WHERE fork = ?", fork).toArray()[0];
 		const repo = this.ctx.storage.kv.get<string>("repo")!;
 		const run = `${fork}-c${l.agent_pushes}`;
 		if (!this.credentials()) return this.toNotagent(fork, `${l.reason ?? "CI failed"}; no fixer agent: ${NO_KEY}, so a person takes over`);
 		const prompt = fixPrompt({ title: t?.title ?? "", description: t?.description ?? "", failed: steps, command: this.settings().ci.command, log: l.ci_log, review: l.review_note });
 		try {
 			const { url } = await authRemote(this.env, fork, "write", 3 * 3600);
-			await this.env.BOX.getByName(run).startAgent({ repo, fork, run, remote: url, prompt, kind: "agent", memory: this.memories(), ...this.agentConfig("agent") });
+			await this.env.BOX.getByName(run).startAgent({ repo, fork, run, remote: url, prompt, kind: "agent", memory: this.memories(), ...this.agentConfig("agent", t?.model) });
 			this.agentStarted(run, `Fix: ${t?.title ?? fork}`);
 		} catch (e) {
 			console.error(`starting fixer ${run}`, e);

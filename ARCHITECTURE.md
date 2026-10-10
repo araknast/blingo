@@ -134,7 +134,7 @@ bubble. A ferge leaves bubble a without the conflicting files, so it records `ow
 whichever absorbed which. So a dependent task waits through the ferge, the fix, the unlock and
 L's merge.
 
-**Superagent** (`POST /superagents {repo?, bubble?, prompt}`, `SUPER_SH`). Runs Claude Code in its
+**Superagent** (`POST /superagents {repo, bubble?, prompt, model?}`, `SUPER_SH`). Runs Claude Code in its
 own Box on a **read-only** clone. Its system prompt asks for a JSON plan
 `[{key, title, description, kind, deps}]` in `/workspace/task/tasks.json`. The Box alarm checks it with
 `validatePlan` (keys unique, deps known, no cycle, ≤ 30 tasks) and calls `addTasks`. Nothing is

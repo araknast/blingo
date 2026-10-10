@@ -16,9 +16,9 @@ echo "$r" | grep -q '"hasKey":true' || fail "key not stored: $r"
 for p in "/repos/$R/settings" "/repos/$R"; do api $U$p | grep -q "$KEY" && fail "the key is visible in GET $p"; done
 ok "key stored, never returned"
 
-# run <title>: start an agent, wait for its run to finish, save its transcript to <title>.json
+# run <title> [model]: start an agent, wait for its run to finish, save its transcript to <title>.json
 run() {
-	local f; f=$(api -X POST --json "{\"repo\":\"$R\",\"bubble\":\"$A\",\"title\":\"$1\",\"prompt\":\"Create $1.txt.\"}" $U/agents | python3 -c "import json,sys;print(json.load(sys.stdin)['fork'])")
+	local f; f=$(api -X POST --json "{\"repo\":\"$R\",\"bubble\":\"$A\",\"title\":\"$1\",\"prompt\":\"Create $1.txt.\",\"model\":\"${2:-}\"}" $U/agents | python3 -c "import json,sys;print(json.load(sys.stdin)['fork'])")
 	[ -n "$f" ] && [ "$f" != None ] || fail "agent $1 didn't start"
 	for i in $(seq 1 60); do
 		api $U/agents/$f/transcript > $1.json
@@ -35,11 +35,14 @@ run haiku
 [ "$(ev haiku.json "[x.get('api_error_status') for x in e if x.get('type')=='result']")" = "[401]" ] || fail "expected Anthropic to reject the repo's (invalid) key: $(ev haiku.json "[x.get('result') for x in e if x.get('type')=='result']")"
 ok "transcript stored; the repo's model and key were used ($(ev haiku.json "[x.get('result') for x in e if x.get('type')=='result'][0][:80]"))"
 
+run sonnet claude-sonnet-5-5
+[ "$(ev sonnet.json "[x.get('model') for x in e if x.get('type')=='system' and x.get('subtype')=='init']")" = "['claude-sonnet-5-5']" ] || fail "the agent's own model wasn't used: $(ev sonnet.json "e[:1]")"
+ok "a model chosen for one agent beats the repo's"
+
 api -X PUT --json '{"apiKey":"","models":{"agent":""}}' $U/repos/$R/settings | grep -q '"hasKey":false' || fail "key not removed"
-run worker
-[ "$(ev worker.json "[x.get('model') for x in e if x.get('type')=='system' and x.get('subtype')=='init']")" != "['claude-haiku-5-5']" ] || fail "model reset"
-[ "$(ev worker.json "[x.get('api_error_status') for x in e if x.get('type')=='result']")" = "[401]" ] && fail "the Worker's key wasn't used after removing the repo's"
-ok "without a repo key, the Worker's key is used ($(ev worker.json "[x.get('result') for x in e if x.get('type')=='result'][0][:80]"))"
+code=$(api -o /dev/null -w '%{http_code}' -X POST --json "{\"repo\":\"$R\",\"prompt\":\"x\"}" $U/agents)
+[ "$code" = 400 ] || fail "an agent started without a repo key ($code)"
+ok "without a repo key, no agent starts (blingo has no key of its own)"
 
 api -X PUT --json "{\"apiKey\":\"sk-or-v1-blingo-e2e-not-a-real-key\",\"provider\":\"openrouter\",\"models\":{\"agent\":\"anthropic/claude-haiku-4.5\"}}" $U/repos/$R/settings >/dev/null
 run router
