@@ -61,7 +61,7 @@
 				{#each shown as m (m.id)}
 					<li>
 						<p>{m.text}</p>
-						<span class="muted small">{#if isRun(m.author)}<a class="mono" href="/repos/{repo}/agents/{m.author}">{m.author.split(/-[fsc]-/).at(-1)}</a>{:else}{m.author}{/if}, {ago(m.created)}</span>
+						<span class="muted small">{#if isRun(m.author)}<a class="mono" href="/repos/{repo}/agents/{m.author}">Agent {m.author.split(/-[fsc]-/).at(-1)}</a>{:else}{m.author}{/if}, {ago(m.created)}</span>
 						<button class="quiet" aria-label="Delete note" onclick={() => remove(m.id)}>Delete</button>
 					</li>
 				{/each}
