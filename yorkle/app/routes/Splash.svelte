@@ -1,19 +1,12 @@
 <script lang="ts">
 	import { onDestroy } from "svelte";
-	import { fade } from "svelte/transition";
 	import BubbleMap from "../lib/BubbleMap.svelte";
-	import { demoSteps } from "../lib/demo";
+	import { demoAnchors, demoSteps } from "../lib/demo";
 
-	// The demo plays its steps, then crossfades into a fresh map at step 0, so the loop never jumps.
+	// The demo's last step leads straight back into its first, so it just wraps around.
 	const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
-	let step = $state(reduced ? demoSteps.length - 1 : 0);
-	let cycle = $state(0);
-	const timer = reduced
-		? 0
-		: setInterval(() => {
-				if (step < demoSteps.length - 1) step++;
-				else ((step = 0), cycle++);
-			}, 2200);
+	let step = $state(0);
+	const timer = reduced ? 0 : setInterval(() => (step = (step + 1) % demoSteps.length), 2200);
 	onDestroy(() => clearInterval(timer));
 </script>
 
@@ -32,9 +25,7 @@
 	</section>
 	<figure class="stage">
 		<div class="map-wrap">
-			{#key cycle}
-				<div class="map-layer" transition:fade={{ duration: 700 }}><BubbleMap data={demoSteps[step]} demo /></div>
-			{/key}
+			<div class="map-layer"><BubbleMap data={demoSteps[step]} anchors={demoAnchors} demo /></div>
 		</div>
 	</figure>
 </div>

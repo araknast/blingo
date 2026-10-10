@@ -14,6 +14,7 @@
 		onconflict,
 		oncontext,
 		demo = false,
+		anchors,
 	}: {
 		data: RepoState | null;
 		hrefFor?: (bubble: string) => string;
@@ -22,6 +23,9 @@
 		onconflict?: (a: string, b: string) => void;
 		oncontext?: (at: { x: number; y: number; bubble: string | null }) => void;
 		demo?: boolean;
+		// Fixed world positions by bubble id or agent fork (the splash): nodes are pulled only to these,
+		// so a state always lays out the same and the camera stays put.
+		anchors?: Record<string, Pt>;
 	} = $props();
 
 	type Node = SimulationNodeDatum & { id: string; r: number; b: Bubble; members: Member[]; files: number; film: number };
@@ -82,7 +86,7 @@
 	const toWorld = (sx: number, sy: number): Pt => ({ x: (sx - cx) / k, y: (sy - cy) / k });
 
 	function fit(smooth: boolean) {
-		const ns: Any[] = [...nodes.values(), ...agentNodes.values()];
+		const ns = anchors ? Object.values(anchors).map((p) => ({ ...p, r: 90 })) : [...nodes.values(), ...agentNodes.values()];
 		if (!ns.length || !w) return;
 		const x0 = Math.min(...ns.map((n) => n.x! - n.r)), x1 = Math.max(...ns.map((n) => n.x! + n.r));
 		const y0 = Math.min(...ns.map((n) => n.y! - n.r)), y1 = Math.max(...ns.map((n) => n.y! + n.r + 34));
@@ -133,13 +137,14 @@
 			const r = radius(b);
 			let n = nodes.get(b.id);
 			if (!n) {
-				const at = before.get(b.id) ?? spiral(nodes.size);
+				const at = anchors?.[b.id] ?? before.get(b.id) ?? spiral(nodes.size);
 				n = { id: b.id, x: at.x, y: at.y, r, b, members: [], files: 0, film: hash(b.id) % 4 };
 				nodes.set(b.id, n);
 				changed = true;
 			}
 			if (Math.abs(n.r - r) > 0.5) changed = true;
 			const old = new Set(n.members.map((m) => m.name));
+			if (animate && b.members.length < old.size) ripple(b.id); // forks left (the splash's ship beat)
 			n.r = r;
 			n.b = b;
 			n.members = orderMembers(b.members);
@@ -161,7 +166,7 @@
 			const a = agentNodes.get(run.fork);
 			if (a) a.run = run;
 			else {
-				const at = spiral(nodes.size + agentNodes.size + 2);
+				const at = anchors?.[run.fork] ?? spiral(nodes.size + agentNodes.size + 2);
 				agentNodes.set(run.fork, { id: run.fork, r: AGENT_W / 2, run, x: at.x, y: at.y });
 				changed = true;
 			}
@@ -171,7 +176,11 @@
 		links = d.conflicts.filter(([a, b]) => nodes.has(a) && nodes.has(b));
 		merges = (d.merging ?? []).filter(([a, b]) => nodes.has(a) && nodes.has(b));
 		sim.nodes([...nodes.values(), ...agentNodes.values()]);
-		sim.force(
+		if (anchors) {
+			const at = (n: Any) => anchors[n.id] ?? { x: 0, y: 0 };
+			sim.force("collide", null).force("charge", null);
+			sim.force("x", forceX<Any>((n) => at(n).x).strength(0.2)).force("y", forceY<Any>((n) => at(n).y).strength(0.2));
+		} else sim.force(
 			"link",
 			forceLink<Any, { source: string | Any; target: string | Any }>(links.map(([a, b]) => ({ source: a, target: b })))
 				.id((n) => n.id)
