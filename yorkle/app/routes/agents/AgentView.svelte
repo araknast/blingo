@@ -14,12 +14,13 @@
 	type Event = { type: string; subtype?: string; model?: string; message?: { content?: Block[] | string }; result?: string; is_error?: boolean; total_cost_usd?: number; num_turns?: number; duration_ms?: number; hook_event?: string; output?: string; text?: string; bytes?: number };
 	let events = $state<Event[]>([]);
 	let status = $state("none");
+	let reason = $state<string>(); // why the run failed after the agent finished: its change wasn't submitted
 	let loaded = $state(false);
 	let cursor = 0;
 	let stop = () => {};
 	stop = poll(async () => {
 		try {
-			const t = await api<{ status: string; events: Event[]; next: number }>("GET", `/agents/${id}/transcript?from=${cursor}`);
+			const t = await api<{ status: string; reason?: string; events: Event[]; next: number }>("GET", `/agents/${id}/transcript?from=${cursor}`);
 			if (status === "running" && t.status !== "running") {
 				// The run just ended: replace the live copy with the stored one.
 				const full = await api<{ events: Event[]; next: number }>("GET", `/agents/${id}/transcript?from=0`);
@@ -30,6 +31,7 @@
 				cursor = t.next;
 			}
 			status = t.status;
+			reason = t.reason;
 			loaded = true;
 			if (status !== "running") stop();
 		} catch {
@@ -239,6 +241,9 @@
 	</div>
 {/if}
 
+{#if reason}
+	<p class="unsubmitted"><strong>Its change wasn't submitted:</strong> {reason}</p>
+{/if}
 {#if run?.log}
 	<details class="log"><summary>Sandbox log</summary><pre>{run.log}</pre></details>
 {/if}
@@ -297,6 +302,7 @@
 	.pad { padding: 0.5rem 0.75rem; margin: 0; font-size: 0.8125rem; }
 	.result { border-left: 3px solid var(--merged); padding-left: 0.9rem; margin-top: 0.5rem; }
 	.result.error { border-color: var(--conflict); }
+	.unsubmitted { border-left: 3px solid var(--conflict); padding-left: 0.9rem; margin-top: 1rem; overflow-wrap: anywhere; }
 	.result :global(.md) { padding: 0.4rem 0; }
 	.thinking { margin-top: 0.75rem; font-size: 0.875rem; color: var(--ink-2); }
 	.glyph { display: inline-block; width: 1em; font-family: var(--mono); color: var(--ink); }

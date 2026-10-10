@@ -273,6 +273,7 @@ export class Box extends DurableObject<Env> {
 		});
 		this.ctx.storage.kv.put("job", { ...job, remote: "", memory: [] }); // don't persist the token
 		this.ctx.storage.kv.put("status", "running");
+		this.ctx.storage.kv.delete("reason");
 		await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
 	}
 
@@ -307,7 +308,8 @@ export class Box extends DurableObject<Env> {
 	// while it runs, else as stored when it finished.
 	// `from` is a line cursor: only events after the first `from` lines are returned, with the cursor to
 	// pass next time. (Stored transcripts drop blank lines, so the client refetches from 0 once a run ends.)
-	async transcript(from = 0): Promise<{ status: string; events: unknown[]; next: number }> {
+	// `reason`: why a run whose agent finished failed anyway (its change wasn't submitted).
+	async transcript(from = 0): Promise<{ status: string; reason?: string; events: unknown[]; next: number }> {
 		this.transcriptTable();
 		from = Math.max(0, Math.floor(from) || 0);
 		const status = this.ctx.storage.kv.get<string>("status") ?? "none";
@@ -317,7 +319,7 @@ export class Box extends DurableObject<Env> {
 			return { status, events: lines.map(parseEvent), next: from + count };
 		}
 		const rows = this.sql.exec<{ line: string }>("SELECT line FROM transcript WHERE seq >= ? ORDER BY seq", from).toArray();
-		return { status, events: rows.map((r) => parseEvent(r.line)), next: from + rows.length };
+		return { status, reason: this.ctx.storage.kv.get<string>("reason"), events: rows.map((r) => parseEvent(r.line)), next: from + rows.length };
 	}
 
 	// Stores the finished run's transcript; returns its final result text (or error) for the run's log.
@@ -348,6 +350,8 @@ export class Box extends DurableObject<Env> {
 		const result = await this.saveTranscript();
 		const log = [(await this.sh(`tail -c 4000 ${TASK}/log`)).stdout.trim(), result.slice(-4000)].filter(Boolean).join("\n\n");
 		if (exit.stdout.trim() !== "0") return this.finish(job, "failed", log);
+		// Claude finished but its change didn't make it in: the reason is shown with the run.
+		const unsubmitted = (reason: string) => this.finish(job, "failed", `${log}\n${reason}`, reason);
 		const repo = this.env.REPO.getByName(job.repo);
 		let loose = false;
 		if (job.kind === "superagent") {
@@ -357,19 +361,19 @@ export class Box extends DurableObject<Env> {
 			} catch {
 				plan = { error: "tasks.json is not JSON" };
 			}
-			if ("error" in plan) return this.finish(job, "failed", `${log}\nplan rejected: ${plan.error}`);
+			if ("error" in plan) return unsubmitted(`plan rejected: ${plan.error}`);
 			await repo.addTasks(job.repo, plan.items, job.fork);
 		} else {
 			const { url } = await authRemote(this.env, job.fork, "write");
 			const push = await this.sh(`cd /workspace/repo && git push -q "$1" HEAD:refs/heads/main`, [url]);
-			if (push.exitCode !== 0) throw new Error(`push of ${job.fork} (${push.exitCode}): ${push.stderr}`);
+			if (push.exitCode !== 0) return unsubmitted(`couldn't push its commit: ${push.stderr.trim().split("\n").at(-1) || `exit ${push.exitCode}`}`);
 			const base = (await this.sh(`cat ${TASK}/base 2>/dev/null || true`)).stdout.trim();
 			const p = await this.sh(PATCH_SH, ["/workspace/repo", base]);
-			if (p.exitCode === MERGES) return this.finish(job, "failed", `${log}\nnot placed: its history has merge commits`);
+			if (p.exitCode === MERGES) return unsubmitted("not placed: its history has merge commits");
 			if (p.exitCode !== 0) throw new Error(`patch series of ${job.fork} (${p.exitCode}): ${p.stderr}`);
 			const { files, mbox } = readSeries(p.stdout);
 			const placed = await repo.submit(job.fork, files, mbox);
-			if ("error" in placed) return this.finish(job, "failed", `${log}\nnot placed: ${placed.error}`);
+			if ("error" in placed) return unsubmitted(`not placed: ${placed.error}`);
 			loose = "loose" in placed;
 		}
 		// Notes the agent left for future agents (capped: they all go into every prompt).
@@ -394,12 +398,13 @@ export class Box extends DurableObject<Env> {
 	}
 
 	// "loose": the fork waits for CI. A failed first run deletes its fork; a failed fixer leaves it.
-	private async finish(job: AgentJob, status: string, log: string) {
+	private async finish(job: AgentJob, status: string, log: string, reason?: string) {
 		if ((status === "failed" || status === "lost") && job.kind !== "superagent" && !job.run) await this.env.ARTIFACTS.delete(job.fork);
 		this.ctx.storage.kv.delete("job");
 		await this.env.REPO.getByName(job.repo).agentDone(job.run ?? job.fork, status, log);
 		this.ctx.storage.kv.put("status", status);
 		this.ctx.storage.kv.put("log", log);
+		if (reason) this.ctx.storage.kv.put("reason", reason);
 		await this.container.destroy().catch(() => {});
 	}
 }
