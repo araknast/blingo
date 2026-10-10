@@ -173,7 +173,8 @@ async function handle(request: Request, env: Env): Promise<Response> {
 		const from = src.bubble ?? (await repoDO.anyBubble()) ?? src.repo;
 		const { url: remote } = await authRemote(env, from, "read", 3 * 3600);
 		const memory = await repoDO.memories();
-		await env.BOX.getByName(run).startAgent({ repo: src.repo, fork: run, remote, prompt, kind: "superagent", memory });
+		const config = await repoDO.agentConfig("superagent");
+		await env.BOX.getByName(run).startAgent({ repo: src.repo, fork: run, remote, prompt, kind: "superagent", memory, ...config });
 		await repoDO.agentStarted(run, prompt);
 		return Response.json({ repo: src.repo, superagent: run }, { status: 202 });
 	}
@@ -212,7 +213,8 @@ async function handle(request: Request, env: Env): Promise<Response> {
 		return Response.json({ error: "not found" }, { status: 404 });
 	}
 
-	if (request.method === "GET" && a === "agents" && b) return Response.json(await env.BOX.getByName(b).status());
+	if (request.method === "GET" && a === "agents" && b && c === "transcript" && !d) return Response.json(await env.BOX.getByName(b).transcript());
+	if (request.method === "GET" && a === "agents" && b && !c) return Response.json(await env.BOX.getByName(b).status());
 	if (request.method === "GET" && a === "repos" && b && !c) return Response.json(await env.REPO.getByName(b).list());
 	if (request.method === "DELETE" && a === "repos" && b && !c) {
 		const deleted = await env.REPO.getByName(b).destroy(b);
@@ -260,7 +262,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
 	}
 	if (a === "repos" && b && c === "settings" && !d) {
 		const repo = env.REPO.getByName(b);
-		if (request.method === "GET") return Response.json(await repo.settings());
+		if (request.method === "GET") return Response.json(await repo.publicSettings());
 		if (request.method !== "PUT") return Response.json({ error: "not found" }, { status: 404 });
 		const r = await repo.setSettings(await request.json());
 		return Response.json(r, { status: "error" in r ? 400 : 200 });

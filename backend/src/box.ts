@@ -1,6 +1,6 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
-import { APPLY_SH, CONFLICT, ENSURE_REP, FERGE_SH, MERGES, MERGE_SH, NO_CONFLICT, PATCH_SH, PUSH_SH, REP, readSeries } from "./git-scripts";
-import { ciHostAllowed } from "./settings";
+import { APPLY_SH, CONFLICT, ENSURE_REP, FERGE_SH, MEMORY_HOOK_SH, MERGES, MERGE_SH, NO_CONFLICT, PATCH_SH, PUSH_SH, REP, readSeries } from "./git-scripts";
+import { ciHostAllowed, type Provider } from "./settings";
 import { validatePlan } from "./tasks";
 
 // Containers re-sign intercepted HTTPS with this CA; git/node/curl must trust it.
@@ -16,13 +16,14 @@ const TASK = "/workspace/task";
 const CHECK_MS = 30_000;
 const CI_CHECK_MS = 10_000;
 
-// $1 remote, $2 prompt, $3 system prompt (memory items + how to leave notes). Runs Claude Code on a
-// clone, commits, pushes to its own fork. The commit it started from goes in $TASK/base (empty for an
+// $1 remote, $2 prompt, $3 system prompt (memory items + how to leave notes), $4 Claude Code settings
+// (the memory hook). Runs Claude Code on a clone, its whole run as stream-json in $TASK/transcript.jsonl,
+// then commits and pushes to its own fork. The commit it started from goes in $TASK/base (empty for an
 // empty repo), for its patch series. Notes for future agents land in $TASK/memory, outside the repo.
 const AGENT_SH = `set -e
 rm -rf /workspace/repo; git clone -q "$1" /workspace/repo; cd /workspace/repo
 git rev-parse -q --verify HEAD >${TASK}/base || true
-claude --print --dangerously-skip-permissions --no-session-persistence --model "$MODEL" --append-system-prompt "$3" -- "$2"
+claude --print --dangerously-skip-permissions --no-session-persistence --output-format stream-json --verbose --settings "$4" --model "$MODEL" --append-system-prompt "$3" -- "$2" >${TASK}/transcript.jsonl
 git add -A
 git commit -qm "$2" || true
 git push -q origin HEAD:refs/heads/main`;
@@ -30,7 +31,7 @@ git push -q origin HEAD:refs/heads/main`;
 // Superagent: same args, but a read-only clone and nothing is pushed; its plan is $TASK/tasks.json.
 const SUPER_SH = `set -e
 rm -rf /workspace/repo; git clone -q "$1" /workspace/repo; cd /workspace/repo
-claude --print --dangerously-skip-permissions --no-session-persistence --model "$MODEL" --append-system-prompt "$3" -- "$2"
+claude --print --dangerously-skip-permissions --no-session-persistence --output-format stream-json --verbose --settings "$4" --model "$MODEL" --append-system-prompt "$3" -- "$2" >${TASK}/transcript.jsonl
 test -s ${TASK}/tasks.json`;
 
 // CI: $1 fork remote (read), $2 the commit to check, $3 the repository's CI command. Exit = its exit.
@@ -56,13 +57,29 @@ Commit your work with messages that explain what you did and why: they become th
 	return `${role}\n\n${NOTES}${mem}`;
 }
 
+// Claude Code settings for agents: the memory hook (MEMORY_HOOK_SH, written to $TASK at start).
+const AGENT_SETTINGS = JSON.stringify({ hooks: { PostToolBatch: [{ hooks: [{ type: "command", command: `bash ${TASK}/memory-hook.sh ${TASK}` }] }] } });
+// A transcript line bigger than this is stored as a stub (SQLite rows max out at 2 MB).
+const MAX_LINE = 256_000;
+
 // Detach from the exec so the task outlives the request; exit code lands atomically in $TASK/exit.
 const BG_SH = `setsid bash -c "$0" agent "$@" >${TASK}/log 2>&1; echo $? >${TASK}/exit.tmp && mv ${TASK}/exit.tmp ${TASK}/exit`;
 
 export type Run = { exitCode: number; stdout: string; stderr: string };
 // kind "superagent": `fork` is only the run's id (no fork exists) and `remote` is read-only.
 // `run`: the run's id when it isn't the fork's (a CI fixer: <fork>-c<n>); the Box is named after it.
-export type AgentJob = { repo: string; fork: string; run?: string; remote: string; prompt: string; kind?: "agent" | "superagent"; memory?: string[] };
+// `model`/`provider`: the repository's choice (RepoDO.agentConfig); the API key is added by Outbound.
+export type AgentJob = {
+	repo: string;
+	fork: string;
+	run?: string;
+	remote: string;
+	prompt: string;
+	kind?: "agent" | "superagent";
+	memory?: string[];
+	model?: string;
+	provider?: Provider;
+};
 // A CI run on a loose fork at `head`, in a Box named ci-<fork> that can reach only Artifacts and `hosts`.
 export type CiJob = { repo: string; fork: string; head: string; remote: string; command: string; hosts: string[] };
 
@@ -90,21 +107,29 @@ export async function authRemote(env: Env, name: string, scope: "read" | "write"
 	};
 }
 
-// The only egress a sandbox gets: Artifacts git, and Anthropic with the key added here. A CI Box
-// (props.ci = its hosts) gets Artifacts and the repository's CI hosts instead, and never a key.
-export class Outbound extends WorkerEntrypoint<Env, { ci?: string[] }> {
+// The only egress a sandbox gets: Artifacts git, and the model API with the key added here, so no
+// key ever enters a sandbox. An agent's Box (props.repo) uses its repository's own key and provider
+// when it has one (RepoDO.credentials), else the Worker's Anthropic key. A CI Box (props.ci = its
+// hosts) gets Artifacts and the repository's CI hosts instead, and never a key.
+export class Outbound extends WorkerEntrypoint<Env, { ci?: string[]; repo?: string }> {
 	async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url);
 		if (url.protocol !== "https:") return new Response("https only\n", { status: 403 });
 		if (url.hostname.endsWith(".artifacts.cloudflare.net")) return fetch(request);
-		const ci = this.ctx.props?.ci;
+		const { ci, repo } = this.ctx.props ?? {};
 		if (ci) return ciHostAllowed(ci, url.hostname) ? fetch(request) : new Response(`${url.hostname} not reachable from CI\n`, { status: 403 });
-		if (url.hostname === "api.anthropic.com") {
-			const headers = new Headers(request.headers);
-			headers.set("x-api-key", this.env.ANTHROPIC_API_KEY);
-			return fetch(new Request(request, { headers }));
+		if (url.hostname !== "api.anthropic.com" && url.hostname !== "openrouter.ai") return new Response(`${url.hostname} not reachable\n`, { status: 403 });
+		const creds = repo ? await this.env.REPO.getByName(repo).credentials() : null;
+		const provider = creds?.provider ?? "anthropic";
+		if (url.hostname !== (provider === "openrouter" ? "openrouter.ai" : "api.anthropic.com")) {
+			return new Response(`${url.hostname} not reachable: this repository uses ${provider}\n`, { status: 403 });
 		}
-		return new Response(`${url.hostname} not reachable\n`, { status: 403 });
+		const headers = new Headers(request.headers);
+		headers.delete("x-api-key");
+		headers.delete("authorization");
+		if (provider === "openrouter") headers.set("authorization", `Bearer ${creds!.key}`);
+		else headers.set("x-api-key", creds?.key ?? this.env.ANTHROPIC_API_KEY);
+		return fetch(new Request(request, { headers }));
 	}
 }
 
@@ -112,6 +137,7 @@ export class Outbound extends WorkerEntrypoint<Env, { ci?: string[] }> {
 // uses one per repo to turn notagent forks into patch series.
 export class Box extends DurableObject<Env> {
 	private setup?: Promise<void>;
+	private sql = this.ctx.storage.sql;
 	private queue: Promise<unknown> = Promise.resolve(); // rep jobs, one at a time
 
 	private get container() {
@@ -125,7 +151,12 @@ export class Box extends DurableObject<Env> {
 				const c = this.container;
 				if (!c.running) c.start({ image: c.images.box, instance: "standard-1", enableInternet: false });
 				const ci = this.ctx.storage.kv.get<CiJob>("ci");
-				const outbound = ci ? this.ctx.exports.Outbound({ props: { ci: ci.hosts } }) : this.ctx.exports.Outbound;
+				const repo = this.ctx.storage.kv.get<string>("egress"); // an agent's repository
+				const outbound = ci
+					? this.ctx.exports.Outbound({ props: { ci: ci.hosts } })
+					: repo
+						? this.ctx.exports.Outbound({ props: { repo } })
+						: this.ctx.exports.Outbound;
 				try {
 					await c.interceptAllOutboundHttp(outbound);
 					await c.interceptOutboundHttps("*", outbound);
@@ -213,16 +244,29 @@ export class Box extends DurableObject<Env> {
 	}
 
 	async startAgent(job: AgentJob): Promise<void> {
+		if (this.ctx.storage.kv.get<string>("egress") !== job.repo && this.ctx.container?.running) {
+			await this.container.destroy().catch(() => {}); // Outbound is bound to its repository at start
+			this.setup = undefined;
+		}
+		this.ctx.storage.kv.put("egress", job.repo);
 		await this.start();
 		await this.sh(`rm -rf ${TASK} && mkdir -p ${TASK}`);
+		await this.sh(`cat > ${TASK}/memory-hook.sh`, [], { stdin: MEMORY_HOOK_SH });
+		this.transcriptTable();
+		this.sql.exec("DELETE FROM transcript");
 		const script = job.kind === "superagent" ? SUPER_SH : AGENT_SH;
-		await this.container.exec(["bash", "-c", BG_SH, script, job.remote, job.prompt, systemPrompt(job.kind, job.memory ?? [])], {
+		// Placeholders: Outbound sets the real key. OpenRouter speaks the Anthropic API at its own base URL.
+		const auth: Record<string, string> =
+			job.provider === "openrouter"
+				? { ANTHROPIC_BASE_URL: "https://openrouter.ai/api", ANTHROPIC_AUTH_TOKEN: "added-by-outbound", ANTHROPIC_API_KEY: "" }
+				: { ANTHROPIC_API_KEY: "added-by-outbound" };
+		await this.container.exec(["bash", "-c", BG_SH, script, job.remote, job.prompt, systemPrompt(job.kind, job.memory ?? []), AGENT_SETTINGS], {
 			cwd: "/workspace",
 			env: {
 				...TRUST,
 				...GIT_ID,
-				MODEL: this.env.MODEL,
-				ANTHROPIC_API_KEY: "added-by-outbound", // placeholder; Outbound sets the real key
+				MODEL: job.model ?? this.env.MODEL,
+				...auth,
 				CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
 				IS_SANDBOX: "1",
 			},
@@ -251,6 +295,38 @@ export class Box extends DurableObject<Env> {
 		await this.ctx.storage.setAlarm(Date.now() + CI_CHECK_MS);
 	}
 
+	// New memory items for the running agent: its memory hook passes them to the model (MEMORY_HOOK_SH).
+	async pushMemory(memory: string[]) {
+		if (!this.ctx.storage.kv.get("job") || !this.ctx.container?.running) return;
+		await this.sh(`cat > ${TASK}/memory.md.tmp && mv ${TASK}/memory.md.tmp ${TASK}/memory.md`, [], { stdin: memory.map((m) => `- ${m}`).join("\n") + "\n" });
+	}
+
+	private transcriptTable() {
+		this.sql.exec("CREATE TABLE IF NOT EXISTS transcript(seq INTEGER PRIMARY KEY, line TEXT NOT NULL)");
+	}
+
+	// The agent's Claude Code run as stream-json events (see the Agents page): live from the container
+	// while it runs, else as stored when it finished.
+	async transcript(): Promise<{ status: string; events: unknown[] }> {
+		this.transcriptTable();
+		const status = this.ctx.storage.kv.get<string>("status") ?? "none";
+		const lines =
+			this.ctx.storage.kv.get("job") && this.ctx.container?.running
+				? (await this.sh(`cat ${TASK}/transcript.jsonl 2>/dev/null || true`)).stdout.split("\n")
+				: this.sql.exec<{ line: string }>("SELECT line FROM transcript ORDER BY seq").toArray().map((r) => r.line);
+		return { status, events: lines.filter(Boolean).map(parseEvent) };
+	}
+
+	// Stores the finished run's transcript; returns its final result text (or error) for the run's log.
+	private async saveTranscript(): Promise<string> {
+		this.transcriptTable();
+		const lines = (await this.sh(`cat ${TASK}/transcript.jsonl 2>/dev/null || true`)).stdout.split("\n").filter(Boolean);
+		this.sql.exec("DELETE FROM transcript");
+		lines.forEach((l, i) => this.sql.exec("INSERT INTO transcript (seq, line) VALUES (?, ?)", i, l.length > MAX_LINE ? JSON.stringify({ type: "truncated", bytes: l.length }) : l));
+		const last = parseEvent(lines.at(-1) ?? "") as { type?: string; result?: string };
+		return last.type === "result" && typeof last.result === "string" ? last.result : "";
+	}
+
 	status() {
 		return { status: this.ctx.storage.kv.get<string>("status") ?? "none", log: this.ctx.storage.kv.get<string>("log") };
 	}
@@ -266,7 +342,8 @@ export class Box extends DurableObject<Env> {
 			await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
 			return;
 		}
-		const log = (await this.sh(`tail -c 4000 ${TASK}/log`)).stdout;
+		const result = await this.saveTranscript();
+		const log = [(await this.sh(`tail -c 4000 ${TASK}/log`)).stdout.trim(), result.slice(-4000)].filter(Boolean).join("\n\n");
 		if (exit.stdout.trim() !== "0") return this.finish(job, "failed", log);
 		const repo = this.env.REPO.getByName(job.repo);
 		let loose = false;
@@ -318,5 +395,13 @@ export class Box extends DurableObject<Env> {
 		this.ctx.storage.kv.put("status", status);
 		this.ctx.storage.kv.put("log", log);
 		await this.container.destroy().catch(() => {});
+	}
+}
+
+function parseEvent(line: string): unknown {
+	try {
+		return JSON.parse(line);
+	} catch {
+		return { type: "raw", text: line };
 	}
 }

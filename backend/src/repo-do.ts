@@ -4,7 +4,7 @@ import { getAgentByName } from "agents";
 import { subscribePushes, unsubscribe } from "./events";
 import { MERGES, PATCH_SH, readSeries } from "./git-scripts";
 import { conflictKey, nearestNeighbour, placeFork, renameConflicts, type Basis, type Bubble } from "./bubbles";
-import { DEFAULTS, gate, updateSettings, type Settings } from "./settings";
+import { DEFAULTS, gate, updateSettings, type Provider, type Role, type Settings } from "./settings";
 import { explanation, fixPrompt, ready, renameOwed, shortTitle, type Owed, type PlanItem, type TaskState } from "./tasks";
 
 const POLL_MS = 5_000;
@@ -308,10 +308,14 @@ export class RepoDO extends DurableObject<Env> {
 		}
 	}
 
+	// New memory items also reach agents already running, through their memory hook (Box.pushMemory).
 	async addMemory(texts: string[], author: string) {
 		for (const text of texts) {
 			this.sql.exec("INSERT INTO memory (id, text, author, created) VALUES (?, ?, ?, ?)", `m-${crypto.randomUUID().slice(0, 8)}`, text, author, Date.now());
 		}
+		const memory = this.memories();
+		const running = this.sql.exec<{ fork: string }>("SELECT fork FROM agent_run WHERE status = 'running'").toArray();
+		await Promise.allSettled(running.map((r) => this.env.BOX.getByName(r.fork).pushMemory(memory)));
 	}
 
 	deleteMemory(id: string): boolean {
@@ -360,7 +364,7 @@ export class RepoDO extends DurableObject<Env> {
 					this.sql.exec("UPDATE task SET fork = ?, base_head = ? WHERE id = ?", fork, base, t.id);
 					const { url: remote } = await authRemote(this.env, fork, "write", 3 * 3600);
 					const prompt = `# ${t.title}\n\n${t.description}`;
-					await this.env.BOX.getByName(fork).startAgent({ repo, fork, remote, prompt, kind: "agent", memory });
+					await this.env.BOX.getByName(fork).startAgent({ repo, fork, remote, prompt, kind: "agent", memory, ...this.agentConfig("agent") });
 					this.agentStarted(fork, t.title);
 				} catch (e) {
 					console.error(`starting task ${t.id}`, e);
@@ -473,7 +477,7 @@ export class RepoDO extends DurableObject<Env> {
 					reviewManual: l.review_manual,
 					reviewNote: l.review_note,
 				})),
-			settings: this.settings(),
+			settings: this.publicSettings(),
 			// Running first, then the most recent finished runs.
 			agents: this.sql
 				.exec<AgentRun>("SELECT * FROM agent_run ORDER BY status = 'running' DESC, started DESC LIMIT 50")
@@ -567,13 +571,36 @@ export class RepoDO extends DurableObject<Env> {
 
 	settings(): Settings {
 		const stored = this.ctx.storage.kv.get<Partial<Settings>>("settings") ?? {};
-		return { ...DEFAULTS, ...stored, ci: { ...DEFAULTS.ci, ...stored.ci } };
+		return { ...DEFAULTS, ...stored, ci: { ...DEFAULTS.ci, ...stored.ci }, models: { ...DEFAULTS.models, ...stored.models } };
 	}
 
-	setSettings(body: unknown): Settings | { error: string } {
+	// The settings as the API shows them: the API key only as whether one is set.
+	publicSettings() {
+		return { ...this.settings(), hasKey: !!this.ctx.storage.kv.get<string>("apiKey") };
+	}
+
+	// `apiKey` (a string; "" removes it) is kept apart from the other settings and never returned.
+	setSettings(body: unknown) {
 		const next = updateSettings(this.settings(), body);
-		if (!("error" in next)) this.ctx.storage.kv.put("settings", next);
-		return next;
+		if ("error" in next) return next;
+		const key = (body as { apiKey?: unknown } | null)?.apiKey;
+		if (key !== undefined && (typeof key !== "string" || key.length > 500)) return { error: "apiKey must be a string" };
+		this.ctx.storage.kv.put("settings", next);
+		if (typeof key === "string") key.trim() ? this.ctx.storage.kv.put("apiKey", key.trim()) : this.ctx.storage.kv.delete("apiKey");
+		return this.publicSettings();
+	}
+
+	// The repository's own API key, for Outbound and the Reviewer only (never sent to a sandbox or the
+	// API's callers); null = use the Worker's ANTHROPIC_API_KEY.
+	credentials(): { provider: Provider; key: string } | null {
+		const key = this.ctx.storage.kv.get<string>("apiKey");
+		return key ? { provider: this.settings().provider, key } : null;
+	}
+
+	// How to run an agent of `role` here: its model, and whose API it talks to.
+	agentConfig(role: Role): { model: string; provider: Provider } {
+		const s = this.settings();
+		return { model: s.models[role] || this.env.MODEL, provider: this.credentials()?.provider ?? "anthropic" };
 	}
 
 	private loose(fork: string): Loose | undefined {
@@ -657,7 +684,7 @@ export class RepoDO extends DurableObject<Env> {
 			const p = await this.box().sh(PATCH_SH, [url, l.base]);
 			const series = p.exitCode === 0 ? readSeries(p.stdout).mbox : `(no patch series: ${p.stderr.slice(-500)})`;
 			const reviewer = await getAgentByName(this.env.REVIEWER, fork);
-			await reviewer.start({ repo: this.ctx.storage.kv.get<string>("repo")!, fork, head, title: t?.title ?? "", description: t?.description ?? "", series });
+			await reviewer.start({ repo: this.ctx.storage.kv.get<string>("repo")!, fork, head, title: t?.title ?? "", description: t?.description ?? "", series, model: this.agentConfig("agent").model });
 		}
 		await this.evaluate(fork);
 	}
@@ -718,7 +745,7 @@ export class RepoDO extends DurableObject<Env> {
 		const prompt = fixPrompt({ title: t?.title ?? "", description: t?.description ?? "", failed: steps, command: this.settings().ci.command, log: l.ci_log, review: l.review_note });
 		try {
 			const { url } = await authRemote(this.env, fork, "write", 3 * 3600);
-			await this.env.BOX.getByName(run).startAgent({ repo, fork, run, remote: url, prompt, kind: "agent", memory: this.memories() });
+			await this.env.BOX.getByName(run).startAgent({ repo, fork, run, remote: url, prompt, kind: "agent", memory: this.memories(), ...this.agentConfig("agent") });
 			this.agentStarted(run, `Fix: ${t?.title ?? fork}`);
 		} catch (e) {
 			console.error(`starting fixer ${run}`, e);

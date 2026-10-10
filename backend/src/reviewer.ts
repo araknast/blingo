@@ -3,7 +3,7 @@ import { Agent } from "agents";
 
 // Automatic review, part of CI when a repository asks for it: one Reviewer agent per loose fork reads
 // the task and the fork's patch series and approves or rejects it, then reports to the RepoDO.
-export type ReviewJob = { repo: string; fork: string; head: string; title: string; description: string; series: string };
+export type ReviewJob = { repo: string; fork: string; head: string; title: string; description: string; series: string; model: string };
 type State = { fork?: string; head?: string; verdict?: "approved" | "rejected"; comments?: string };
 
 const SYSTEM = `You review a change before it is merged into a shared repository. You get the task it was made for and its commits as a git format-patch series.
@@ -40,14 +40,19 @@ export class Reviewer extends Agent<Env, State> {
 		await this.env.REPO.getByName(job.repo).reviewDone(job.fork, job.head, approve, comments);
 	}
 
+	// The repository's own key and provider (RepoDO.credentials) when it has one, else the Worker's.
 	private async verdict(job: ReviewJob): Promise<{ approve: boolean; comments: string }> {
-		const client = new Anthropic({ apiKey: this.env.ANTHROPIC_API_KEY });
+		const creds = await this.env.REPO.getByName(job.repo).credentials();
+		const openrouter = creds?.provider === "openrouter";
+		const client = openrouter
+			? new Anthropic({ baseURL: "https://openrouter.ai/api", authToken: creds!.key, apiKey: null })
+			: new Anthropic({ apiKey: creds?.key ?? this.env.ANTHROPIC_API_KEY });
 		const r = await client.beta.messages.create({
-			model: this.env.MODEL,
+			model: job.model,
 			max_tokens: 16000,
-			// A safety decline is re-run on Anthropic's recommended fallback model instead of failing the review.
-			betas: ["server-side-fallback-2026-07-01"],
-			fallbacks: "default",
+			// On Anthropic's API, a safety decline is re-run on its recommended fallback model instead of
+			// failing the review. OpenRouter routes models itself.
+			...(openrouter ? {} : { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const }),
 			output_config: { effort: "high", format: { type: "json_schema", schema: VERDICT } },
 			system: SYSTEM,
 			messages: [{ role: "user", content: `# ${job.title}\n\n${job.description}\n\n<patch-series>\n${job.series}\n</patch-series>` }],

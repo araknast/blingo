@@ -133,7 +133,10 @@ own Box on a **read-only** clone. Its system prompt asks for a JSON plan
 placed.
 
 **Memory.** Agents and superagents get the repo's memory items through `--append-system-prompt`
-(never written into the repo). They add items by appending lines to `/workspace/task/memory`,
+(never written into the repo). Items added while an agent runs reach it too: `addMemory` has each
+running Box write the full list to `$TASK/memory.md` (`Box.pushMemory`), and Claude Code's
+`PostToolBatch` hook (`MEMORY_HOOK_SH`, set with `--settings`), which runs before every model request
+after the first, hands a changed list to the model once as additional context. They add items by appending lines to `/workspace/task/memory`,
 outside the clone. The Box alarm reads at most 10 lines of ≤ 500 chars after a successful run. So
 there's no new egress and no API access from the sandbox. Humans manage memory through
 `POST /repos/:r/memory {text}` and `DELETE /repos/:r/memory/:id`.
@@ -167,6 +170,17 @@ step fails, an agent's fork gets a **fixer**: a new agent run on the same fork (
 `fixPrompt`: the task, what failed, the CI log tail, review comments). Each fixer push counts toward
 `maxAgentPushes`. At the limit, or if a fixer fails or changes nothing, the fork and its task become a
 notagent's, for a person to push the fix (`POST …/token`). A notagent's failed CI waits for its next push.
+
+**Models, keys and transcripts.** A repository can set its own API key (`PUT …/settings {apiKey}`;
+stored apart from the settings and never returned: the API only says `hasKey`), its `provider`
+(`anthropic` or `openrouter`), and a model per role (`models.agent` / `superagent` / `ferge`; empty =
+the Worker's `MODEL`). An agent's Box binds `Outbound` with its repository (props `repo`). Outbound asks
+`RepoDO.credentials` and adds that key, or the Worker's `ANTHROPIC_API_KEY` when there is none: as
+`x-api-key` for `api.anthropic.com`, or as a bearer token for `openrouter.ai`, which Claude Code
+reaches through `ANTHROPIC_BASE_URL`. A request to the other provider is refused. The Reviewer uses
+the same key and the agent model. Claude Code runs with `--output-format stream-json`: each run's events
+go to `$TASK/transcript.jsonl` and are stored in the Box's SQLite when it ends (lines over 256 KB become
+stubs). `GET /agents/:id/transcript` serves them, live from the container while it runs.
 
 **Agent.** `RepoDO.schedule` forks and calls `Box.startAgent`: clone (recording the commit it
 starts from), `claude --print …`, commit, push to its own fork, all detached in the container. The
@@ -216,8 +230,9 @@ unlocks it, so the fix merges back with it. A fix that no longer fits there fail
 ## Sandbox and secrets
 
 - Containers start with `enableInternet: false`; all HTTP(S) goes through `Outbound`. That allows
-  `*.artifacts.cloudflare.net`, and adds `ANTHROPIC_API_KEY` to `api.anthropic.com` requests, so
-  the key never enters the sandbox.
+  `*.artifacts.cloudflare.net`, and adds the repository's key (or the Worker's `ANTHROPIC_API_KEY`)
+  to model API requests, so no key ever enters a sandbox. CI Boxes reach only Artifacts and their CI
+  hosts.
 - Git auth is a short-lived, per-repo Artifacts token embedded in the remote URL.
 - The API (apart from signup, verify, login) needs a session token or `BLINGO_TOKEN`, because it
   mints push tokens and starts paid runs. Repository routes also check the caller owns the repo.

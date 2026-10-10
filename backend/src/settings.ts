@@ -11,19 +11,40 @@ export type Settings = {
 	review: Review;
 	// Pushes an agent (and its CI fixers) gets before its fork becomes a notagent's.
 	maxAgentPushes: number;
+	// Whose API the repository's API key is for, and the model each kind of agent uses ("" = the
+	// Worker's MODEL). The key itself is stored apart and never returned.
+	provider: Provider;
+	models: { agent: string; superagent: string; ferge: string };
 };
+export type Provider = "anthropic" | "openrouter";
+export type Role = keyof Settings["models"];
 
 export const DEFAULTS: Settings = {
 	autoPlaceNotagents: true,
 	ci: { enabled: false, command: "", hosts: ["registry.npmjs.org"] },
 	review: "none",
 	maxAgentPushes: 3,
+	provider: "anthropic",
+	models: { agent: "", superagent: "", ferge: "" },
 };
 
 // Applies a settings update from the API to `current`; returns the new settings or what's wrong.
 export function updateSettings(current: Settings, body: unknown): Settings | { error: string } {
 	const b = (body ?? {}) as Record<string, unknown>;
-	const next: Settings = { ...current, ci: { ...current.ci } };
+	const next: Settings = { ...current, ci: { ...current.ci }, models: { ...current.models } };
+	if (b.provider !== undefined) {
+		if (b.provider !== "anthropic" && b.provider !== "openrouter") return { error: "provider must be anthropic or openrouter" };
+		next.provider = b.provider;
+	}
+	if (b.models !== undefined) {
+		const m = b.models as Record<string, unknown>;
+		if (typeof m !== "object" || m === null) return { error: "models must be an object" };
+		for (const role of ["agent", "superagent", "ferge"] as const) {
+			if (m[role] === undefined) continue;
+			if (typeof m[role] !== "string" || !/^[\w./:-]{0,100}$/.test(m[role] as string)) return { error: `models.${role} must be a model id` };
+			next.models[role] = m[role] as string;
+		}
+	}
 	if (b.autoPlaceNotagents !== undefined) {
 		if (typeof b.autoPlaceNotagents !== "boolean") return { error: "autoPlaceNotagents must be true or false" };
 		next.autoPlaceNotagents = b.autoPlaceNotagents;

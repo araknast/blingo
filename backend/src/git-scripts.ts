@@ -1,5 +1,5 @@
-// The git jobs blingo runs in Box containers, as bash scripts. Pure strings, so test/git-scripts.test.ts
-// can run them against local repos.
+// The git jobs (and the agents' memory hook) blingo runs in Box containers, as bash scripts. Pure
+// strings, so test/git-scripts.test.ts can run them against local repos.
 
 // A fork's patch series. $1 its clone (a directory) or remote, $2 the commit it started from ("" = the
 // empty base repository). Prints the files it changed, a "==" line, then `git format-patch` of its
@@ -91,3 +91,13 @@ git push -q "$2" HEAD:refs/heads/main
 printf '%s\\n' "$F" ==
 git ls-files
 git checkout -q --detach "$c" # the clone stays A's rep`;
+
+// Claude Code's PostToolBatch hook (it runs before each model request after the first): $1 the task
+// directory. When RepoDO has written new memory items to $1/memory.md (Box.pushMemory), it hands them
+// to the model once as additional context. The first request already has memory in the system prompt.
+export const MEMORY_HOOK_SH = `f="$1/memory.md"; seen="$1/.memory-seen"
+[ -f "$f" ] || exit 0
+h=$(sha1sum "$f" | cut -c1-40)
+[ "$h" = "$(cat "$seen" 2>/dev/null)" ] && exit 0
+echo "$h" > "$seen"
+node -e 'process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PostToolBatch", additionalContext: "Repository memory was updated. It now holds:\\n" + require("fs").readFileSync(process.argv[1], "utf8") } }))' "$f"`;

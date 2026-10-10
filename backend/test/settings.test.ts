@@ -35,3 +35,10 @@ test("gate: CI must pass, then every required review approve", () => {
 	expect(gate(both, { ci: "passed", reviewAuto: "rejected", reviewManual: "pending" })).toEqual({ failed: ["automatic review"] });
 	expect(gate(on({ review: "manual" }), { ci: "passed", reviewAuto: null, reviewManual: "rejected" })).toEqual({ failed: ["manual review"] });
 });
+
+test("provider and per-role models", () => {
+	const s = updateSettings(DEFAULTS, { provider: "openrouter", models: { agent: "anthropic/claude-sonnet-5.5", superagent: "" } });
+	expect(s).toMatchObject({ provider: "openrouter", models: { agent: "anthropic/claude-sonnet-5.5", superagent: "", ferge: "" } });
+	expect(updateSettings(DEFAULTS, { provider: "openai" })).toHaveProperty("error");
+	expect(updateSettings(DEFAULTS, { models: { agent: "bad model; rm -rf" } })).toHaveProperty("error");
+});

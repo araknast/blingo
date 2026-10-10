@@ -11,6 +11,7 @@ test delete them when they finish.
 | `tasks.mjs [repo2]` | deployed | agents + memory end to end; superagent plan, dependency scheduling, conflict → ferge → fix → unlock, and that dependent tasks wait throughout (`repo2` = only that part) | ~5 Claude runs, ~5 min |
 | `loose.sh` | deployed | loose notagent forks: auto-placement off, several pushes, placement on request, a merge-commit history refused then pushed again | ~2 min |
 | `ci.sh` | deployed | CI and review: a notagent's CI fails then passes, placing early is refused, manual review gates placement, a fixer agent fixes an agent's failed CI, the push limit hands the fork to a person, automatic review approves one change and rejects another | ~3 Claude runs, 2 reviews, ~15 min |
+| `models.sh` | deployed | a repository's own API key (never returned), models and OpenRouter provider, and agent transcripts, using invalid keys so runs fail at their first API call | ~4 min, no model cost |
 | `ferge-fix.sh` | deployed | conflict → ferge → fix forked from the ferge bubble → unlock; prints bubbles after each step | ~3 min |
 | `stress/run.sh` | deployed | 40-file repo, 60 notagents pushed 20 at a time, ferge and fix each conflict, everything ends in one bubble | ~30 min; leaves the repo |
 | `stress/rerun.sh` | deployed | `run.sh` with `wrangler tail` of both Workers saved to the work dir | as above |
