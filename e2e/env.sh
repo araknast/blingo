@@ -8,6 +8,8 @@ ROOT=$(dirname "$E2E")
 export GIT_AUTHOR_NAME=e2e GIT_AUTHOR_EMAIL=e2e@x GIT_COMMITTER_NAME=e2e GIT_COMMITTER_EMAIL=e2e@x
 
 api() { curl -s -H "authorization: Bearer $T" "$@"; }
+# key <repo>: give a repository the API key its agents run on (blingo has none of its own).
+key() { : "${E2E_ANTHROPIC_KEY:?set E2E_ANTHROPIC_KEY: agents run only on their repository's key}"; api -X PUT --json "{\"apiKey\":\"$E2E_ANTHROPIC_KEY\"}" "$U/repos/$1/settings" >/dev/null; }
 # j <file.json> <key>
 j() { python3 -c "import json,sys;print(json.load(open(sys.argv[1]))[sys.argv[2]])" "$@"; }
 # push <notagent json> <work dir> <shell edit>: clone the fork, run the edit, commit, push.

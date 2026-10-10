@@ -12,7 +12,7 @@ until_() { for i in $(seq 1 36); do [ "$(q "$1")" = True ] && return 0; sleep 5;
 bname() { echo "[b['name'] for b in d['bubbles'] if b['id']=='$1'][0]"; }
 notagent() { api -X POST --json "{\"repo\":\"$R\",\"bubble\":\"$A\",\"description\":\"$2\"}" $U/notagents > $1.json; j $1.json fork; }
 
-R=$(api -X POST --json '{"name":"  e2e   names "}' $U/repos | python3 -c "import json,sys;print(json.load(sys.stdin)['repo'])"); echo "repo $R"
+R=$(api -X POST --json '{"name":"  e2e   names "}' $U/repos | python3 -c "import json,sys;print(json.load(sys.stdin)['repo'])"); echo "repo $R"; key $R
 [ "$(api $U/me | python3 -c "import json,sys;print(json.load(sys.stdin)['names'].get('$R'))")" = "e2e names" ] || fail "name in /me"
 [ "$(q "d['name']")" = "e2e names" ] || fail "name in the repo state"
 ok "repository named (trimmed): e2e names"

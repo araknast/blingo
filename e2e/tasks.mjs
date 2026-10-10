@@ -9,7 +9,8 @@ import { dirname, join } from "node:path";
 
 const U = process.env.BLINGO_URL;
 const T = process.env.BLINGO_TOKEN;
-if (!U || !T) throw new Error("set BLINGO_URL and BLINGO_TOKEN");
+const KEY = process.env.E2E_ANTHROPIC_KEY; // agents run only on their repository's key
+if (!U || !T || !KEY) throw new Error("set BLINGO_URL, BLINGO_TOKEN and E2E_ANTHROPIC_KEY");
 const t0 = Date.now();
 const log = (...a) => console.log(`[${String(Math.round((Date.now() - t0) / 1000)).padStart(4)}s]`, ...a);
 const fails = [];
@@ -72,6 +73,7 @@ async function repo1() {
 	const { repo: R } = await call("POST", "/repos");
 	repos.push(R);
 	log("repo1", R);
+	await call("PUT", `/repos/${R}/settings`, { apiKey: KEY });
 
 	check((await call("POST", `/repos/${R}/memory`, { text: "temp note" })).status === 201, "memory: add");
 	const mid = (await st(R)).memory[0]?.id;
@@ -139,10 +141,12 @@ async function repo2() {
 - key "a", title "Write x.txt A", kind "notagent", deps []: "A human writes x.txt (version A)"
 - key "b", title "Write x.txt B", kind "notagent", deps []: "A human writes x.txt (version B)"
 - key "c", title "Follow up on x.txt", kind "notagent", deps ["a", "b"]: "A human follows up on x.txt after a and b"`;
-	const sa = await call("POST", "/superagents", { prompt });
-	check(sa.status === 202 && sa.repo && sa.superagent?.includes("-s-"), `superagent: started (${sa.status} ${sa.superagent})`);
-	const R = sa.repo;
+	const { repo: R } = await call("POST", "/repos");
 	repos.push(R);
+	check((await call("POST", "/superagents", { repo: R, prompt })).status === 400, "superagent: refused without a key");
+	await call("PUT", `/repos/${R}/settings`, { apiKey: KEY });
+	const sa = await call("POST", "/superagents", { repo: R, prompt });
+	check(sa.status === 202 && sa.repo === R && sa.superagent?.includes("-s-"), `superagent: started (${sa.status} ${sa.superagent})`);
 	log("repo2", R);
 	let s = await waitFor("superagent plan", async () => {
 		const s = await st(R);

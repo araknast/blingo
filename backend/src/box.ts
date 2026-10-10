@@ -1,6 +1,6 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { APPLY_SH, CONFLICT, ENSURE_REP, FERGE_SH, MEMORY_HOOK_SH, MERGES, MERGE_SH, NO_CONFLICT, PATCH_SH, PUSH_SH, REP, readSeries } from "./git-scripts";
-import { ciHostAllowed, type Provider } from "./settings";
+import { MODEL_HOSTS, egress, type Provider } from "./settings";
 import { validatePlan } from "./tasks";
 import { completeLines } from "./transcript";
 
@@ -42,7 +42,9 @@ git checkout -q --detach "$2"
 set +e; bash -c "$3"`;
 
 const NOTES = `To leave a note for every future agent on this repository, append it as one line to ${TASK}/memory.
-Only note durable, repository-wide facts (conventions, gotchas, decisions), not progress on your own task.`;
+Only note durable, repository-wide facts (conventions, gotchas, decisions), not progress on your own task.
+
+You have internet access and run as root in a disposable Debian container: install whatever tools you need (apt-get, npm, pip, curl ...).`;
 
 // ponytail: every memory item goes into every prompt; select or summarize them if the list grows long.
 function systemPrompt(kind: AgentJob["kind"], memory: string[]) {
@@ -108,28 +110,23 @@ export async function authRemote(env: Env, name: string, scope: "read" | "write"
 	};
 }
 
-// The only egress a sandbox gets: Artifacts git, and the model API with the key added here, so no
-// key ever enters a sandbox. An agent's Box (props.repo) uses its repository's own key and provider
-// when it has one (RepoDO.credentials), else the Worker's Anthropic key. A CI Box (props.ci = its
-// hosts) gets Artifacts and the repository's CI hosts instead, and never a key.
+// Every request out of a sandbox comes through here (rules: settings.ts `egress`). Agent Boxes
+// (props.repo) reach the internet, and their repository's model API with its own key added here, so
+// no key ever enters a sandbox; there is no fallback key. CI Boxes (props.ci = its hosts) reach only
+// Artifacts and those hosts, other Boxes only Artifacts.
 export class Outbound extends WorkerEntrypoint<Env, { ci?: string[]; repo?: string }> {
 	async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url);
-		if (url.protocol !== "https:") return new Response("https only\n", { status: 403 });
-		if (url.hostname.endsWith(".artifacts.cloudflare.net")) return fetch(request);
 		const { ci, repo } = this.ctx.props ?? {};
-		if (ci) return ciHostAllowed(ci, url.hostname) ? fetch(request) : new Response(`${url.hostname} not reachable from CI\n`, { status: 403 });
-		if (url.hostname !== "api.anthropic.com" && url.hostname !== "openrouter.ai") return new Response(`${url.hostname} not reachable\n`, { status: 403 });
-		const creds = repo ? await this.env.REPO.getByName(repo).credentials() : null;
-		const provider = creds?.provider ?? "anthropic";
-		if (url.hostname !== (provider === "openrouter" ? "openrouter.ai" : "api.anthropic.com")) {
-			return new Response(`${url.hostname} not reachable: this repository uses ${provider}\n`, { status: 403 });
-		}
+		const creds = repo && Object.values(MODEL_HOSTS).includes(url.hostname) ? await this.env.REPO.getByName(repo).credentials() : null;
+		const to = egress(url, { ci, agent: !!repo, provider: creds?.provider });
+		if (to === "pass") return fetch(request);
+		if (to !== "key") return new Response(`${to.deny}\n`, { status: 403 });
 		const headers = new Headers(request.headers);
 		headers.delete("x-api-key");
 		headers.delete("authorization");
-		if (provider === "openrouter") headers.set("authorization", `Bearer ${creds!.key}`);
-		else headers.set("x-api-key", creds?.key ?? this.env.ANTHROPIC_API_KEY);
+		if (creds!.provider === "openrouter") headers.set("authorization", `Bearer ${creds!.key}`);
+		else headers.set("x-api-key", creds!.key);
 		return fetch(new Request(request, { headers }));
 	}
 }

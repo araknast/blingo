@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { DEFAULTS, ciHostAllowed, gate, updateSettings, type Settings } from "../src/settings";
+import { DEFAULTS, NO_KEY, ciHostAllowed, egress, gate, updateSettings, type Settings } from "../src/settings";
 
 const on = (o: Partial<Settings> = {}): Settings => ({ ...DEFAULTS, ...o, ci: { ...DEFAULTS.ci, enabled: true, ...o.ci } });
 
@@ -19,6 +19,25 @@ test("CI egress: listed hosts and their subdomains only", () => {
 	expect(ciHostAllowed(["npmjs.org"], "registry.npmjs.org")).toBe(true);
 	expect(ciHostAllowed(["npmjs.org"], "evilnpmjs.org")).toBe(false);
 	expect(ciHostAllowed([], "api.anthropic.com")).toBe(false);
+});
+
+test("egress: agents reach the internet, keys only go to their own provider", () => {
+	const u = (s: string) => new URL(s);
+	const agent = { agent: true, provider: "anthropic" as const };
+	expect(egress(u("https://x.artifacts.cloudflare.net/r.git"), {})).toBe("pass");
+	expect(egress(u("https://registry.npmjs.org/jq"), agent)).toBe("pass");
+	expect(egress(u("http://deb.debian.org/debian"), agent)).toBe("pass");
+	expect(egress(u("https://api.anthropic.com/v1/messages"), agent)).toBe("key");
+	expect(egress(u("http://api.anthropic.com/v1/messages"), agent)).toEqual({ deny: "https only" });
+	expect(egress(u("https://openrouter.ai/api"), agent)).toHaveProperty("deny");
+	// No repository key: no model API at all (blingo has no key of its own to fall back on).
+	expect(egress(u("https://api.anthropic.com/v1/messages"), { agent: true, provider: null })).toEqual({ deny: NO_KEY });
+	expect(egress(u("https://registry.npmjs.org/jq"), { agent: true, provider: null })).toBe("pass");
+	// CI and other Boxes stay locked down.
+	expect(egress(u("https://registry.npmjs.org/jq"), { ci: ["registry.npmjs.org"] })).toBe("pass");
+	expect(egress(u("https://example.com/"), { ci: ["registry.npmjs.org"] })).toHaveProperty("deny");
+	expect(egress(u("https://api.anthropic.com/v1/messages"), { ci: [] })).toHaveProperty("deny");
+	expect(egress(u("https://registry.npmjs.org/jq"), {})).toHaveProperty("deny");
 });
 
 test("gate: CI off always passes", () => {

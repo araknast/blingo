@@ -182,7 +182,8 @@ notagent's, for a person to push the fix (`POST …/token`). A notagent's failed
 stored apart from the settings and never returned: the API only says `hasKey`), its `provider`
 (`anthropic` or `openrouter`), and a model per role (`models.agent` / `superagent` / `ferge`; empty =
 the Worker's `MODEL`). An agent's Box binds `Outbound` with its repository (props `repo`). Outbound asks
-`RepoDO.credentials` and adds that key, or the Worker's `ANTHROPIC_API_KEY` when there is none: as
+`RepoDO.credentials` and adds that key (there is no fallback: without a key no agent, superagent,
+CI fixer or review starts, and queued tasks wait for one): as
 `x-api-key` for `api.anthropic.com`, or as a bearer token for `openrouter.ai`, which Claude Code
 reaches through `ANTHROPIC_BASE_URL`. A request to the other provider is refused. The Reviewer uses
 the same key and the agent model. Claude Code runs with `--output-format stream-json`: each run's events
@@ -239,9 +240,10 @@ the `models.ferge` model (task `role` = ferge).
 ## Sandbox and secrets
 
 - Containers start with `enableInternet: false`; all HTTP(S) goes through `Outbound`. That allows
-  `*.artifacts.cloudflare.net`, and adds the repository's key (or the Worker's `ANTHROPIC_API_KEY`)
-  to model API requests, so no key ever enters a sandbox. CI Boxes reach only Artifacts and their CI
-  hosts.
+  `*.artifacts.cloudflare.net` (rules: `settings.ts` `egress`). Agent Boxes reach the internet (http
+  too, for apt) and install what they need as root; their repository's model API gets the
+  repository's key added there, so no key ever enters a sandbox. CI Boxes reach only Artifacts and
+  their CI hosts, other Boxes only Artifacts.
 - Git auth is a short-lived, per-repo Artifacts token embedded in the remote URL.
 - The API (apart from signup, verify, login) needs a session token or `BLINGO_TOKEN`, because it
   mints push tokens and starts paid runs. Repository routes also check the caller owns the repo.

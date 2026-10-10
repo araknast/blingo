@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { Agent } from "agents";
+import { NO_KEY } from "./settings";
 
 // Automatic review, part of CI when a repository asks for it: one Reviewer agent per loose fork reads
 // the task and the fork's patch series and approves or rejects it, then reports to the RepoDO.
@@ -40,13 +41,14 @@ export class Reviewer extends Agent<Env, State> {
 		await this.env.REPO.getByName(job.repo).reviewDone(job.fork, job.head, approve, comments);
 	}
 
-	// The repository's own key and provider (RepoDO.credentials) when it has one, else the Worker's.
+	// The repository's own key and provider (RepoDO.credentials); there is no fallback key.
 	private async verdict(job: ReviewJob): Promise<{ approve: boolean; comments: string }> {
 		const creds = await this.env.REPO.getByName(job.repo).credentials();
-		const openrouter = creds?.provider === "openrouter";
+		if (!creds) return { approve: false, comments: `Not reviewed: ${NO_KEY}.` };
+		const openrouter = creds.provider === "openrouter";
 		const client = openrouter
-			? new Anthropic({ baseURL: "https://openrouter.ai/api", authToken: creds!.key, apiKey: null })
-			: new Anthropic({ apiKey: creds?.key ?? this.env.ANTHROPIC_API_KEY });
+			? new Anthropic({ baseURL: "https://openrouter.ai/api", authToken: creds.key, apiKey: null })
+			: new Anthropic({ apiKey: creds.key });
 		const r = await client.beta.messages.create({
 			model: job.model,
 			max_tokens: 16000,

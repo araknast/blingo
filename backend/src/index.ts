@@ -2,6 +2,7 @@ import { invalidSignup, type Signup } from "./auth";
 import { authRemote } from "./box";
 import { diffTrees, resolvePath } from "./git";
 import { friendlyName, nameText, repoName } from "./names";
+import { NO_KEY } from "./settings";
 import { shortTitle } from "./tasks";
 
 export { Box, Outbound } from "./box";
@@ -31,6 +32,10 @@ async function source(env: Env, auth: Auth, b: Body): Promise<{ repo: string; bu
 	const rep = await env.REPO.getByName(b.repo).repOf(b.bubble);
 	return rep ? { repo: b.repo, bubble: rep } : Response.json({ error: "no such bubble" }, { status: 404 });
 }
+
+// Agents run only on their repository's own key, so a request without a repo (a brand-new one) can't
+// start one. Access is checked by source() right after.
+const hasKey = async (env: Env, b: Body) => !!b.repo && (await env.REPO.getByName(b.repo).publicSettings()).hasKey;
 
 // `name`: its display name (a friendly "adjective noun" if none); its first bubble is called after it.
 async function createRepo(env: Env, auth: Auth, name: string | null = null) {
@@ -141,6 +146,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
 		const body = (await request.json()) as Body;
 		const description = (a === "agents" ? body.prompt : body.description)?.trim();
 		if (!description) return Response.json({ error: a === "agents" ? "prompt required" : "description required" }, { status: 400 });
+		if (a === "agents" && !(await hasKey(env, body))) return Response.json({ error: NO_KEY }, { status: 400 });
 		const src = await source(env, auth, body);
 		if (src instanceof Response) return src;
 		const repoDO = env.REPO.getByName(src.repo);
@@ -163,6 +169,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
 		const body = (await request.json()) as Body;
 		const prompt = body.prompt?.trim();
 		if (!prompt) return Response.json({ error: "prompt required" }, { status: 400 });
+		if (!(await hasKey(env, body))) return Response.json({ error: NO_KEY }, { status: 400 });
 		const src = await source(env, auth, body);
 		if (src instanceof Response) return src;
 		const repoDO = env.REPO.getByName(src.repo);

@@ -37,6 +37,7 @@ const push = (na, dir, edit) => {
 };
 
 const { repo: R } = await api("POST", "/repos", { name: "Map tour" });
+await api("PUT", `/repos/${R}/settings`, { apiKey: process.env.E2E_ANTHROPIC_KEY ?? "" }); // agents run only on their repository's key
 console.log("repo", R);
 const browser = await chromium.launch(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : {});
 try {

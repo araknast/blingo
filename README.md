@@ -24,7 +24,10 @@ npm workspaces: run `npm install` once at the root.
    cd backend
    openssl rand -hex 32                     # your API token; keep it
    npx wrangler secret put BLINGO_TOKEN
-   npx wrangler secret put ANTHROPIC_API_KEY
+   ```
+   blingo has no model API key of its own: each repository sets one in its settings before its
+   agents can run.
+   ```sh
    ```
 4. Verification email: onboard the sender domain to Cloudflare Email Sending
    (`npx wrangler email sending enable blingo.breakdance.cc`). The sender (`EMAIL_FROM`) and the

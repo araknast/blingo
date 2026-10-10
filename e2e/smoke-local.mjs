@@ -37,6 +37,10 @@ try {
 
 	// notagents: description required; title given or defaulted
 	check((await call("POST", "/notagents", { repo: R })).status === 400, "notagent: description required");
+	// agents and superagents run only on the repository's own key
+	check((await call("POST", "/agents", { repo: R, prompt: "x" })).status === 400, "agent: no key → 400");
+	check((await call("POST", "/agents", { prompt: "x" })).status === 400, "agent: new repo (no key) → 400");
+	check((await call("POST", "/superagents", { repo: R, prompt: "x" })).status === 400, "superagent: no key → 400");
 	const n1 = await call("POST", "/notagents", { repo: R, title: "Add hello", description: "Add hello.txt\n\nwith a greeting" });
 	check(n1.status === 201 && (await task(R, n1.task))?.title === "Add hello", "notagent: title stored");
 	check((await task(R, n1.task))?.status === "in-progress", "notagent: in-progress once taken");

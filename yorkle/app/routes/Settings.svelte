@@ -127,7 +127,7 @@
 					<div class="field">
 						<label for="api-key">API key</label>
 						<div class="row">
-							<input id="api-key" type="password" autocomplete="off" bind:value={apiKey} placeholder={form.hasKey ? "A key is set. Type a new one to replace it" : "Uses blingo's own key when empty"} />
+							<input id="api-key" type="password" autocomplete="off" bind:value={apiKey} placeholder={form.hasKey ? "A key is set. Type a new one to replace it" : "Required: agents don't start without one"} />
 							{#if form.hasKey}<button type="button" onclick={removeKey}>Remove</button>{/if}
 						</div>
 						<p class="hint">Stored for this repository only, never shown again, and never given to a sandbox.</p>

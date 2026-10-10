@@ -4,7 +4,7 @@ import { getAgentByName } from "agents";
 import { MERGES, PATCH_SH, readSeries } from "./git-scripts";
 import { conflictKey, nearestNeighbour, placeFork, renameConflicts, type Basis, type Bubble } from "./bubbles";
 import { fergeName, friendlyName, nameText, type Name } from "./names";
-import { DEFAULTS, gate, updateSettings, type Provider, type Role, type Settings } from "./settings";
+import { DEFAULTS, NO_KEY, gate, updateSettings, type Provider, type Role, type Settings } from "./settings";
 import { explanation, fixPrompt, ready, renameOwed, shortTitle, type Owed, type PlanItem, type TaskState } from "./tasks";
 
 const POLL_MS = 5_000;
@@ -383,10 +383,11 @@ export class RepoDO extends DurableObject<Env> {
 	}
 
 	// Starts every ready agent task. Marked in-progress before the first await, so concurrent calls
-	// don't start one twice; a start that fails goes back to open for the next call.
+	// don't start one twice; a start that fails goes back to open for the next call. Without an API
+	// key nothing starts: tasks wait until one is set (setSettings kicks).
 	private async schedule() {
 		const repo = this.ctx.storage.kv.get<string>("repo");
-		if (!repo) return;
+		if (!repo || !this.credentials()) return;
 		const memory = this.memories();
 		const from = this.startable();
 		const go = this.tasks().filter((t) => t.kind === "agent" && from.has(t.id));
@@ -638,18 +639,19 @@ export class RepoDO extends DurableObject<Env> {
 	}
 
 	// `apiKey` (a string; "" removes it) is kept apart from the other settings and never returned.
-	setSettings(body: unknown) {
+	async setSettings(body: unknown) {
 		const next = updateSettings(this.settings(), body);
 		if ("error" in next) return next;
 		const key = (body as { apiKey?: unknown } | null)?.apiKey;
 		if (key !== undefined && (typeof key !== "string" || key.length > 500)) return { error: "apiKey must be a string" };
 		this.ctx.storage.kv.put("settings", next);
 		if (typeof key === "string") key.trim() ? this.ctx.storage.kv.put("apiKey", key.trim()) : this.ctx.storage.kv.delete("apiKey");
+		if (key) await this.kick(); // tasks waiting for a key start now
 		return this.publicSettings();
 	}
 
 	// The repository's own API key, for Outbound and the Reviewer only (never sent to a sandbox or the
-	// API's callers); null = use the Worker's ANTHROPIC_API_KEY.
+	// API's callers); null = no key, so no agent or review runs (blingo has no key of its own).
 	credentials(): { provider: Provider; key: string } | null {
 		const key = this.ctx.storage.kv.get<string>("apiKey");
 		return key ? { provider: this.settings().provider, key } : null;
@@ -794,6 +796,7 @@ export class RepoDO extends DurableObject<Env> {
 		const t = this.sql.exec<{ title: string; description: string }>("SELECT title, description FROM task WHERE fork = ?", fork).toArray()[0];
 		const repo = this.ctx.storage.kv.get<string>("repo")!;
 		const run = `${fork}-c${l.agent_pushes}`;
+		if (!this.credentials()) return this.toNotagent(fork, `${l.reason ?? "CI failed"}; no fixer agent: ${NO_KEY}, so a person takes over`);
 		const prompt = fixPrompt({ title: t?.title ?? "", description: t?.description ?? "", failed: steps, command: this.settings().ci.command, log: l.ci_log, review: l.review_note });
 		try {
 			const { url } = await authRemote(this.env, fork, "write", 3 * 3600);

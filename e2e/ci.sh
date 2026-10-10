@@ -16,7 +16,7 @@ settings() { r=$(api -X PUT --json "$1" $U/repos/$R/settings); echo "$r" | grep 
 notagent() { api -X POST --json "{\"repo\":\"$R\",\"bubble\":\"$A\",\"description\":\"$2\"}" $U/notagents > $1.json; j $1.json fork; }
 url() { local u; u=$(j $1 push); u=${u#git push }; echo "${u% HEAD:main}"; }
 
-api -X POST --json '{"description":"base"}' $U/notagents > x0.json; R=$(j x0.json repo); A=$(j x0.json fork); echo "repo $R"
+api -X POST --json '{"description":"base"}' $U/notagents > x0.json; R=$(j x0.json repo); A=$(j x0.json fork); echo "repo $R"; key $R
 push x0.json r0 'echo a > a.txt' >/dev/null || fail "base push"
 until_ "$(member $A) == ['rep']" "base placed"
 

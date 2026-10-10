@@ -88,6 +88,27 @@ export function updateSettings(current: Settings, body: unknown): Settings | { e
 // May a request to `hostname` leave a CI Box? Exactly a listed host or one of its subdomains.
 export const ciHostAllowed = (hosts: string[], hostname: string) => hosts.some((h) => hostname === h || hostname.endsWith(`.${h}`));
 
+export const MODEL_HOSTS: Record<Provider, string> = { anthropic: "api.anthropic.com", openrouter: "openrouter.ai" };
+export const NO_KEY = "this repository has no API key: set one in its settings";
+
+// Where a request out of a Box may go: "pass" = straight out, "key" = to the repository's model API
+// with its key added (by Outbound), else why not. Artifacts git always (https). A CI Box: its hosts
+// (https). An agent Box: anywhere, http too (apt mirrors), but a model API only over https, only its
+// repository's provider, and only once the repository has a key (provider null = no key). Others:
+// Artifacts only.
+export function egress(url: URL, box: { ci?: string[]; agent?: boolean; provider?: Provider | null }): "pass" | "key" | { deny: string } {
+	const host = url.hostname;
+	const https = url.protocol === "https:";
+	if (https && host.endsWith(".artifacts.cloudflare.net")) return "pass";
+	if (box.ci) return https && ciHostAllowed(box.ci, host) ? "pass" : { deny: `${host} not reachable from CI` };
+	if (!box.agent) return { deny: `${host} not reachable` };
+	const model = (Object.keys(MODEL_HOSTS) as Provider[]).find((p) => MODEL_HOSTS[p] === host);
+	if (!model) return "pass";
+	if (!box.provider) return { deny: NO_KEY };
+	if (model !== box.provider) return { deny: `${host} not reachable: this repository uses ${box.provider}` };
+	return https ? "key" : { deny: "https only" };
+}
+
 // A loose fork's CI results for its current head: `ci` running / passed / failed, and each review
 // pending / approved / rejected (null = not required).
 export type CiState = { ci: string | null; reviewAuto: string | null; reviewManual: string | null };

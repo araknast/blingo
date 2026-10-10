@@ -9,8 +9,9 @@
 	"vars": { "MODEL": "claude-opus-5-5", "ADMIN_USERNAME": "araknast", "EMAIL_FROM": "noreply@blingo.breakdance.cc", "DOMAIN": "blingo.breakdance.cc" },
 	// Verification mail; the sender domain must be onboarded to Cloudflare Email Sending.
 	"send_email": [{ "name": "EMAIL" }],
-	// BLINGO_TOKEN guards the API (it mints git tokens); ANTHROPIC_API_KEY never enters the sandbox.
-	"secrets": { "required": ["BLINGO_TOKEN", "ANTHROPIC_API_KEY"] },
+	// BLINGO_TOKEN guards the API (it mints git tokens). There is no model API key: each repository
+	// sets its own, and it never enters the sandbox.
+	"secrets": { "required": ["BLINGO_TOKEN"] },
 	"artifacts": [{ "binding": "ARTIFACTS", "namespace": "blingo" }],
 	"containers": [
 		{
