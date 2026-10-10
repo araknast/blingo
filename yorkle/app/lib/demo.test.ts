@@ -7,7 +7,7 @@ import { radius } from "./layout";
 test("every demo bubble and agent has an anchor, with room for its largest size", () => {
 	const r = new Map<string, number>();
 	for (const s of demoSteps) for (const b of s.bubbles) r.set(b.id, Math.max(r.get(b.id) ?? 0, radius(b)));
-	const pills = new Set(demoSteps.flatMap((s) => s.agents.map((a) => a.fork)));
+	const pills = new Set(demoSteps.flatMap((s) => [...s.agents.map((a) => a.fork), ...s.waiting, ...s.placing]));
 	for (const id of [...r.keys(), ...pills]) expect(demoAnchors[id], id).toBeDefined();
 	const at = (id: string) => demoAnchors[id];
 	const ids = [...r.keys()];

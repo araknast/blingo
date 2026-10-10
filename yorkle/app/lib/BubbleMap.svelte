@@ -43,7 +43,6 @@
 	let svg: SVGSVGElement;
 	let w = $state(0);
 	let h = $state(0);
-	let dockH = $state(0);
 	let k = $state(1);
 	let tx = $state(0);
 	let ty = $state(0);
@@ -60,7 +59,6 @@
 	let now = $state(0);
 	let ripples = $state<Record<string, number>>({});
 	let hovered = $state<string | null>(null);
-	let dockPos = new Map<string, Pt>(); // world position of each dock chip, as last rendered
 	let flyKey = 0;
 
 	type Any = Node | AgentNode;
@@ -80,9 +78,9 @@
 		if (!userMoved) fit(fitted);
 	}
 
-	// World ↔ container pixels. World (0,0) sits in the middle of the area above the dock.
+	// World ↔ container pixels. World (0,0) sits in the middle of the map.
 	const cx = $derived(w / 2 + tx);
-	const cy = $derived((h - dockH) / 2 + ty);
+	const cy = $derived(h / 2 + ty);
 	const toWorld = (sx: number, sy: number): Pt => ({ x: (sx - cx) / k, y: (sy - cy) / k });
 
 	function fit(smooth: boolean) {
@@ -91,7 +89,7 @@
 		const x0 = Math.min(...ns.map((n) => n.x! - n.r)), x1 = Math.max(...ns.map((n) => n.x! + n.r));
 		const y0 = Math.min(...ns.map((n) => n.y! - n.r)), y1 = Math.max(...ns.map((n) => n.y! + n.r + 34));
 		const pad = demo ? 24 : 48;
-		const kk = Math.max(0.25, Math.min(demo ? 1.7 : 1.4, (w - pad * 2) / (x1 - x0), (h - dockH - pad * 2) / (y1 - y0)));
+		const kk = Math.max(0.25, Math.min(demo ? 1.7 : 1.4, (w - pad * 2) / (x1 - x0), (h - pad * 2) / (y1 - y0)));
 		const t = { k: kk, x: -((x0 + x1) / 2) * kk, y: -((y0 + y1) / 2) * kk };
 		const a = smooth ? 0.12 : 1;
 		k += (t.k - k) * a;
@@ -107,16 +105,6 @@
 		return { x: n.x! + o.x, y: n.y! + o.y };
 	}
 
-	function cacheDock() {
-		if (!box) return;
-		const r0 = box.getBoundingClientRect();
-		dockPos = new Map();
-		for (const el of box.querySelectorAll<HTMLElement>("[data-fork]")) {
-			const r = el.getBoundingClientRect();
-			dockPos.set(el.dataset.fork!, toWorld(r.left - r0.left + 10, r.top - r0.top + r.height / 2));
-		}
-	}
-
 	// Merge new API state into the running simulation; nodes keep their place between polls.
 	function apply(d: RepoState) {
 		const before = new Map<string, Pt & { bubble: string | null }>();
@@ -125,7 +113,6 @@
 			if (p) before.set(m.name, { ...p, bubble: n.id });
 		}
 		for (const a of agentNodes.values()) before.set(a.id, { x: a.x!, y: a.y!, bubble: null });
-		for (const [f, p] of dockPos) if (!before.has(f)) before.set(f, { ...p, bubble: null });
 
 		const animate = fitted && !reduced;
 		const t0 = performance.now();
@@ -159,9 +146,20 @@
 		}
 		for (const id of nodes.keys()) if (!seen.has(id)) (nodes.delete(id), (changed = true));
 
-		// Running agents and people's unplaced forks: new ones start on the outer ring, finished ones leave
-		// (their fork flies on).
+		// Every fork not in a bubble yet is a pill: running agents, people's forks, and forks still being
+		// checked or placed (an agent's fork in CI, a fork whose task just completed). New ones start on the
+		// outer ring; placed ones leave (their fork flies on).
 		const running = allRuns(d).filter(active);
+		const pilled = new Set(running.map((r) => r.fork));
+		const taskOf = new Map(d.tasks.filter((t) => t.fork).map((t) => [t.fork!, t]));
+		const unplaced: [string, string][] = [...d.waiting.map((f): [string, string] => [f, "waiting"]), ...d.loose.map((l): [string, string] => [l.fork, l.kind === "agent" ? "loose" : "pushed"]), ...d.placing.map((f): [string, string] => [f, "placing"])];
+		for (const [fork, status] of unplaced) {
+			if (pilled.has(fork)) continue;
+			pilled.add(fork);
+			const t = taskOf.get(fork);
+			const person = t ? t.kind === "notagent" : !d.agents.some((a) => a.fork === fork);
+			running.push({ fork, prompt: t?.title ?? short(fork), started: 0, status, finished: null, log: null, ...(person ? { kind: "notagent" as const } : {}) });
+		}
 		for (const run of running) {
 			const a = agentNodes.get(run.fork);
 			if (a) a.run = run;
@@ -198,7 +196,6 @@
 			flyers = [...flyers, ...newFlyers];
 			fly();
 		}
-		tick().then(cacheDock);
 	}
 
 	// Where a new node starts: a sunflower spiral around the map's current centre, so new bubbles spread
@@ -247,12 +244,10 @@
 		if (data && w) untrack(() => apply(data));
 	});
 	$effect(() => {
-		// Refit when the box or the dock changes size.
+		// Refit when the box changes size.
 		w;
 		h;
-		dockH;
 		untrack(() => !userMoved && fit(false));
-		tick().then(cacheDock);
 	});
 
 	// ---- Pan, zoom, drag ----
@@ -327,21 +322,18 @@
 		}
 		suppressClick = drag.moved;
 		drag = null;
-		cacheDock();
 	}
-	function zoomBy(f: number, sx = w / 2, sy = (h - dockH) / 2) {
+	function zoomBy(f: number, sx = w / 2, sy = h / 2) {
 		const p = toWorld(sx, sy);
 		const nk = Math.max(0.25, Math.min(3, k * f));
 		tx = sx - w / 2 - p.x * nk;
-		ty = sy - (h - dockH) / 2 - p.y * nk;
+		ty = sy - h / 2 - p.y * nk;
 		k = nk;
 		userMoved = true;
-		cacheDock();
 	}
 	function refit() {
 		userMoved = false;
 		fit(false);
-		cacheDock();
 	}
 	$effect(() => {
 		if (demo) return;
@@ -360,19 +352,9 @@
 		if (!hoverNode) return "";
 		const sx = cx + hoverNode.x! * k, sy = cy + hoverNode.y! * k, r = hoverNode.r * k;
 		const left = sx + r + 300 < w ? sx + r + 14 : Math.max(8, sx - r - 14 - 280);
-		return `left:${left}px;top:${Math.max(8, Math.min(sy - 40, h - dockH - 220))}px`;
+		return `left:${left}px;top:${Math.max(8, Math.min(sy - 40, h - 220))}px`;
 	});
 
-	// Dock: forks waiting for a push, being placed, or pushed and not placed (loose). Running agents are
-	// nodes on the map instead.
-	// Unplaced forks without a pill on the map (an agent's fork in CI or being placed).
-	const pilled = $derived(new Set(agentView.map((a) => a.id)));
-	const dock = $derived({
-		waiting: (data?.waiting ?? []).filter((f) => !pilled.has(f)),
-		loose: (data?.loose ?? []).filter((l) => !pilled.has(l.fork)),
-		placing: (data?.placing ?? []).filter((f) => !pilled.has(f)),
-	});
-	const dockCount = $derived(dock.waiting.length + dock.loose.length + dock.placing.length);
 	const nameOf = (n: Node) => n.b.name || short(n.id);
 
 	const hl = (r: number) => {
@@ -579,21 +561,6 @@
 		</div>
 	{/if}
 
-	{#if dockCount}
-		<div class="dock" bind:clientHeight={dockH} aria-label="Forks not in a bubble yet">
-			{#each dock.waiting as f (f)}
-				<span class="chip" data-fork={f} title="Waiting for a push"><i class="dot waiting"></i><span class="mono">{short(f)}</span></span>
-			{/each}
-			{#each dock.loose as l (l.fork)}
-				<a class="chip" data-fork={l.fork} href={looseHref?.(l.fork)} title={l.reason ?? (l.ci === "running" ? "CI running" : "Pushed, not placed yet")}>
-					<i class="dot {l.ci === 'failed' || l.reason ? 'conflict' : 'waiting'} {l.ci === 'running' ? 'pulse' : ''}"></i><span class="mono">{short(l.fork)}</span>
-				</a>
-			{/each}
-			{#each dock.placing as f (f)}
-				<span class="chip" data-fork={f} title="Finding a bubble"><i class="dot placing pulse"></i><span class="mono">{short(f)}</span></span>
-			{/each}
-		</div>
-	{/if}
 </div>
 
 <style>
@@ -716,31 +683,6 @@
 	.card li { display: flex; align-items: center; gap: 0.5rem; }
 	.card .files { margin-top: 0.6rem; padding-top: 0.5rem; border-top: 1px solid var(--line-2); display: grid; gap: 0.1rem; }
 	.card code { font-size: 0.75rem; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-	.dock {
-		position: absolute;
-		left: 0;
-		right: 0;
-		bottom: 0;
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.4rem;
-		padding: 0.7rem 1rem;
-		font-size: 0.8125rem;
-		pointer-events: none;
-	}
-	.dock .chip { pointer-events: auto; text-decoration: none; color: inherit; }
-	.chip {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.4rem;
-		padding: 0.2rem 0.6rem 0.2rem 0.45rem;
-		border: 1px solid var(--line);
-		border-radius: 999px;
-		background: var(--raised);
-		max-width: 16rem;
-	}
-	.chip .mono { font-size: 0.75rem; }
 
 	@media (max-width: 768px) {
 		.legend { display: none; }

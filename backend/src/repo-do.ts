@@ -260,6 +260,8 @@ export class RepoDO extends DurableObject<Env> {
 			Date.now(),
 			fork,
 		);
+		// Placed: no longer loose, in the same step its task completes (no window where it is both).
+		this.sql.exec("DELETE FROM loose WHERE fork = ?", fork);
 		// The series carries the fork's work now; its repo is only kept as a new bubble's rep.
 		if (target !== "new") await this.env.ARTIFACTS.delete(fork).catch(() => false);
 		await this.kick(); // applies the series; also schedules tasks this unblocks, once their deps land
@@ -912,11 +914,7 @@ export class RepoDO extends DurableObject<Env> {
 						p.exitCode === MERGES
 							? { error: "its history has merge commits; rebase it onto where it started" }
 							: await this.place(l.fork, readSeries(p.stdout).files, readSeries(p.stdout).mbox);
-					if ("error" in placed) {
-						this.sql.exec("UPDATE loose SET placing = 0, reason = ? WHERE fork = ?", placed.error, l.fork);
-						return;
-					}
-					this.sql.exec("DELETE FROM loose WHERE fork = ?", l.fork);
+					if ("error" in placed) this.sql.exec("UPDATE loose SET placing = 0, reason = ? WHERE fork = ?", placed.error, l.fork);
 				}),
 		);
 		const failed = results.find((r) => r.status === "rejected");

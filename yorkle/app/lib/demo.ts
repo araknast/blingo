@@ -32,9 +32,12 @@ const R2: [Member, string] = [P2, "Write a CLI for exporting reports"];
 
 const state = (bubbles: Bubble[], o: Partial<RepoState> = {}): RepoState => ({ name: "demo", bubbles, conflicts: [], merging: [], waiting: [], placing: [], loose: [], settings: { autoPlaceNotagents: true, ci: { enabled: false, command: "", hosts: [] }, review: "none", maxAgentPushes: 3, provider: "anthropic", models: { agent: "", superagent: "", ferge: "" }, fergeAgents: false, taskApproval: false, hasKey: false }, agents: [], tasks: [], memory: [], ...o });
 
+// N's task, so its pill is labelled like a real person's fork.
+const tasks = [{ id: "t-demo", title: "Fix the login redirect", description: "", kind: "notagent" as const, status: "in-progress" as const, bubble: f("3fa1c09e"), fork: N.name, deps: [], explanation: null, superagent: null, created: started, finished: null, ready: false, role: null }];
+
 export const demoSteps: RepoState[] = [
-	state([A(), B(), C()], { waiting: [N.name], agents: agents(R1, R2) }),
-	state([A(), B(), C()], { placing: [N.name], agents: agents(R1, R2) }),
+	state([A(), B(), C()], { waiting: [N.name], agents: agents(R1, R2), tasks }),
+	state([A(), B(), C()], { placing: [N.name], agents: agents(R1, R2), tasks }),
 	state([A(N), B(), C()], { agents: agents(R1, R2) }),
 	state([A(merged(N)), B([P1]), C()], { agents: agents(R2) }),
 	state([A(merged(N)), B([merged(P1)]), C()], { agents: agents(R2) }),
@@ -52,4 +55,5 @@ export const demoAnchors: Record<string, { x: number; y: number }> = {
 	[f("5c08aa71")]: { x: 10, y: 170 },
 	[P1.name]: { x: 170, y: -160 },
 	[P2.name]: { x: -170, y: -150 },
+	[N.name]: { x: 0, y: -250 },
 };

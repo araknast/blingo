@@ -1,4 +1,5 @@
-# Stress test: a FILES-file repo, then notagents pushed P at a time in batches of BATCH: N_NEW new files,
+# Stress test: a FILES-file repo, then notagents forked from random bubbles, P workers at a time in
+# batches of BATCH jobs: N_NEW new files,
 # N_EDIT edits, N_PAIRS pairs editing lines 1 and 3 of one file (the second of each starts a bubble that
 # merges back cleanly) and N_CONF conflicting pairs; ferge + fix + unlock each conflict, then check
 # everything reached one bubble and every task completed. Defaults: 40 files, 60 notagents (super.sh: 2000).
@@ -36,10 +37,12 @@ ts "repo $(cat repo), base pushed"; settle || exit 1; ts "base placed"; summary
 
 # 2. notagents in parallel, in batches
 { for i in $(seq 0 $((N_NEW - 1))); do echo "new $(num $NW $i)"; done; for i in $EDITS; do echo "edit $i"; done
-  for p in $PAIRS; do echo "pair ${p}a"; echo "pair ${p}b"; done; for p in $CONFS; do echo "conf ${p}a"; echo "conf ${p}b"; done; } | shuf > jobs.txt
-JOBS=$(wc -l < jobs.txt); ts "pushing $JOBS notagents, $P at a time, $BATCH per batch"
+  for p in $PAIRS; do echo "pair $p"; done; for p in $CONFS; do echo "conf $p"; done; } | shuf > jobs.txt
+JOBS=$((N_NEW + N_EDIT + 2 * (N_PAIRS + N_CONF))); ts "pushing $JOBS notagents, $P workers at a time, $BATCH jobs per batch"
 split -l $BATCH -d -a 4 jobs.txt batch.
 for b in batch.*; do
+  # Fork from bubbles all over the map: each worker picks one of the bubbles there are now.
+  api $U/repos/$(cat repo) | python3 -c "import json,sys;[print(b['id']) for b in json.load(sys.stdin)['bubbles'] if b['visible'] and not b['locked']]" > bubbles
   xargs -P $P -L 1 bash "$E2E/stress/worker.sh" < $b
   ts "$b pushed ($(grep -c '^ok' pushes.log) ok, $(grep -c '^fail' pushes.log) failed so far)"; placed || exit 1; ts "$b placed"; summary
 done; rm -f batch.*
