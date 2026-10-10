@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { authRemote, forkRepo, headOf } from "./box";
 import { getAgentByName } from "agents";
-import { MERGES, PATCH_SH, readSeries } from "./git-scripts";
+import { COMMIT_FILES_SH, MERGES, PATCH_SH, readSeries } from "./git-scripts";
 import { conflictKey, nearestNeighbour, placeFork, renameConflicts, type Basis, type Bubble } from "./bubbles";
 import { fergeName, friendlyName, nameText, type Name } from "./names";
 import { DEFAULTS, NO_KEY, gate, updateSettings, type Provider, type Role, type Settings } from "./settings";
@@ -499,6 +499,28 @@ export class RepoDO extends DurableObject<Env> {
 			this.show(a, b);
 			await this.kick();
 		}
+	}
+
+	// A person resolves a locked ferge bubble's conflicts in the UI: their files go in as a notagent task
+	// on that bubble (its fork, a commit there, then placement, which takes a ferge fork home). Unlocking
+	// is still theirs to do once it's placed.
+	async resolveFerge(bubble: string, files: Record<string, string>, author: string): Promise<{ task: string; fork: string; placing: boolean } | { error: string }> {
+		const b = this.sql.exec<{ ferge: number; name: string }>("SELECT ferge, name FROM bubble WHERE id = ?", bubble).toArray()[0];
+		if (!b?.ferge) return { error: "that isn't a ferge bubble" };
+		if (!this.sql.exec("SELECT 1 FROM locked WHERE id = ?", bubble).toArray().length) return { error: "that ferge bubble is already unlocked" };
+		const repo = this.ctx.storage.kv.get<string>("repo")!;
+		const added = await this.addTasks(repo, [{ title: shortTitle(`Resolve the conflicts in ${b.name}`), description: `Resolved by ${author} in the conflict resolver:\n${Object.keys(files).map((f) => `- ${f}`).join("\n")}`, kind: "notagent", deps: [], bubble }]);
+		if ("error" in added) return added;
+		const [task] = added.ids;
+		this.sql.exec("UPDATE task SET status = 'open' WHERE id = ? AND status = 'awaiting-approval'", task); // asked for by a person
+		const taken = await this.takeTask(task);
+		if (taken.error !== undefined) return { error: taken.error };
+		const { url } = await authRemote(this.env, taken.fork, "write");
+		const r = await this.box().sh(COMMIT_FILES_SH, [url, "Resolve ferge conflicts"], { stdin: JSON.stringify(files), env: { GIT_AUTHOR_NAME: author, GIT_AUTHOR_EMAIL: `${author}@users.blingo` } });
+		if (r.exitCode !== 0) return { error: `couldn't commit the files: ${r.stderr.trim().split("\n").at(-1) ?? ""}` };
+		await this.onPushed(taken.fork, await headOf(this.env, taken.fork));
+		const placed = this.loose(taken.fork)?.placing ? true : !("error" in (await this.requestPlacement(taken.fork))); // else it waits for CI/review
+		return { task, fork: taken.fork, placing: placed };
 	}
 
 	// Any bubble to fork when none is named (visible first, oldest first); null if the repo has none yet.

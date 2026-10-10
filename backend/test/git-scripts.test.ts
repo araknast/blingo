@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { afterAll, expect, test } from "vitest";
-import { APPLY_SH, CONFLICT, ENSURE_REP, FERGE_SH, MEMORY_HOOK_SH, MERGES, MERGE_SH, NO_CONFLICT, PATCH_SH, PUSH_SH, REP, readSeries } from "../src/git-scripts";
+import { APPLY_SH, COMMIT_FILES_SH, CONFLICT, ENSURE_REP, FERGE_SH, MEMORY_HOOK_SH, MERGES, MERGE_SH, NO_CONFLICT, PATCH_SH, PUSH_SH, REP, readSeries } from "../src/git-scripts";
 
 const T = mkdtempSync(`${tmpdir()}/blingo-git-`);
 afterAll(() => rmSync(T, { recursive: true, force: true }));
@@ -104,6 +104,21 @@ test("patch series edge cases: from the empty base repo, nothing committed, merg
 	expect([none.code, readSeries(none.out).files]).toEqual([0, []]);
 	sh(`git clone -q ${R} m && cd m && git checkout -qb side && printf 'S\\n' > s.txt && git add s.txt && git commit -qm side && git checkout -q main && printf 'T\\n' > t.txt && git add t.txt && git commit -qm t && git merge -q --no-edit side`);
 	expect(run(PATCH_SH, [`${T}/m`, head(R)]).code).toBe(MERGES);
+});
+
+test("commit files: a person's files committed and pushed; bad paths and no-ops refused", () => {
+	const fork = bare("cf", "true");
+	const files = { "a.txt": "resolved\n", "new/dir/n.txt": "n\n" };
+	expect(run(COMMIT_FILES_SH, [fork, "Resolve ferge conflicts"], { stdin: JSON.stringify(files) }).code).toBe(0);
+	expect(sh(`git --git-dir=${fork} log -1 --format=%s main`)).toBe("Resolve ferge conflicts");
+	expect(sh(`git --git-dir=${fork} show main:a.txt`)).toBe("resolved");
+	expect(sh(`git --git-dir=${fork} show main:new/dir/n.txt`)).toBe("n");
+	const before = head(fork);
+	for (const p of ["../x", "/etc/x", "a/../../x", ".git/config", ""]) {
+		expect(run(COMMIT_FILES_SH, [fork, "x"], { stdin: JSON.stringify({ [p]: "x" }) }).code).not.toBe(0);
+	}
+	expect(run(COMMIT_FILES_SH, [fork, "x"], { stdin: JSON.stringify(files) }).code).not.toBe(0); // nothing changed
+	expect(head(fork)).toBe(before);
 });
 
 test("memory hook: new items once, as PostToolBatch additional context", () => {

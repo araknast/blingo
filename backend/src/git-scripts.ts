@@ -40,6 +40,22 @@ git am -q --3way "$m" >&2 || { git am --abort 2>/dev/null || true; exit ${CONFLI
 
 export const PUSH_SH = `git push -q origin HEAD:refs/heads/main`;
 
+// A person's files, committed for them (the ferge resolver). $1 fork remote (write), $2 commit message;
+// stdin: {"path": "content", ...} (paths relative, no ".."). Exit 1 = a bad path or nothing changed.
+export const COMMIT_FILES_SH = `set -e
+t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+git clone -q "$1" "$t"; cd "$t"
+node -e '
+const fs = require("fs"), path = require("path");
+for (const [p, text] of Object.entries(JSON.parse(fs.readFileSync(0, "utf8")))) {
+	if (!p || path.isAbsolute(p) || p.split("/").some((s) => s === ".." || s === ".git")) throw new Error("bad path: " + p);
+	fs.mkdirSync(path.dirname(p), { recursive: true });
+	fs.writeFileSync(p, text);
+}'
+git add -A
+git commit -qm "$2"
+git push -q origin HEAD:refs/heads/main`;
+
 // $1 source remote (read): a neighbour bubble's rep, or a fork from before patch series. Merges it
 // into the rep with a merge commit and pushes; prints the source's diff since their merge base.
 // It is cloned and then fetched from the local copy, never fetched incrementally from Artifacts.

@@ -9,18 +9,20 @@
 	import Commits from "./bubble/Commits.svelte";
 	import CommitView from "./bubble/CommitView.svelte";
 	import Forks from "./bubble/Forks.svelte";
+	import Conflicts from "./bubble/Conflicts.svelte";
 
 	let { repo, bubble, rest }: { repo: string; bubble: string; rest: string } = $props();
 
 	let data = $state<RepoState | null>(null);
 	let missingRepo = $state(false);
-	const stop = poll(async () => {
+	async function refresh() {
 		try {
 			data = await api<RepoState>("GET", `/repos/${repo}`);
 		} catch (e) {
 			if (e instanceof ApiError && e.status === 404) missingRepo = true;
 		}
-	}, 5000);
+	}
+	const stop = poll(refresh, 5000);
 	onDestroy(stop);
 
 	const b = $derived(data?.bubbles.find((x) => x.id === bubble));
@@ -28,7 +30,7 @@
 	const absorbedInto = $derived(data && !b ? data.bubbles.find((x) => x.members.some((m) => m.name === bubble))?.id : undefined);
 
 	const base = $derived(`/repos/${repo}/b/${bubble}`);
-	const tab = $derived(rest.startsWith("commits") ? "commits" : rest === "forks" ? "forks" : "source");
+	const tab = $derived(rest.startsWith("commits") ? "commits" : rest === "forks" ? "forks" : rest === "conflicts" ? "conflicts" : "source");
 	const srcPath = $derived(rest.startsWith("src/") ? rest.slice(4) : "");
 	const commitHash = $derived(rest.match(/^commits\/([0-9a-f]{40})$/)?.[1]);
 </script>
@@ -76,6 +78,7 @@
 				<a href="{base}/src/" aria-current={tab === "source" ? "page" : undefined}>Source</a>
 				<a href="{base}/commits" aria-current={tab === "commits" ? "page" : undefined}>Commits</a>
 				<a href="{base}/forks" aria-current={tab === "forks" ? "page" : undefined}>Forks {#if b}<span class="n">{b.members.length}</span>{/if}</a>
+				{#if b?.ferge}<a href="{base}/conflicts" aria-current={tab === "conflicts" ? "page" : undefined}>Conflicts</a>{/if}
 			</nav>
 
 			{#if tab === "source"}
@@ -84,6 +87,8 @@
 				{#key commitHash}<CommitView {repo} {bubble} hash={commitHash} {base} />{/key}
 			{:else if tab === "commits"}
 				<Commits {repo} {bubble} {base} />
+			{:else if tab === "conflicts"}
+				{#if b}<Conflicts {repo} {bubble} locked={b.locked} onchange={refresh} />{/if}
 			{:else}
 				<Forks {repo} members={b?.members ?? []} />
 			{/if}

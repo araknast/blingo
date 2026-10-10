@@ -16,7 +16,7 @@ Read [README.md](README.md) for setup and [ARCHITECTURE.md](ARCHITECTURE.md) bef
 ## Commands (repo root)
 
 ```sh
-npm test         # backend unit tests
+npm test         # unit tests (backend, and yorkle's lib)
 npm run check    # typecheck both projects
 npm run dev      # both Workers locally (needs Docker+buildx; add --enable-containers=false without)
 npm run deploy   # deploys blingo, then yorkle

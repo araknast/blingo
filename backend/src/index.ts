@@ -298,7 +298,15 @@ async function handle(request: Request, env: Env): Promise<Response> {
 		} else r = e === "place" ? await repo.requestPlacement(d) : await repo.pushToken(d);
 		return "error" in r ? Response.json(r, { status: 409 }) : Response.json(r, { status: e === "token" ? 201 : 202 });
 	}
-	if (request.method === "POST" && a === "repos" && b && c === "ferge") {
+	// The conflict resolver: {files: {path: resolved content}} for ferge bubble d.
+	if (request.method === "POST" && a === "repos" && b && c === "ferge" && d && e === "resolve") {
+		const { files } = (await request.json()) as { files?: unknown };
+		const ok = files && typeof files === "object" && Object.entries(files).length > 0 && Object.entries(files).length <= 200 && Object.values(files).every((v) => typeof v === "string");
+		if (!ok) return Response.json({ error: "files must map 1 to 200 paths to their contents" }, { status: 400 });
+		const r = await env.REPO.getByName(b).resolveFerge(d, files as Record<string, string>, auth.user);
+		return "error" in r ? Response.json(r, { status: 409 }) : Response.json(r, { status: 202 });
+	}
+	if (request.method === "POST" && a === "repos" && b && c === "ferge" && !d) {
 		const body = (await request.json()) as { a: string; b: string };
 		const r = await env.REPO.getByName(b).ferge(b, body.a, body.b);
 		return "error" in r ? Response.json(r, { status: 409 }) : Response.json(r);

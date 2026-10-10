@@ -43,7 +43,7 @@ npm workspaces: run `npm install` once at the root.
 ## Develop
 
 ```sh
-npm test            # bubble logic unit tests (backend)
+npm test            # unit tests (backend, and yorkle's lib)
 npm run check       # typecheck both projects
 npm run dev         # builds yorkle, then runs yorkle + blingo together; open the printed URL
 npm run dev:ui -w yorkle   # with `npm run dev` running: the UI on Vite with hot reload
@@ -97,3 +97,4 @@ created before users existed have no owner, so only the admin can reach them. An
 | `DELETE /repos/:repo` | Delete the repository's git repos and all its records |
 | `POST /repos/:repo/lock {bubble}` / `…/unlock {bubble}` | Lock or unlock a bubble (locked: no bubble merges) |
 | `POST /repos/:repo/ferge {a, b}` | Ferge two conflicting bubbles → `{bubble, locked, files}` |
+| `POST /repos/:repo/ferge/:bubble/resolve {files: {path: content}}` | Commit a person's resolution of a locked ferge bubble as a notagent fork of it and ask for its placement → `{task, fork, placing}` |

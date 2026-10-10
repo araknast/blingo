@@ -237,6 +237,12 @@ unlocks it, so the fix merges back with it. A fix that no longer fits there fail
 `fergeAgents`, the ferge also files an agent task on the ferge bubble to resolve its markers, run with
 the `models.ferge` model (task `role` = ferge).
 
+A person can resolve the markers in yorkle's Conflicts tab (`Conflicts.svelte`; the files are the ones
+the ferge commit wrote that still hold markers). `POST /repos/:repo/ferge/:bubble/resolve {files}`
+(`RepoDO.resolveFerge`) files a notagent task on the bubble, takes it, commits the files to its fork
+in the repository's git Box (`COMMIT_FILES_SH`, author = the person) and asks for placement as for
+any push; unlocking stays manual.
+
 ## Sandbox and secrets
 
 - Containers start with `enableInternet: false`; all HTTP(S) goes through `Outbound`. That allows
