@@ -354,6 +354,16 @@ export class Box extends DurableObject<Env> {
 		return this.sql.exec<{ line: string }>("SELECT line FROM transcript ORDER BY seq").toArray().map((r) => r.line).join("\n");
 	}
 
+	// Stops the running agent on request; its transcript so far is kept. Returns whether one was running.
+	async stopAgent(): Promise<boolean> {
+		const job = this.ctx.storage.kv.get<AgentJob>("job");
+		if (!job) return false;
+		if (this.container.running) await this.saveTranscript().catch(() => "");
+		const reason = "stopped by a person";
+		await this.finish(job, "failed", reason, reason);
+		return true;
+	}
+
 	async alarm(): Promise<void> {
 		const ci = this.ctx.storage.kv.get<CiJob>("ci");
 		if (ci) return this.ciAlarm(ci);

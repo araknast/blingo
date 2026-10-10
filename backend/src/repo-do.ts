@@ -327,10 +327,21 @@ export class RepoDO extends DurableObject<Env> {
 		this.sql.exec("DELETE FROM task WHERE id = ? AND status = 'open' AND fork IS NULL AND NOT EXISTS (SELECT 1 FROM task_dep WHERE dep = ?)", id, id);
 	}
 
-	async retryTask(id: string): Promise<boolean> {
-		const n = this.sql.exec("UPDATE task SET status = 'open', prev_fork = fork, fork = NULL, finished = NULL WHERE id = ? AND status = 'failed'", id).rowsWritten;
-		if (n) await this.schedule();
-		return n > 0;
+	// `previous`: the run whose context the next agent gets, if not the task's last one (any agent run
+	// of this repository).
+	async retryTask(id: string, previous?: string): Promise<{ error: string } | { ok: true }> {
+		if (previous && !this.sql.exec("SELECT 1 FROM agent_run WHERE fork = ?", previous).toArray().length) return { error: "no such agent run in this repository" };
+		const n = this.sql.exec("UPDATE task SET status = 'open', prev_fork = COALESCE(?, fork), fork = NULL, finished = NULL WHERE id = ? AND status = 'failed'", previous ?? null, id).rowsWritten;
+		if (!n) return { error: "that task hasn't failed" };
+		await this.schedule();
+		return { ok: true };
+	}
+
+	// Stops an agent task's running agent: its run fails (transcript kept), and so does the task.
+	async stopTask(id: string): Promise<{ error: string } | { ok: true }> {
+		const t = this.task(id);
+		if (t?.kind !== "agent" || t.status !== "in-progress" || !t.fork) return { error: "that task has no running agent" };
+		return (await this.env.BOX.getByName(t.fork).stopAgent()) ? { ok: true } : { error: "its agent isn't running" };
 	}
 
 	// A human takes an open notagent task: it gets a loose fork with a 1-hour push token. The task is

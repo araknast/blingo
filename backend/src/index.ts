@@ -266,10 +266,18 @@ async function handle(request: Request, env: Env): Promise<Response> {
 			? Response.json({ task: d })
 			: Response.json({ error: "that task isn't awaiting approval" }, { status: 409 });
 	}
+	if (request.method === "POST" && a === "repos" && b && c === "tasks" && d && e === "stop") {
+		const r = await env.REPO.getByName(b).stopTask(d);
+		return "error" in r ? Response.json(r, { status: 409 }) : Response.json({ task: d });
+	}
 	if (request.method === "POST" && a === "repos" && b && c === "tasks" && d && (e === "take" || e === "retry")) {
 		const repoDO = env.REPO.getByName(b);
 		if (e === "retry") {
-			return (await repoDO.retryTask(d)) ? Response.json({ task: d }) : Response.json({ error: "that task hasn't failed" }, { status: 409 });
+			// Optional body {"previous": "<run>"}: give the new agent that run's context instead of the task's last run's.
+			const body = (await request.json().catch(() => ({}))) as { previous?: unknown };
+			if (body.previous !== undefined && typeof body.previous !== "string") return Response.json({ error: "previous must be a run id" }, { status: 400 });
+			const r = await repoDO.retryTask(d, body.previous as string | undefined);
+			return "error" in r ? Response.json(r, { status: 409 }) : Response.json({ task: d });
 		}
 		const r = await repoDO.takeTask(d);
 		return "error" in r ? Response.json(r, { status: 409 }) : Response.json(r, { status: 201 });
