@@ -1,10 +1,12 @@
-# worker.sh <kind> <n>: create notagents from a random bubble and push their changes. Logs one
-# "ok|fail kind n fork secs" line per notagent. A pair (or conflicting pair) is both sides from the same
-# bubble, both created before either pushes, so the second can't go home and starts its own bubble.
+# worker.sh <kind> <n>: create notagents and push their changes. Logs one "ok|fail kind n fork secs"
+# line per notagent. A pair (or conflicting pair) is both sides from the same bubble, both created
+# before either pushes, so the second can't go home and starts its own bubble.
 # Run by run.sh, which exports D (its work dir; `bubbles` there lists the bubbles to fork from).
 . "$(dirname "$0")/../env.sh"
 R=$(cat $D/repo); kind=$1; n=$2
-B=$(shuf -n 1 $D/bubbles 2>/dev/null || cat $D/bubbleA)
+# A pair forks from bubble A (it outlives every merge, and its record holds every base file), so its
+# second side can't land anywhere clean and starts a bubble; the rest fork from all over the map.
+case $kind in pair|conf) B=$(cat $D/bubbleA) ;; *) B=$(shuf -n 1 $D/bubbles 2>/dev/null || cat $D/bubbleA) ;; esac
 
 # make <name>: a notagent from bubble B (any bubble once B has merged away), into na/<name>.json.
 make() {
