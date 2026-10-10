@@ -23,6 +23,9 @@ export type Task = {
 	finished: number | null;
 	ready: boolean;
 };
+// A notagent fork that was pushed to and isn't placed yet (auto-placement off, or placement failed).
+export type LooseFork = { fork: string; pushes: number; pushable: boolean; reason: string | null };
+export type Settings = { autoPlaceNotagents: boolean };
 export type MemoryItem = { id: string; text: string; author: string; created: number };
 export type RepoState = {
 	bubbles: Bubble[];
@@ -30,6 +33,8 @@ export type RepoState = {
 	merging: [string, string][];
 	waiting: string[];
 	placing: string[];
+	loose: LooseFork[];
+	settings: Settings;
 	agents: AgentRun[];
 	tasks: Task[];
 	memory: MemoryItem[];

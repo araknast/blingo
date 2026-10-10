@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { authRemote, forkRepo, headOf } from "./box";
+import { subscribePushes, unsubscribe } from "./events";
 import { MERGES, PATCH_SH, readSeries } from "./git-scripts";
 import { conflictKey, nearestNeighbour, placeFork, renameConflicts, type Basis, type Bubble } from "./bubbles";
 import { explanation, ready, renameOwed, shortTitle, type Owed, type PlanItem, type TaskState } from "./tasks";
@@ -15,7 +16,13 @@ const MAX_SERIES = 1_500_000;
 // (or merged in, for forks from before patch series); failed = its series didn't apply; conflict = a
 // pre-patch-series fork that didn't merge. `seq` orders applied series (see Basis).
 type Fork = { name: string; bubble: string; status: "rep" | "pending" | "merged" | "conflict" | "failed"; files: string; seq: number | null };
-type Watch = { fork: string; base: string; token: string; expires: number };
+// A notagent fork that can be pushed to and isn't placed yet. `base`: the commit it started from;
+// `head`: its head when last seen; `token`: the id of its live push token (NULL once revoked or
+// expired); `placing`: its placement is running; `sub`: its pushed-event subscription (NULL = polled);
+// `reason`: why its last placement failed.
+type Loose = { fork: string; base: string; head: string; token: string | null; expires: number; pushes: number; placing: number; sub: string | null; reason: string | null };
+export type Settings = { autoPlaceNotagents: boolean };
+const DEFAULTS: Settings = { autoPlaceNotagents: true };
 type AgentRun = { fork: string; prompt: string; started: number; status: string; finished: number | null; log: string | null };
 type TaskRow = TaskState & {
 	title: string;
@@ -45,8 +52,11 @@ export class RepoDO extends DurableObject<Env> {
 			CREATE TABLE IF NOT EXISTS conflict(k TEXT PRIMARY KEY);
 			CREATE TABLE IF NOT EXISTS locked(id TEXT PRIMARY KEY);
 			CREATE TABLE IF NOT EXISTS hidden(id TEXT PRIMARY KEY, since INTEGER NOT NULL); -- lease for bubble.visible = 0
+			-- watch/pushed: before loose forks; emptied into loose below
 			CREATE TABLE IF NOT EXISTS watch(fork TEXT PRIMARY KEY, base TEXT NOT NULL, token TEXT NOT NULL, expires INTEGER NOT NULL);
-			CREATE TABLE IF NOT EXISTS pushed(fork TEXT PRIMARY KEY); -- watched forks whose push arrived, not yet placed
+			CREATE TABLE IF NOT EXISTS pushed(fork TEXT PRIMARY KEY);
+			CREATE TABLE IF NOT EXISTS loose(fork TEXT PRIMARY KEY, base TEXT NOT NULL, head TEXT NOT NULL, token TEXT, expires INTEGER NOT NULL,
+				pushes INTEGER NOT NULL DEFAULT 0, placing INTEGER NOT NULL DEFAULT 0, sub TEXT, reason TEXT);
 			CREATE TABLE IF NOT EXISTS agent_run(fork TEXT PRIMARY KEY, prompt TEXT NOT NULL, started INTEGER NOT NULL,
 				status TEXT NOT NULL DEFAULT 'running', finished INTEGER, log TEXT);
 			-- bubble: where an open task without deps starts (NULL = any); once started, where it did.
@@ -74,6 +84,10 @@ export class RepoDO extends DurableObject<Env> {
 		this.addColumn("bubble", "epoch", "INTEGER NOT NULL DEFAULT 0");
 		this.addColumn("bubble", "ferge", "INTEGER NOT NULL DEFAULT 0");
 		this.addColumn("fork", "seq", "INTEGER");
+		// Watched notagent forks from before loose forks: pushed ones go on to placement.
+		this.sql.exec(`INSERT OR IGNORE INTO loose (fork, base, head, token, expires, pushes, placing)
+			SELECT w.fork, w.base, w.base, w.token, w.expires, p.fork IS NOT NULL, p.fork IS NOT NULL FROM watch w LEFT JOIN pushed p ON p.fork = w.fork;
+			DELETE FROM watch; DELETE FROM pushed;`);
 		// A fresh instance means any merge or ferge that hid bubbles died with the old one.
 		if (this.recoverHidden(true)) void ctx.blockConcurrencyWhile(() => this.kick());
 	}
@@ -234,8 +248,8 @@ export class RepoDO extends DurableObject<Env> {
 		return n > 0;
 	}
 
-	// A human takes an open notagent task: it gets a fork with a 1-hour push token. The task is back
-	// to open if nothing is pushed in time.
+	// A human takes an open notagent task: it gets a loose fork with a 1-hour push token. The task is
+	// back to open if nothing is pushed in time.
 	async takeTask(id: string) {
 		const t = this.task(id);
 		if (!t || t.kind !== "notagent" || t.status !== "open") return { error: "that task isn't an open notagent task" };
@@ -250,7 +264,15 @@ export class RepoDO extends DurableObject<Env> {
 			const base = await headOf(this.env, fork);
 			const { url: authed, remote, token } = await authRemote(this.env, fork, "write", 3600);
 			this.sql.exec("UPDATE task SET fork = ?, base_head = ? WHERE id = ?", fork, base, id);
-			this.sql.exec("INSERT INTO watch (fork, base, token, expires) VALUES (?, ?, ?, ?)", fork, base, token.id, Date.parse(token.expiresAt));
+			this.sql.exec(
+				"INSERT INTO loose (fork, base, head, token, expires, sub) VALUES (?, ?, ?, ?, ?, ?)",
+				fork,
+				base,
+				base,
+				token.id,
+				Date.parse(token.expiresAt),
+				await subscribePushes(this.env, fork),
+			);
 			await this.kick();
 			return { repo, task: id, fork, remote, token: token.plaintext, clone: `git clone ${authed} ${fork}`, push: `git push ${authed} HEAD:main` };
 		} catch (e) {
@@ -405,12 +427,15 @@ export class RepoDO extends DurableObject<Env> {
 			})),
 			conflicts: this.sql.exec<{ k: string }>("SELECT k FROM conflict").toArray().map((r) => r.k.split("|")),
 			merging: this.sql.exec<{ a: string; b: string }>("SELECT a, b FROM merging").toArray().map((r) => [r.a, r.b]),
-			// Notagent forks still waiting for their push, and pushed ones still being placed.
-			waiting: this.sql
-				.exec<{ fork: string }>("SELECT fork FROM watch WHERE fork NOT IN (SELECT fork FROM pushed)")
+			// Notagent forks waiting for their first push, pushed ones being placed, and pushed ones waiting
+			// to be placed (`loose`: auto-placement is off, or their placement failed).
+			waiting: this.sql.exec<{ fork: string }>("SELECT fork FROM loose WHERE pushes = 0").toArray().map((r) => r.fork),
+			placing: this.sql.exec<{ fork: string }>("SELECT fork FROM loose WHERE placing = 1").toArray().map((r) => r.fork),
+			loose: this.sql
+				.exec<Loose>("SELECT * FROM loose WHERE pushes > 0 AND placing = 0")
 				.toArray()
-				.map((r) => r.fork),
-			placing: this.sql.exec<{ fork: string }>("SELECT fork FROM pushed").toArray().map((r) => r.fork),
+				.map((l) => ({ fork: l.fork, pushes: l.pushes, pushable: l.token !== null, reason: l.reason })),
+			settings: this.settings(),
 			// Running first, then the most recent finished runs.
 			agents: this.sql
 				.exec<AgentRun>("SELECT * FROM agent_run ORDER BY status = 'running' DESC, started DESC LIMIT 50")
@@ -445,7 +470,7 @@ export class RepoDO extends DurableObject<Env> {
 		return this.sql.exec<{ diff: string | null }>("SELECT diff FROM fork WHERE name = ?", fork).toArray()[0]?.diff ?? null;
 	}
 
-	// Deletes the git repos this repository still owns (base, reps, conflicting, watched and pre-patch-
+	// Deletes the git repos this repository still owns (base, reps, conflicting, loose and pre-patch-
 	// series forks; placed forks are already gone), stops the bubbles' Boxes, then deletes every record.
 	// Already-missing repos are skipped.
 	async destroy(repo: string): Promise<string[]> {
@@ -453,7 +478,7 @@ export class RepoDO extends DurableObject<Env> {
 		const names = new Set([
 			repo,
 			...this.sql.exec<{ name: string }>("SELECT name FROM fork WHERE status IN ('rep', 'conflict') OR (status = 'pending' AND diff IS NULL)").toArray().map((r) => r.name),
-			...this.sql.exec<{ fork: string }>("SELECT fork FROM watch").toArray().map((r) => r.fork),
+			...this.sql.exec<{ fork: string }>("SELECT fork FROM loose").toArray().map((r) => r.fork),
 		]);
 		const deleted: string[] = [];
 		for (const n of names) {
@@ -464,9 +489,10 @@ export class RepoDO extends DurableObject<Env> {
 			}
 		}
 		await Promise.all(bubbles.map((id) => this.bubbleBox(id).stop()));
+		await Promise.all(this.sql.exec<{ sub: string | null }>("SELECT sub FROM loose").toArray().map((r) => unsubscribe(this.env, r.sub)));
 		await this.ctx.storage.deleteAlarm();
 		this.sql.exec(
-			"DELETE FROM bubble; DELETE FROM fork; DELETE FROM conflict; DELETE FROM locked; DELETE FROM hidden; DELETE FROM watch; DELETE FROM pushed; DELETE FROM agent_run; DELETE FROM task; DELETE FROM task_dep; DELETE FROM memory; DELETE FROM owed; DELETE FROM basis; DELETE FROM renamed; DELETE FROM merging;",
+			"DELETE FROM bubble; DELETE FROM fork; DELETE FROM conflict; DELETE FROM locked; DELETE FROM hidden; DELETE FROM loose; DELETE FROM agent_run; DELETE FROM task; DELETE FROM task_dep; DELETE FROM memory; DELETE FROM owed; DELETE FROM basis; DELETE FROM renamed; DELETE FROM merging;",
 		);
 		this.ctx.storage.kv.delete("repo");
 		this.ctx.storage.kv.delete("seq");
@@ -480,12 +506,11 @@ export class RepoDO extends DurableObject<Env> {
 	// queues and hides them before its first await.
 	async alarm(): Promise<void> {
 		this.recoverHidden();
-		const [placing, applying, merging] = await Promise.allSettled([this.pollWatches(), this.applyQueues(), this.mergeStep()]);
+		const [placing, applying, merging] = await Promise.allSettled([this.checkLoose(), this.applyQueues(), this.mergeStep()]);
 		await this.schedule(); // tasks whose deps just landed together in one bubble
 		const worked = [applying, merging].some((r) => r.status === "fulfilled" && r.value) || this.busy().size > 0;
-		const watching = this.sql.exec("SELECT 1 FROM watch").toArray().length > 0;
-		if (worked) await this.ctx.storage.setAlarm(Date.now() + 1_000);
-		else if (watching) await this.ctx.storage.setAlarm(Date.now() + POLL_MS);
+		const next = worked ? Date.now() + 1_000 : this.nextLooseCheck();
+		if (next !== null) await this.ctx.storage.setAlarm(next);
 		for (const r of [placing, applying, merging]) if (r.status === "rejected") throw r.reason;
 	}
 
@@ -493,45 +518,115 @@ export class RepoDO extends DurableObject<Env> {
 		if ((await this.ctx.storage.getAlarm()) === null) await this.ctx.storage.setAlarm(Date.now() + 1_000);
 	}
 
-	// ponytail: polling, because a per-fork Artifacts event subscription is more setup than a 5s poll.
-	// Pushes landing inside one poll window all count as "the" push.
-	private async pollWatches() {
-		const already = new Set(this.sql.exec<{ fork: string }>("SELECT fork FROM pushed").toArray().map((r) => r.fork));
+	// ---- loose forks (notagents) ----
+
+	settings(): Settings {
+		return { ...DEFAULTS, ...this.ctx.storage.kv.get<Partial<Settings>>("settings") };
+	}
+
+	setSettings(s: Partial<Settings>): Settings {
+		this.ctx.storage.kv.put("settings", { ...this.settings(), ...s });
+		return this.settings();
+	}
+
+	// When the alarm must look at loose forks again: a fork being placed now; a fork without a push
+	// subscription every POLL_MS; else the next push token to expire. null = nothing to look at.
+	private nextLooseCheck(): number | null {
+		const r = this.sql
+			.exec<{ placing: number; polled: number; expires: number | null }>(
+				"SELECT MAX(placing) AS placing, MAX(token IS NOT NULL AND sub IS NULL) AS polled, MIN(CASE WHEN token IS NOT NULL THEN expires END) AS expires FROM loose",
+			)
+			.one();
+		if (r.placing) return Date.now() + 1_000;
+		if (r.polled) return Date.now() + POLL_MS;
+		return r.expires === null ? null : Math.max(r.expires, Date.now()) + 1_000;
+	}
+
+	// A push to loose fork `fork` reached `head` (from its pushed event, or seen by checkLoose). With
+	// auto-placement on, its token is revoked ("shuts down the git server") and it is placed;
+	// otherwise it stays loose and can be pushed to again until someone asks for placement.
+	async onPushed(fork: string, head: string) {
+		const l = this.sql.exec<Loose>("SELECT * FROM loose WHERE fork = ?", fork).toArray()[0];
+		if (!l || l.placing || head === l.head) return;
+		this.sql.exec("UPDATE loose SET head = ?, pushes = pushes + 1, reason = NULL WHERE fork = ?", head, fork);
+		if (this.settings().autoPlaceNotagents) await this.startPlacing(fork);
+	}
+
+	// Someone asks for a loose fork to be placed (it must have been pushed to).
+	async requestPlacement(fork: string): Promise<{ ok: true } | { error: string }> {
+		const l = this.sql.exec<Loose>("SELECT * FROM loose WHERE fork = ?", fork).toArray()[0];
+		if (!l) return { error: "no such loose fork" };
+		if (l.placing) return { error: "it is already being placed" };
+		if (!l.pushes) return { error: "nothing has been pushed to it yet" };
+		await this.startPlacing(fork);
+		return { ok: true };
+	}
+
+	private async startPlacing(fork: string) {
+		const l = this.sql.exec<Loose>("SELECT * FROM loose WHERE fork = ?", fork).toArray()[0];
+		this.sql.exec("UPDATE loose SET placing = 1, token = NULL WHERE fork = ?", fork);
+		if (l?.token) {
+			using repo = await this.env.ARTIFACTS.get(fork);
+			await repo.revokeToken(l.token).catch(() => false);
+		}
+		await this.kick();
+	}
+
+	// A fresh 1-hour push token for a loose fork that isn't being placed (its old one expired, or it
+	// needs another push after a failed placement).
+	async pushToken(fork: string) {
+		const l = this.sql.exec<Loose>("SELECT * FROM loose WHERE fork = ? AND placing = 0", fork).toArray()[0];
+		if (!l) return { error: "no such loose fork" };
+		const { url: authed, remote, token } = await authRemote(this.env, fork, "write", 3600);
+		this.sql.exec("UPDATE loose SET token = ?, expires = ? WHERE fork = ?", token.id, Date.parse(token.expiresAt), fork);
+		await this.kick();
+		return { repo: this.ctx.storage.kv.get<string>("repo"), fork, remote, token: token.plaintext, clone: `git clone ${authed} ${fork}`, push: `git push ${authed} HEAD:main` };
+	}
+
+	// Loose forks with a live token: polled ones are checked for a push; any whose token expired is
+	// checked once (a push may have come before its subscription was live). An expired fork with no
+	// push is deleted and its task reopened; one with pushes stays loose. Then every fork marked
+	// placing is placed, in parallel: the repo's git Box turns it into its patch series and place()
+	// queues it. A failed placement leaves it loose with the reason; infra errors are retried.
+	// ponytail: without CF_API_TOKEN, polling: pushes inside one 5 s window count as one.
+	private async checkLoose() {
+		const now = Date.now();
 		await Promise.all(
-			this.sql.exec<Watch>("SELECT * FROM watch").toArray().filter((w) => !already.has(w.fork)).map(async (w) => {
-				using repo = await this.env.ARTIFACTS.get(w.fork);
-				const head = (await repo.log({ limit: 1 }))[0]?.hash ?? "";
-				if (head !== w.base) {
-					await repo.revokeToken(w.token); // "shuts down the git server"
-					this.sql.exec("INSERT OR IGNORE INTO pushed (fork) VALUES (?)", w.fork);
-				} else if (Date.now() > w.expires) {
-					this.sql.exec("DELETE FROM watch WHERE fork = ?", w.fork);
-					this.sql.exec("DELETE FROM basis WHERE fork = ?", w.fork);
+			this.sql
+				.exec<Loose>("SELECT * FROM loose WHERE placing = 0 AND token IS NOT NULL AND (sub IS NULL OR expires < ?)", now)
+				.toArray()
+				.map(async (l) => {
+					const head = await headOf(this.env, l.fork);
+					if (head !== l.head) return this.onPushed(l.fork, head);
+					if (now < l.expires) return;
+					if (l.pushes) return void this.sql.exec("UPDATE loose SET token = NULL WHERE fork = ?", l.fork);
 					// Nothing was pushed, so no work is lost: the task can be taken again.
-					this.sql.exec("UPDATE task SET status = 'open', fork = NULL, base_head = NULL WHERE fork = ? AND status = 'in-progress'", w.fork);
-					await this.env.ARTIFACTS.delete(w.fork);
-				}
-			}),
+					this.sql.exec("DELETE FROM loose WHERE fork = ?", l.fork);
+					this.sql.exec("DELETE FROM basis WHERE fork = ?", l.fork);
+					this.sql.exec("UPDATE task SET status = 'open', fork = NULL, base_head = NULL WHERE fork = ? AND status = 'in-progress'", l.fork);
+					await unsubscribe(this.env, l.sub);
+					await this.env.ARTIFACTS.delete(l.fork);
+				}),
 		);
-		// Place every pushed fork at once: the repo's git Box turns each into its patch series, and
-		// place() queues it. A fork's watch is kept until that succeeds, so the alarm retries failures.
-		const forks = this.sql.exec<{ fork: string; base: string }>("SELECT p.fork, w.base FROM pushed p JOIN watch w ON w.fork = p.fork").toArray();
 		const results = await Promise.allSettled(
-			forks.map(async ({ fork, base }) => {
-				const { url } = await authRemote(this.env, fork, "read");
-				const p = await this.box().sh(PATCH_SH, [url, base]);
-				let placed: Awaited<ReturnType<RepoDO["place"]>>;
-				if (p.exitCode === MERGES) placed = { error: "its history has merge commits; rebase it onto where it started" };
-				else if (p.exitCode !== 0) throw new Error(`patch series of ${fork} (${p.exitCode}): ${p.stderr}`);
-				else placed = await this.place(fork, readSeries(p.stdout).files, readSeries(p.stdout).mbox);
-				if ("error" in placed) {
-					this.sql.exec("UPDATE task SET status = 'failed', explanation = ?, finished = ? WHERE fork = ? AND status = 'in-progress'", `Not placed: ${placed.error}`, Date.now(), fork);
-					this.sql.exec("DELETE FROM basis WHERE fork = ?", fork);
-					await this.env.ARTIFACTS.delete(fork).catch(() => false);
-				}
-				this.sql.exec("DELETE FROM watch WHERE fork = ?", fork);
-				this.sql.exec("DELETE FROM pushed WHERE fork = ?", fork);
-			}),
+			this.sql
+				.exec<Loose>("SELECT * FROM loose WHERE placing = 1")
+				.toArray()
+				.map(async (l) => {
+					const { url } = await authRemote(this.env, l.fork, "read");
+					const p = await this.box().sh(PATCH_SH, [url, l.base]);
+					if (p.exitCode !== 0 && p.exitCode !== MERGES) throw new Error(`patch series of ${l.fork} (${p.exitCode}): ${p.stderr}`);
+					const placed =
+						p.exitCode === MERGES
+							? { error: "its history has merge commits; rebase it onto where it started" }
+							: await this.place(l.fork, readSeries(p.stdout).files, readSeries(p.stdout).mbox);
+					if ("error" in placed) {
+						this.sql.exec("UPDATE loose SET placing = 0, reason = ? WHERE fork = ?", placed.error, l.fork);
+						return;
+					}
+					this.sql.exec("DELETE FROM loose WHERE fork = ?", l.fork);
+					await unsubscribe(this.env, l.sub);
+				}),
 		);
 		const failed = results.find((r) => r.status === "rejected");
 		if (failed) throw (failed as PromiseRejectedResult).reason;

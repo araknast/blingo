@@ -38,8 +38,7 @@ browser ──► yorkle Worker ──(service binding)──► blingo Worker �
 | `conflict(k)` | `"a|b"` bubble pairs whose merge failed; never retried (except by a ferge). When a bubble is absorbed, its pairs move to the bubble that absorbed it |
 | `locked(id)` | locked bubbles: placeable, but excluded from neighbour merges |
 | `hidden(id, since)` | lease for a bubble hidden by a running merge or ferge (see Merge loop) |
-| `watch(fork, base, token, expires)` | notagent forks waiting for their push, or pushed and not yet placed |
-| `pushed(fork)` | watched forks whose push arrived; removed with the watch once placed |
+| `loose(fork, base, head, token, expires, pushes, placing, sub, reason)` | notagent forks not placed yet: `base` = where it started, `head` = last seen, `token` = live push token id (NULL once revoked or expired), `placing`, `sub` = its pushed-event subscription (NULL = polled), `reason` = why its last placement failed. Replaces `watch`/`pushed` (emptied into it on startup) |
 | `agent_run(fork, prompt, started, status, finished, log)` | agent and superagent runs (`-s-` ids), kept after they finish |
 | `task(id, title, description, kind, status, bubble, fork, base_head, explanation, superagent, created, finished)` | tasks: a short `title` (≤ 60 chars); `kind` agent / notagent; `status` open / in-progress / completed / failed; `bubble` = where it should start, then where it did. Listed in `rowid` (creation) order. `title` was added in place: objects from before it get the column and titles from their descriptions on startup |
 | `task_dep(task, dep)` | task dependencies |
@@ -139,13 +138,20 @@ outside the clone. The Box alarm reads at most 10 lines of ≤ 500 chars after a
 there's no new egress and no API access from the sandbox. Humans manage memory through
 `POST /repos/:r/memory {text}` and `DELETE /repos/:r/memory/:id`.
 
-**Notagent.** `POST /notagents` forks, mints a 1-hour write token, and registers a `watch`. The
-alarm checks each watched fork's head every 5 s (`repo.log`, all in parallel). On change it revokes
-the token and marks the fork `pushed`. Then, for every pushed fork in parallel, the repository's git
-Box (`git-<id>`) clones it and takes its patch series from `base_head` (`PATCH_SH`), and `place()`
-queues it. The watch is kept until that succeeds, so failures are retried. A fork whose history has
-merge commits (which `format-patch` can't carry) isn't placed: its task fails with that reason. Unpushed forks are deleted when the token
-expires. The API reports `waiting` (no push yet) and `placing` (pushed, not yet placed) separately.
+**Notagent: loose forks.** `POST /notagents` (or taking a human task) forks, mints a 1-hour write
+token, and records a **loose** fork: pushed to, or waiting to be, and not placed. A push is noticed
+from its Artifacts `pushed` event (`src/events.ts`: the `blingo-events` queue → `RepoDO.onPushed`)
+when the fork has a subscription, else by the alarm reading its head every 5 s. Subscriptions are per
+repo only, need the optional `CF_API_TOKEN` secret, and take up to about a minute to go live, so
+each fork's head is also read once when its token expires. With the repo setting
+`autoPlaceNotagents` (default on), a push revokes the token and starts placement. With it off, the
+fork stays loose and takes more pushes (counted) until `POST /repos/:r/forks/:fork/place`. Placing:
+the repository's git Box (`git-<id>`) clones the fork and takes its patch series from where it
+started (`PATCH_SH`), and `place()` queues it, all forks in parallel; infra failures are retried. A
+placement that fails (merge commits in its history, which `format-patch` can't carry; a ferge fix
+that no longer fits; too big) leaves the fork loose with the reason. `POST …/forks/:fork/token` mints
+a fresh push token for another try. A fork never pushed to is deleted, and its task reopened, when its
+token expires. The API reports `waiting` (no push yet), `placing` and `loose` (pushed, not placed).
 
 **Agent.** `RepoDO.schedule` forks and calls `Box.startAgent`: clone (recording the commit it
 starts from), `claude --print …`, commit, push to its own fork, all detached in the container. The
@@ -211,8 +217,8 @@ Marked with `ponytail:` comments in the code.
   commits, so a notagent fork with merges in its history isn't placed.
 - Placement is conservative where a fork's basis bubble has since absorbed others: the basis's
   current files stand in for what they were.
-- Pushes are found by polling, not Artifacts events; several pushes within one 5 s window all
-  count as the one push.
+- Without `CF_API_TOKEN`, loose forks are polled (5 s); several pushes within one window count as
+  one. With it, one event subscription per loose fork.
 - Bubble rules are by file path only; semantic conflicts surface at merge or not at all.
 - Agent runs are listed per repository; there is no cross-repository list.
 - A dependent task waits indefinitely while its dependencies sit in conflicting bubbles (until a

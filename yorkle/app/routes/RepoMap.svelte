@@ -113,6 +113,34 @@
 		}
 	}
 
+	// ---- Loose forks: pushed notagent forks waiting to be placed ----
+	async function placeLoose(fork: string) {
+		try {
+			await api("POST", `/repos/${repo}/forks/${fork}/place`);
+			toast(`Placing ${short(fork)}`);
+			refresh();
+		} catch (e) {
+			toastError(e);
+		}
+	}
+	async function pushAgain(fork: string) {
+		try {
+			pushed = await api("POST", `/repos/${repo}/forks/${fork}/token`);
+			fixedBase = null;
+			pushOpen = true;
+		} catch (e) {
+			toastError(e);
+		}
+	}
+	async function setAutoPlace(on: boolean) {
+		try {
+			await api("PUT", `/repos/${repo}/settings`, { autoPlaceNotagents: on });
+			refresh();
+		} catch (e) {
+			toastError(e);
+		}
+	}
+
 	// ---- Memory ----
 	let note = $state("");
 	async function addNote(e: SubmitEvent) {
@@ -258,6 +286,33 @@
 						<ul class="rows">
 							{#each data.waiting as f (f)}<li><span class="mono">{short(f)}</span></li>{/each}
 						</ul>
+					</section>
+				{/if}
+
+				{#if data?.loose.length}
+					<section>
+						<h2>Pushed, not placed <span class="count">{data.loose.length}</span></h2>
+						<p class="muted small">Human forks wait here until you place them. Push to one again first if its placement failed.</p>
+						<ul class="rows">
+							{#each data.loose as l (l.fork)}
+								<li>
+									<span>
+										<span class="mono">{short(l.fork)}</span>
+										<span class="muted small">{plural(l.pushes, "push", "pushes")}{l.reason ? `, not placed: ${l.reason}` : ""}</span>
+									</span>
+									<span class="row">
+										<button onclick={() => pushAgain(l.fork)}>Push</button>
+										<button onclick={() => placeLoose(l.fork)}>Place</button>
+									</span>
+								</li>
+							{/each}
+						</ul>
+					</section>
+				{/if}
+
+				{#if data}
+					<section>
+						<label class="choice"><input type="checkbox" checked={data.settings.autoPlaceNotagents} onchange={(e) => setAutoPlace(e.currentTarget.checked)} /> Place human forks as soon as they're pushed</label>
 					</section>
 				{/if}
 
@@ -418,6 +473,8 @@
 	.from { font-size: 0.875rem; color: var(--ink-2); }
 	.from .mono { color: var(--ink); }
 	.row { display: flex; gap: 0.5rem; }
+	.choice { display: flex; gap: 0.5rem; align-items: center; font-size: 0.875rem; }
+	.choice input { width: auto; }
 	.delete { background: var(--conflict); border-color: var(--conflict); color: #fff; }
 	.missing { padding: 2rem clamp(1rem, 3vw, 2.5rem); }
 	.missing p { margin-top: 0.75rem; color: var(--ink-2); }

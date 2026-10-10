@@ -25,7 +25,11 @@ npm workspaces: run `npm install` once at the root.
    openssl rand -hex 32                     # your API token; keep it
    npx wrangler secret put BLINGO_TOKEN
    npx wrangler secret put ANTHROPIC_API_KEY
+   npx wrangler secret put CF_API_TOKEN       # optional: push events instead of polling (below)
    ```
+   `CF_API_TOKEN` is an API token with Event Subscriptions edit on the account. With it, each notagent
+   fork subscribes the `blingo-events` queue (`npx wrangler queues create blingo-events`; its id is
+   `EVENTS_QUEUE_ID` in `backend/wrangler.jsonc`) to its pushes.
 4. Verification email: onboard the sender domain to Cloudflare Email Sending
    (`npx wrangler email sending enable blingo.breakdance.cc`). The sender (`EMAIL_FROM`) and the
    admin's username (`ADMIN_USERNAME`) are vars in `backend/wrangler.jsonc`.
@@ -79,9 +83,12 @@ created before users existed have no owner, so only the admin can reach them. An
 | `GET /me` | `{username, admin, repos}` |
 | `POST /invites` → `{code}` | Admin only. A single-use invite code |
 | `POST /agents {prompt, repo?, bubble?}` | Fork and run Claude Code on it. No `repo` → new repository; no `bubble` → any bubble |
-| `POST /notagents {repo?, bubble?}` | Fork and return a one-push git remote; the push gets placed |
+| `POST /notagents {repo?, bubble?}` | Fork and return a git remote with a 1-hour push token; a push gets placed (or waits as a loose fork when `autoPlaceNotagents` is off) |
 | `GET /agents/:fork` | One agent's sandbox status and log tail |
-| `GET /repos/:repo` | Bubbles, members, conflicts, notagents waiting for a push (`waiting`) or pushed and being placed (`placing`), agent runs |
+| `GET /repos/:repo` | Bubbles, members, conflicts, bubbles merging, notagents waiting for a push (`waiting`), being placed (`placing`) or pushed and not placed (`loose`), settings, agent runs |
+| `GET /repos/:repo/settings` / `PUT … {autoPlaceNotagents}` | Repository settings |
+| `POST /repos/:repo/forks/:fork/place` | Place a loose notagent fork |
+| `POST /repos/:repo/forks/:fork/token` | A fresh 1-hour push token for a loose fork |
 | `GET /repos/:repo/:fork` | Kept diff of a merged fork |
 | `GET /repos/:repo/:fork?path=…` | A file as that fork sees it |
 | `DELETE /repos/:repo` | Delete the repository's git repos and all its records |

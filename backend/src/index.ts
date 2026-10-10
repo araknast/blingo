@@ -1,5 +1,6 @@
 import { invalidSignup, type Signup } from "./auth";
 import { authRemote } from "./box";
+import { pushOf } from "./events";
 import { diffTrees, resolvePath } from "./git";
 import { shortTitle } from "./tasks";
 
@@ -47,6 +48,14 @@ export default {
 				return Response.json({ error: "storage busy, retry" }, { status: 503, headers: { "retry-after": "2" } });
 			}
 			throw e;
+		}
+	},
+	// Artifacts pushed events (src/events.ts): a push to a loose fork.
+	async queue(batch, env) {
+		for (const m of batch.messages) {
+			const p = pushOf(m.body);
+			if (p) await env.REPO.getByName(p.repo).onPushed(p.fork, p.head);
+			m.ack();
 		}
 	},
 } satisfies ExportedHandler<Env>;
@@ -247,6 +256,22 @@ async function handle(request: Request, env: Env): Promise<Response> {
 		return (await env.REPO.getByName(b).deleteMemory(d))
 			? Response.json({ ok: true })
 			: Response.json({ error: "no such memory item" }, { status: 404 });
+	}
+	if (a === "repos" && b && c === "settings" && !d) {
+		const repo = env.REPO.getByName(b);
+		if (request.method === "GET") return Response.json(await repo.settings());
+		if (request.method !== "PUT") return Response.json({ error: "not found" }, { status: 404 });
+		const body = (await request.json()) as { autoPlaceNotagents?: unknown };
+		if (body.autoPlaceNotagents !== undefined && typeof body.autoPlaceNotagents !== "boolean") {
+			return Response.json({ error: "autoPlaceNotagents must be true or false" }, { status: 400 });
+		}
+		return Response.json(await repo.setSettings(body.autoPlaceNotagents === undefined ? {} : { autoPlaceNotagents: body.autoPlaceNotagents }));
+	}
+	// A loose (pushed, unplaced) notagent fork: ask for its placement, or get a new push token.
+	if (request.method === "POST" && a === "repos" && b && c === "forks" && d?.startsWith(`${b}-f-`) && (e === "place" || e === "token")) {
+		const repo = env.REPO.getByName(b);
+		const r = e === "place" ? await repo.requestPlacement(d) : await repo.pushToken(d);
+		return "error" in r ? Response.json(r, { status: 409 }) : Response.json(r, { status: e === "place" ? 202 : 201 });
 	}
 	if (request.method === "POST" && a === "repos" && b && c === "ferge") {
 		const body = (await request.json()) as { a: string; b: string };

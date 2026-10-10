@@ -317,7 +317,7 @@
 
 	// Dock: forks not in a bubble yet.
 	const running = $derived(data?.agents.filter((a) => a.status === "running") ?? []);
-	const dockCount = $derived(running.length + (data?.waiting.length ?? 0) + (data?.placing.length ?? 0));
+	const dockCount = $derived(running.length + (data?.waiting.length ?? 0) + (data?.placing.length ?? 0) + (data?.loose.length ?? 0));
 
 	const hl = (r: number) => {
 		// Specular glint: a short arc on the upper left of the film.
@@ -500,6 +500,14 @@
 					<span class="label">Waiting for a push</span>
 					{#each data.waiting as f (f)}
 						<span class="chip" data-fork={f}><i class="dot waiting"></i><span class="mono">{short(f)}</span></span>
+					{/each}
+				</div>
+			{/if}
+			{#if data?.loose.length}
+				<div class="group">
+					<span class="label">Pushed, not placed</span>
+					{#each data.loose as l (l.fork)}
+						<span class="chip" data-fork={l.fork} title={l.reason ?? plural(l.pushes, "push", "pushes")}><i class="dot waiting"></i><span class="mono">{short(l.fork)}</span></span>
 					{/each}
 				</div>
 			{/if}
