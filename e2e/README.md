@@ -14,6 +14,7 @@ test delete them when they finish.
 | `ci.sh` | deployed | CI and review: a notagent's CI fails then passes, placing early is refused, manual review gates placement, a fixer agent fixes an agent's failed CI, the push limit hands the fork to a person, automatic review approves one change and rejects another | ~3 Claude runs, 2 reviews, ~15 min |
 | `skills.sh` | deployed | skills upload; an agent started with `skills: ["alpha"]` has only that skill in its container and one with `[]` has none | 2 agent runs (OpenRouter, `E2E_OPENROUTER_KEY`), ~5 min |
 | `deploy.sh` | deployed | deployments: success logs the deployed commit, a failing command is marked failed, a duplicate run is refused, a credential header is added outside the sandbox | ~3 min |
+| `autoferge.sh` | deployed | the setting `autoFerge`: two conflicting bubbles stay put while it's off, then the merge loop ferges them by itself (a locked ferge bubble with the markers; the rest reaches A) | ~3 min, no model cost |
 | `models.sh` | deployed | a repository's own API key (never returned), models and OpenRouter provider, and agent transcripts, using invalid keys so runs fail at their first API call | ~4 min, no model cost |
 | `names.sh` | deployed | repository and bubble names, the ferge bubble's name and flag, a ferge agent's task, task approval and editing | ~4 min |
 | `ferge-fix.sh` | deployed | conflict → ferge → fix forked from the ferge bubble → unlock; prints bubbles after each step | ~3 min |
