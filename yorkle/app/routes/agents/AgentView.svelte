@@ -1,7 +1,7 @@
 <script lang="ts">
 	// One agent run: its Claude Code transcript (stream-json events from GET /agents/:id/transcript),
 	// polled while it runs. Thinking, tool calls and results fold away; text and the result stay open.
-	import { onDestroy } from "svelte";
+	import { onDestroy, tick as nextTick } from "svelte";
 	import Markdown from "../../lib/Markdown.svelte";
 	import { api } from "../../lib/session.svelte";
 	import type { AgentRun } from "../../lib/types";
@@ -14,11 +14,20 @@
 	let events = $state<Event[]>([]);
 	let status = $state("none");
 	let loaded = $state(false);
+	let cursor = 0;
 	let stop = () => {};
 	stop = poll(async () => {
 		try {
-			const t = await api<{ status: string; events: Event[] }>("GET", `/agents/${id}/transcript`);
-			events = t.events;
+			const t = await api<{ status: string; events: Event[]; next: number }>("GET", `/agents/${id}/transcript?from=${cursor}`);
+			if (status === "running" && t.status !== "running") {
+				// The run just ended: replace the live copy with the stored one.
+				const full = await api<{ events: Event[]; next: number }>("GET", `/agents/${id}/transcript?from=0`);
+				events = full.events;
+				cursor = full.next;
+			} else {
+				events = [...events, ...t.events];
+				cursor = t.next;
+			}
 			status = t.status;
 			loaded = true;
 			if (status !== "running") stop();
@@ -40,6 +49,15 @@
 		return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
 	});
 	const live = $derived((run?.status ?? status) === "running");
+
+	// One scrollable box; follow new output unless the reader has scrolled up.
+	let box = $state<HTMLElement>();
+	let pinned = true;
+	const onscroll = () => (pinned = !box || box.scrollHeight - box.scrollTop - box.clientHeight < 24);
+	$effect(() => {
+		events.length;
+		if (live && pinned) nextTick().then(() => box?.scrollTo({ top: box.scrollHeight }));
+	});
 
 	const init = $derived(events.find((e) => e.type === "system" && e.subtype === "init"));
 	const result = $derived(events.findLast((e) => e.type === "result"));
@@ -73,11 +91,17 @@
 	</p>
 </header>
 
+{#snippet spin()}
+	<p class="thinking"><span class="glyph">{glyphs[tick % glyphs.length]}</span> {verbs[Math.floor(tick / 40) % verbs.length]}… <span class="muted">({elapsed})</span></p>
+{/snippet}
+
 {#if !loaded}
 	<p class="muted">Loading…</p>
 {:else if !events.length}
 	<p class="muted">{status === "running" ? "The agent is starting. Its transcript shows up here as it works." : "No transcript was kept for this run."}</p>
+	{#if live}{@render spin()}{/if}
 {:else}
+	<div class="box" bind:this={box} {onscroll}>
 	<ol class="events">
 		{#each events as e, i (i)}
 			{#if e.type === "assistant"}
@@ -110,10 +134,10 @@
 			{/if}
 		{/each}
 	</ol>
-{/if}
-
-{#if live}
-	<p class="thinking"><span class="glyph">{glyphs[tick % glyphs.length]}</span> {verbs[Math.floor(tick / 40) % verbs.length]}… <span class="muted">({elapsed})</span></p>
+	{#if live}
+		{@render spin()}
+	{/if}
+	</div>
 {/if}
 
 {#if run?.log}
@@ -126,6 +150,7 @@
 	.kind { font-size: 0.8125rem; text-transform: uppercase; letter-spacing: 0.04em; }
 	.head h1 { margin: 0.2rem 0 0.4rem; overflow-wrap: anywhere; }
 	.head .dot { vertical-align: 0.05em; margin-right: 0.2rem; }
+	.box { max-height: calc(100vh - 15rem); min-height: 10rem; overflow: auto; border: 1px solid var(--line); border-radius: var(--r-md); padding: 0.75rem; background: var(--paper); }
 	.events { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; }
 	.events li { min-width: 0; }
 	.text :global(.md) { padding: 0.25rem 0; }
@@ -133,7 +158,7 @@
 	summary { cursor: pointer; padding: 0.45rem 0.75rem; font-size: 0.875rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 	summary.error { color: var(--conflict); }
 	.tool { font-family: var(--mono); font-weight: 600; }
-	pre { margin: 0; padding: 0.6rem 0.75rem; border-top: 1px solid var(--line-2); max-height: 24rem; overflow: auto; white-space: pre-wrap; font-size: 0.75rem; }
+	pre { margin: 0; padding: 0.6rem 0.75rem; border-top: 1px solid var(--line-2); white-space: pre-wrap; font-size: 0.75rem; }
 	.thought { font-style: italic; color: var(--ink-2); }
 	.pad { padding: 0.5rem 0.75rem; }
 	.result { border-left: 3px solid var(--merged); padding-left: 0.9rem; margin-top: 0.5rem; }

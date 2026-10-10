@@ -212,7 +212,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
 		return Response.json({ error: "not found" }, { status: 404 });
 	}
 
-	if (request.method === "GET" && a === "agents" && b && c === "transcript" && !d) return Response.json(await env.BOX.getByName(b).transcript());
+	if (request.method === "GET" && a === "agents" && b && c === "transcript" && !d) return Response.json(await env.BOX.getByName(b).transcript(Number(url.searchParams.get("from"))));
 	if (request.method === "GET" && a === "agents" && b && !c) return Response.json(await env.BOX.getByName(b).status());
 	if (request.method === "GET" && a === "repos" && b && !c) return Response.json(await env.REPO.getByName(b).list());
 	if (request.method === "DELETE" && a === "repos" && b && !c) {

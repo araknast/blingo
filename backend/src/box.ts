@@ -2,6 +2,7 @@ import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { APPLY_SH, CONFLICT, ENSURE_REP, FERGE_SH, MEMORY_HOOK_SH, MERGES, MERGE_SH, NO_CONFLICT, PATCH_SH, PUSH_SH, REP, readSeries } from "./git-scripts";
 import { ciHostAllowed, type Provider } from "./settings";
 import { validatePlan } from "./tasks";
+import { completeLines } from "./transcript";
 
 // Containers re-sign intercepted HTTPS with this CA; git/node/curl must trust it.
 const CA = "/etc/cloudflare/certs/cloudflare-containers-ca.crt";
@@ -307,14 +308,19 @@ export class Box extends DurableObject<Env> {
 
 	// The agent's Claude Code run as stream-json events (see the Agents page): live from the container
 	// while it runs, else as stored when it finished.
-	async transcript(): Promise<{ status: string; events: unknown[] }> {
+	// `from` is a line cursor: only events after the first `from` lines are returned, with the cursor to
+	// pass next time. (Stored transcripts drop blank lines, so the client refetches from 0 once a run ends.)
+	async transcript(from = 0): Promise<{ status: string; events: unknown[]; next: number }> {
 		this.transcriptTable();
+		from = Math.max(0, Math.floor(from) || 0);
 		const status = this.ctx.storage.kv.get<string>("status") ?? "none";
-		const lines =
-			this.ctx.storage.kv.get("job") && this.ctx.container?.running
-				? (await this.sh(`cat ${TASK}/transcript.jsonl 2>/dev/null || true`)).stdout.split("\n")
-				: this.sql.exec<{ line: string }>("SELECT line FROM transcript ORDER BY seq").toArray().map((r) => r.line);
-		return { status, events: lines.filter(Boolean).map(parseEvent) };
+		if (this.ctx.storage.kv.get("job") && this.ctx.container?.running) {
+			const raw = (await this.sh(`tail -n +${from + 1} ${TASK}/transcript.jsonl 2>/dev/null | head -c 8000000 || true`)).stdout;
+			const { lines, count } = completeLines(raw);
+			return { status, events: lines.map(parseEvent), next: from + count };
+		}
+		const rows = this.sql.exec<{ line: string }>("SELECT line FROM transcript WHERE seq >= ? ORDER BY seq", from).toArray();
+		return { status, events: rows.map((r) => parseEvent(r.line)), next: from + rows.length };
 	}
 
 	// Stores the finished run's transcript; returns its final result text (or error) for the run's log.
