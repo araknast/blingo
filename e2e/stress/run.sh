@@ -71,7 +71,10 @@ done
 api $U/repos/$(cat repo) > final.json
 R=$(python3 -c "import json;d=json.load(open('final.json'));print(d['bubbles'][0]['id'] if len(d['bubbles'])==1 else '')")
 [ -z "$R" ] && { ts "FAIL: expected one bubble"; summary; exit 1; }
-tok=$(cd "$ROOT/backend" && npx wrangler artifacts repos issue-token $R --namespace blingo --scope read --json 2>/dev/null | python3 -c "import json,sys;print(json.load(sys.stdin)['plaintext'].split('?')[0])")
+for i in 1 2 3 4 5; do  # wrangler sometimes prints no JSON; try again
+  tok=$(cd "$ROOT/backend" && npx wrangler artifacts repos issue-token $R --namespace blingo --scope read --json 2>/dev/null | python3 -c "import json,sys;print(json.load(sys.stdin)['plaintext'].split('?')[0])" 2>/dev/null) && break
+  sleep 10
+done
 host=$(cmd=$(j na/base.json push); echo "$cmd" | sed -E 's#.*@([^/]+)/.*#\1#')
 rm -rf final; git clone -q "https://x:$tok@$host/git/blingo/$R.git" final
 bad=0
