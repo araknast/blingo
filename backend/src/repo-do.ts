@@ -317,6 +317,12 @@ export class RepoDO extends DurableObject<Env> {
 		return n > 0;
 	}
 
+	// Undoes a task added for a request that then failed (its notagent fork couldn't be made), so a
+	// retried request doesn't leave an orphan open task behind. Only while nothing has started it.
+	dropTask(id: string) {
+		this.sql.exec("DELETE FROM task WHERE id = ? AND status = 'open' AND fork IS NULL AND NOT EXISTS (SELECT 1 FROM task_dep WHERE dep = ?)", id, id);
+	}
+
 	async retryTask(id: string): Promise<boolean> {
 		const n = this.sql.exec("UPDATE task SET status = 'open', fork = NULL, finished = NULL WHERE id = ? AND status = 'failed'", id).rowsWritten;
 		if (n) await this.schedule();

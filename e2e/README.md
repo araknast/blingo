@@ -15,7 +15,8 @@ test delete them when they finish.
 | `models.sh` | deployed | a repository's own API key (never returned), models and OpenRouter provider, and agent transcripts, using invalid keys so runs fail at their first API call | ~4 min, no model cost |
 | `names.sh` | deployed | repository and bubble names, the ferge bubble's name and flag, a ferge agent's task, task approval and editing | ~4 min |
 | `ferge-fix.sh` | deployed | conflict → ferge → fix forked from the ferge bubble → unlock; prints bubbles after each step | ~3 min |
-| `stress/run.sh` | deployed | 40-file repo, 60 notagents pushed 20 at a time, ferge and fix each conflict, everything ends in one bubble | ~30 min; leaves the repo |
+| `stress/run.sh` | deployed | 40-file repo, 60 notagents pushed 20 at a time, ferge and fix each conflict, everything ends in one bubble and every task completed (sizes are env vars: `FILES`, `N_NEW`, `N_EDIT`, `N_PAIRS`, `N_CONF`, `P`, `BATCH`) | ~30 min; leaves the repo |
+| `stress/super.sh` | deployed | `run.sh` at scale: 2001 notagents in batches of 200, ≥ 100 clean bubble merges, 1 ferge | hours; leaves the repo |
 | `stress/rerun.sh` | deployed | `run.sh` with `wrangler tail` of both Workers saved to the work dir | as above |
 
 ```sh
