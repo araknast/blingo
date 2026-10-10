@@ -39,7 +39,7 @@
 		}
 	}
 	// Notes agents leave are authored by their run's id (a fork or superagent run).
-	const author = (a: string) => (a.includes("-f-") || a.includes("-s-") ? "an agent" : a);
+	const isRun = (a: string) => a.includes("-f-") || a.includes("-s-");
 </script>
 
 <Shell
@@ -61,7 +61,7 @@
 				{#each shown as m (m.id)}
 					<li>
 						<p>{m.text}</p>
-						<span class="muted small">{author(m.author)}, {ago(m.created)}</span>
+						<span class="muted small">{#if isRun(m.author)}<a class="mono" href="/repos/{repo}/agents/{m.author}">{m.author.split(/-[fsc]-/).at(-1)}</a>{:else}{m.author}{/if}, {ago(m.created)}</span>
 						<button class="quiet" aria-label="Delete note" onclick={() => remove(m.id)}>Delete</button>
 					</li>
 				{/each}
