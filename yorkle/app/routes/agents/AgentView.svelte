@@ -25,8 +25,21 @@
 		} catch {
 			loaded = true;
 		}
-	}, 3000);
+	}, 1500);
 	onDestroy(() => stop());
+
+	// Claude Code-style live feedback while running: spinner glyph, rotating verb, elapsed seconds.
+	const glyphs = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+	const verbs = ["Thinking", "Pondering", "Reasoning", "Tinkering", "Cooking", "Weaving", "Mulling"];
+	let tick = $state(0);
+	const timer = setInterval(() => tick++, 100);
+	onDestroy(() => clearInterval(timer));
+	const elapsed = $derived.by(() => {
+		tick;
+		const s = Math.max(0, Math.floor((Date.now() - (run?.started ?? Date.now())) / 1000));
+		return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+	});
+	const live = $derived((run?.status ?? status) === "running");
 
 	const init = $derived(events.find((e) => e.type === "system" && e.subtype === "init"));
 	const result = $derived(events.findLast((e) => e.type === "result"));
@@ -99,6 +112,10 @@
 	</ol>
 {/if}
 
+{#if live}
+	<p class="thinking"><span class="glyph">{glyphs[tick % glyphs.length]}</span> {verbs[Math.floor(tick / 40) % verbs.length]}… <span class="muted">({elapsed})</span></p>
+{/if}
+
 {#if run?.log}
 	<details class="log"><summary>Sandbox log</summary><pre>{run.log}</pre></details>
 {/if}
@@ -122,6 +139,8 @@
 	.result { border-left: 3px solid var(--merged); padding-left: 0.9rem; margin-top: 0.5rem; }
 	.result.error { border-color: var(--conflict); }
 	.result :global(.md) { padding: 0.4rem 0; }
+	.thinking { margin-top: 0.75rem; font-size: 0.875rem; color: var(--ink-2); }
+	.glyph { display: inline-block; width: 1em; font-family: var(--mono); color: var(--ink); }
 	.log { margin-top: 1.5rem; }
 	.back { margin-top: 1.5rem; }
 </style>
