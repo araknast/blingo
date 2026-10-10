@@ -6,6 +6,7 @@ import { shortTitle } from "./tasks";
 
 export { Box, Outbound } from "./box";
 export { RepoDO } from "./repo-do";
+export { Reviewer } from "./reviewer";
 export { UsersDO } from "./users-do";
 
 const id = () => crypto.randomUUID().slice(0, 8);
@@ -261,17 +262,19 @@ async function handle(request: Request, env: Env): Promise<Response> {
 		const repo = env.REPO.getByName(b);
 		if (request.method === "GET") return Response.json(await repo.settings());
 		if (request.method !== "PUT") return Response.json({ error: "not found" }, { status: 404 });
-		const body = (await request.json()) as { autoPlaceNotagents?: unknown };
-		if (body.autoPlaceNotagents !== undefined && typeof body.autoPlaceNotagents !== "boolean") {
-			return Response.json({ error: "autoPlaceNotagents must be true or false" }, { status: 400 });
-		}
-		return Response.json(await repo.setSettings(body.autoPlaceNotagents === undefined ? {} : { autoPlaceNotagents: body.autoPlaceNotagents }));
+		const r = await repo.setSettings(await request.json());
+		return Response.json(r, { status: "error" in r ? 400 : 200 });
 	}
-	// A loose (pushed, unplaced) notagent fork: ask for its placement, or get a new push token.
-	if (request.method === "POST" && a === "repos" && b && c === "forks" && d?.startsWith(`${b}-f-`) && (e === "place" || e === "token")) {
+	// A loose (pushed, unplaced) fork: ask for its placement, get a new push token, or review it.
+	if (request.method === "POST" && a === "repos" && b && c === "forks" && d?.startsWith(`${b}-f-`) && (e === "place" || e === "token" || e === "review")) {
 		const repo = env.REPO.getByName(b);
-		const r = e === "place" ? await repo.requestPlacement(d) : await repo.pushToken(d);
-		return "error" in r ? Response.json(r, { status: 409 }) : Response.json(r, { status: e === "place" ? 202 : 201 });
+		let r: { error: string } | object;
+		if (e === "review") {
+			const { approve, comment } = (await request.json()) as { approve?: unknown; comment?: unknown };
+			if (typeof approve !== "boolean") return Response.json({ error: "approve must be true or false" }, { status: 400 });
+			r = await repo.review(d, approve, typeof comment === "string" ? comment.slice(0, 4000) : "");
+		} else r = e === "place" ? await repo.requestPlacement(d) : await repo.pushToken(d);
+		return "error" in r ? Response.json(r, { status: 409 }) : Response.json(r, { status: e === "token" ? 201 : 202 });
 	}
 	if (request.method === "POST" && a === "repos" && b && c === "ferge") {
 		const body = (await request.json()) as { a: string; b: string };

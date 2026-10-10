@@ -132,6 +132,14 @@
 			toastError(e);
 		}
 	}
+	async function review(fork: string, approve: boolean) {
+		try {
+			await api("POST", `/repos/${repo}/forks/${fork}/review`, { approve });
+			refresh();
+		} catch (e) {
+			toastError(e);
+		}
+	}
 	async function setAutoPlace(on: boolean) {
 		try {
 			await api("PUT", `/repos/${repo}/settings`, { autoPlaceNotagents: on });
@@ -291,18 +299,23 @@
 
 				{#if data?.loose.length}
 					<section>
-						<h2>Pushed, not placed <span class="count">{data.loose.length}</span></h2>
-						<p class="muted small">Human forks wait here until you place them. Push to one again first if its placement failed.</p>
+						<h2>Waiting to be placed <span class="count">{data.loose.length}</span></h2>
+						<p class="muted small">Forks that were pushed but aren't in a bubble yet: waiting for CI, a review, or for you to place them.</p>
 						<ul class="rows">
 							{#each data.loose as l (l.fork)}
 								<li>
 									<span>
 										<span class="mono">{short(l.fork)}</span>
-										<span class="muted small">{plural(l.pushes, "push", "pushes")}{l.reason ? `, not placed: ${l.reason}` : ""}</span>
+										<span class="muted small">{l.kind === "agent" ? "agent, " : ""}{plural(l.pushes, "push", "pushes")}{l.ci ? `, CI ${l.ci}` : ""}{l.reviewAuto ? `, auto review ${l.reviewAuto}` : ""}{l.reviewManual ? `, review ${l.reviewManual}` : ""}{l.reason ? `: ${l.reason}` : ""}</span>
 									</span>
 									<span class="row">
-										<button onclick={() => pushAgain(l.fork)}>Push</button>
-										<button onclick={() => placeLoose(l.fork)}>Place</button>
+										{#if l.reviewManual === "pending"}
+											<button onclick={() => review(l.fork, true)}>Approve</button>
+											<button onclick={() => review(l.fork, false)}>Reject</button>
+										{:else}
+											{#if l.kind === "notagent"}<button onclick={() => pushAgain(l.fork)}>Push</button>{/if}
+											<button onclick={() => placeLoose(l.fork)}>Place</button>
+										{/if}
 									</span>
 								</li>
 							{/each}

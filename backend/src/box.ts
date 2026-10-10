@@ -1,5 +1,6 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { APPLY_SH, CONFLICT, ENSURE_REP, FERGE_SH, MERGES, MERGE_SH, NO_CONFLICT, PATCH_SH, PUSH_SH, REP, readSeries } from "./git-scripts";
+import { ciHostAllowed } from "./settings";
 import { validatePlan } from "./tasks";
 
 // Containers re-sign intercepted HTTPS with this CA; git/node/curl must trust it.
@@ -13,6 +14,7 @@ const GIT_ID = {
 };
 const TASK = "/workspace/task";
 const CHECK_MS = 30_000;
+const CI_CHECK_MS = 10_000;
 
 // $1 remote, $2 prompt, $3 system prompt (memory items + how to leave notes). Runs Claude Code on a
 // clone, commits, pushes to its own fork. The commit it started from goes in $TASK/base (empty for an
@@ -30,6 +32,12 @@ const SUPER_SH = `set -e
 rm -rf /workspace/repo; git clone -q "$1" /workspace/repo; cd /workspace/repo
 claude --print --dangerously-skip-permissions --no-session-persistence --model "$MODEL" --append-system-prompt "$3" -- "$2"
 test -s ${TASK}/tasks.json`;
+
+// CI: $1 fork remote (read), $2 the commit to check, $3 the repository's CI command. Exit = its exit.
+const CI_SH = `set -e
+rm -rf /workspace/repo; git clone -q "$1" /workspace/repo; cd /workspace/repo
+git checkout -q --detach "$2"
+set +e; bash -c "$3"`;
 
 const NOTES = `To leave a note for every future agent on this repository, append it as one line to ${TASK}/memory.
 Only note durable, repository-wide facts (conventions, gotchas, decisions), not progress on your own task.`;
@@ -53,7 +61,10 @@ const BG_SH = `setsid bash -c "$0" agent "$@" >${TASK}/log 2>&1; echo $? >${TASK
 
 export type Run = { exitCode: number; stdout: string; stderr: string };
 // kind "superagent": `fork` is only the run's id (no fork exists) and `remote` is read-only.
-export type AgentJob = { repo: string; fork: string; remote: string; prompt: string; kind?: "agent" | "superagent"; memory?: string[] };
+// `run`: the run's id when it isn't the fork's (a CI fixer: <fork>-c<n>); the Box is named after it.
+export type AgentJob = { repo: string; fork: string; run?: string; remote: string; prompt: string; kind?: "agent" | "superagent"; memory?: string[] };
+// A CI run on a loose fork at `head`, in a Box named ci-<fork> that can reach only Artifacts and `hosts`.
+export type CiJob = { repo: string; fork: string; head: string; remote: string; command: string; hosts: string[] };
 
 export async function headOf(env: Env, name: string) {
 	using repo = await env.ARTIFACTS.get(name);
@@ -79,12 +90,15 @@ export async function authRemote(env: Env, name: string, scope: "read" | "write"
 	};
 }
 
-// The only egress the sandbox gets: Artifacts git, and Anthropic with the key added here.
-export class Outbound extends WorkerEntrypoint<Env> {
+// The only egress a sandbox gets: Artifacts git, and Anthropic with the key added here. A CI Box
+// (props.ci = its hosts) gets Artifacts and the repository's CI hosts instead, and never a key.
+export class Outbound extends WorkerEntrypoint<Env, { ci?: string[] }> {
 	async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url);
 		if (url.protocol !== "https:") return new Response("https only\n", { status: 403 });
 		if (url.hostname.endsWith(".artifacts.cloudflare.net")) return fetch(request);
+		const ci = this.ctx.props?.ci;
+		if (ci) return ciHostAllowed(ci, url.hostname) ? fetch(request) : new Response(`${url.hostname} not reachable from CI\n`, { status: 403 });
 		if (url.hostname === "api.anthropic.com") {
 			const headers = new Headers(request.headers);
 			headers.set("x-api-key", this.env.ANTHROPIC_API_KEY);
@@ -110,9 +124,11 @@ export class Box extends DurableObject<Env> {
 			this.setup = (async () => {
 				const c = this.container;
 				if (!c.running) c.start({ image: c.images.box, instance: "standard-1", enableInternet: false });
+				const ci = this.ctx.storage.kv.get<CiJob>("ci");
+				const outbound = ci ? this.ctx.exports.Outbound({ props: { ci: ci.hosts } }) : this.ctx.exports.Outbound;
 				try {
-					await c.interceptAllOutboundHttp(this.ctx.exports.Outbound);
-					await c.interceptOutboundHttps("*", this.ctx.exports.Outbound);
+					await c.interceptAllOutboundHttp(outbound);
+					await c.interceptOutboundHttps("*", outbound);
 					await c.setInactivityTimeout(30 * 60_000);
 				} catch (e) {
 					await c.destroy();
@@ -218,11 +234,30 @@ export class Box extends DurableObject<Env> {
 		await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
 	}
 
+	// Starts CI on a loose fork, replacing any CI still running here (a newer push supersedes it).
+	async startCI(job: CiJob): Promise<void> {
+		if (this.ctx.container?.running) await this.container.destroy().catch(() => {});
+		this.setup = undefined;
+		this.ctx.storage.kv.put("ci", { ...job, remote: "" }); // read by start(); don't persist the token
+		await this.start();
+		await this.sh(`rm -rf ${TASK} && mkdir -p ${TASK}`);
+		await this.container.exec(["bash", "-c", BG_SH, CI_SH, job.remote, job.head, job.command], {
+			cwd: "/workspace",
+			env: { ...TRUST, ...GIT_ID },
+			stdout: "ignore",
+			stderr: "ignore",
+		});
+		this.ctx.storage.kv.put("status", "running");
+		await this.ctx.storage.setAlarm(Date.now() + CI_CHECK_MS);
+	}
+
 	status() {
 		return { status: this.ctx.storage.kv.get<string>("status") ?? "none", log: this.ctx.storage.kv.get<string>("log") };
 	}
 
 	async alarm(): Promise<void> {
+		const ci = this.ctx.storage.kv.get<CiJob>("ci");
+		if (ci) return this.ciAlarm(ci);
 		const job = this.ctx.storage.kv.get<AgentJob>("job");
 		if (!job) return;
 		if (!this.container.running) return this.finish(job, "lost", "container stopped before the agent finished");
@@ -234,6 +269,7 @@ export class Box extends DurableObject<Env> {
 		const log = (await this.sh(`tail -c 4000 ${TASK}/log`)).stdout;
 		if (exit.stdout.trim() !== "0") return this.finish(job, "failed", log);
 		const repo = this.env.REPO.getByName(job.repo);
+		let loose = false;
 		if (job.kind === "superagent") {
 			let plan: ReturnType<typeof validatePlan>;
 			try {
@@ -249,20 +285,36 @@ export class Box extends DurableObject<Env> {
 			if (p.exitCode === MERGES) return this.finish(job, "failed", `${log}\nnot placed: its history has merge commits`);
 			if (p.exitCode !== 0) throw new Error(`patch series of ${job.fork} (${p.exitCode}): ${p.stderr}`);
 			const { files, mbox } = readSeries(p.stdout);
-			const placed = await repo.place(job.fork, files, mbox);
+			const placed = await repo.submit(job.fork, files, mbox);
 			if ("error" in placed) return this.finish(job, "failed", `${log}\nnot placed: ${placed.error}`);
+			loose = "loose" in placed;
 		}
 		// Notes the agent left for future agents (capped: they all go into every prompt).
 		const notes = (await this.sh(`head -c 20000 ${TASK}/memory 2>/dev/null || true`)).stdout;
 		const items = notes.split("\n").map((l) => l.trim().slice(0, 500)).filter(Boolean).slice(0, 10);
 		if (items.length) await repo.addMemory(items, job.fork);
-		await this.finish(job, job.kind === "superagent" ? "planned" : "placed", log);
+		await this.finish(job, job.kind === "superagent" ? "planned" : loose ? "loose" : "placed", log);
 	}
 
+	private async ciAlarm(job: CiJob) {
+		const done = async (ok: boolean, log: string) => {
+			this.ctx.storage.kv.delete("ci");
+			this.ctx.storage.kv.put("status", ok ? "passed" : "failed");
+			this.ctx.storage.kv.put("log", log);
+			await this.container.destroy().catch(() => {});
+			await this.env.REPO.getByName(job.repo).ciDone(job.fork, job.head, ok, log);
+		};
+		if (!this.container.running) return done(false, "the CI container stopped before CI finished");
+		const exit = (await this.sh(`cat ${TASK}/exit 2>/dev/null || true`)).stdout.trim();
+		if (exit === "") return void (await this.ctx.storage.setAlarm(Date.now() + CI_CHECK_MS));
+		await done(exit === "0", (await this.sh(`tail -c 8000 ${TASK}/log`)).stdout);
+	}
+
+	// "loose": the fork waits for CI. A failed first run deletes its fork; a failed fixer leaves it.
 	private async finish(job: AgentJob, status: string, log: string) {
-		if (status !== "placed" && job.kind !== "superagent") await this.env.ARTIFACTS.delete(job.fork);
+		if ((status === "failed" || status === "lost") && job.kind !== "superagent" && !job.run) await this.env.ARTIFACTS.delete(job.fork);
 		this.ctx.storage.kv.delete("job");
-		await this.env.REPO.getByName(job.repo).agentDone(job.fork, status, log);
+		await this.env.REPO.getByName(job.repo).agentDone(job.run ?? job.fork, status, log);
 		this.ctx.storage.kv.put("status", status);
 		this.ctx.storage.kv.put("log", log);
 		await this.container.destroy().catch(() => {});

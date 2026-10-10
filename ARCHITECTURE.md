@@ -38,7 +38,7 @@ browser ──► yorkle Worker ──(service binding)──► blingo Worker �
 | `conflict(k)` | `"a|b"` bubble pairs whose merge failed; never retried (except by a ferge). When a bubble is absorbed, its pairs move to the bubble that absorbed it |
 | `locked(id)` | locked bubbles: placeable, but excluded from neighbour merges |
 | `hidden(id, since)` | lease for a bubble hidden by a running merge or ferge (see Merge loop) |
-| `loose(fork, base, head, token, expires, pushes, placing, sub, reason)` | notagent forks not placed yet: `base` = where it started, `head` = last seen, `token` = live push token id (NULL once revoked or expired), `placing`, `sub` = its pushed-event subscription (NULL = polled), `reason` = why its last placement failed. Replaces `watch`/`pushed` (emptied into it on startup) |
+| `loose(fork, base, head, token, expires, pushes, placing, sub, reason, kind, ci, ci_log, review_auto, review_manual, review_note, agent_pushes)` | forks not placed yet (a notagent's, or with CI on an agent's): `base` = where it started, `head` = last seen, `token` = live push token id (NULL once revoked or expired), `placing`, `sub` = its pushed-event subscription (NULL = polled), `reason` = why it isn't placed. CI results are for `head`: `ci` running/passed/failed and its log tail, each review pending/approved/rejected (NULL = not required) and their comments; `agent_pushes` counts an agent's attempts. Replaces `watch`/`pushed` (emptied into it on startup) |
 | `agent_run(fork, prompt, started, status, finished, log)` | agent and superagent runs (`-s-` ids), kept after they finish |
 | `task(id, title, description, kind, status, bubble, fork, base_head, explanation, superagent, created, finished)` | tasks: a short `title` (≤ 60 chars); `kind` agent / notagent; `status` open / in-progress / completed / failed; `bubble` = where it should start, then where it did. Listed in `rowid` (creation) order. `title` was added in place: objects from before it get the column and titles from their descriptions on startup |
 | `task_dep(task, dep)` | task dependencies |
@@ -153,10 +153,26 @@ that no longer fits; too big) leaves the fork loose with the reason. `POST …/f
 a fresh push token for another try. A fork never pushed to is deleted, and its task reopened, when its
 token expires. The API reports `waiting` (no push yet), `placing` and `loose` (pushed, not placed).
 
+**CI and review** (repo settings `ci {enabled, command, hosts}`, `review`, `maxAgentPushes`;
+`src/settings.ts` `gate`). With CI on, every new head of a loose fork runs CI: the command runs in its
+own Box (`ci-<fork>`, `CI_SH`) on a clone checked out at that head. A newer push restarts it, and a
+result for an older head is dropped. That Box's `Outbound` (props `ci`) reaches Artifacts and the
+repository's CI hosts only, never Anthropic, and no key is added. No command = the build step passes.
+Review is part of CI and starts once the build passes: **automatic** (`src/reviewer.ts`, an Agents SDK
+agent per fork; it reviews the task and the fork's patch series with the Claude API, structured output
+and the server-side fallback, then calls `RepoDO.reviewDone`), **manual** (`POST …/forks/:fork/review
+{approve, comment}`), or both. A fork is placed only once the gate passes (`place()` and
+`requestPlacement` both check it): an agent's at once; a notagent's per `autoPlaceNotagents`. When a
+step fails, an agent's fork gets a **fixer**: a new agent run on the same fork (`<fork>-c<n>`, prompt from
+`fixPrompt`: the task, what failed, the CI log tail, review comments). Each fixer push counts toward
+`maxAgentPushes`. At the limit, or if a fixer fails or changes nothing, the fork and its task become a
+notagent's, for a person to push the fix (`POST …/token`). A notagent's failed CI waits for its next push.
+
 **Agent.** `RepoDO.schedule` forks and calls `Box.startAgent`: clone (recording the commit it
 starts from), `claude --print …`, commit, push to its own fork, all detached in the container. The
 Box alarm checks every 30 s. When it's done, the same container takes the patch series (`PATCH_SH`)
-and calls `place()` (or deletes the fork on failure), then reports to `RepoDO.agentDone`. A placed
+and calls `RepoDO.submit`: with CI off that places it; with CI on the fork becomes loose and goes
+through CI. A failed first run deletes the fork. Then it reports to `RepoDO.agentDone`. A placed
 fork's repo is deleted unless it became a new bubble's rep.
 
 **Merge loop** (`RepoDO.alarm`, running **concurrently with placement**). Each tick applies every

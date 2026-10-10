@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { explanation, ready, renameOwed, shortTitle, validatePlan, type ForkState, type TaskState } from "../src/tasks";
+import { explanation, fixPrompt, ready, renameOwed, shortTitle, validatePlan, type ForkState, type TaskState } from "../src/tasks";
 
 const t = (id: string, status: TaskState["status"], deps: string[] = [], fork: string | null = null, bubble: string | null = null): TaskState => ({
 	id,
@@ -110,4 +110,14 @@ Subject: [PATCH 2/2] =?UTF-8?q?fix=20caf=C3=A9?= tests, with a subject long
 `;
 	expect(explanation(mbox)).toBe("fix café tests, with a subject long enough to be folded\n\nadd feature\n\nWhy it was added.");
 	expect(explanation("")).toBe("");
+});
+
+test("a fixer's prompt carries the task, what failed, the CI output and review comments", () => {
+	const p = fixPrompt({ title: "Add x", description: "Make x.txt", failed: ["ci"], command: "npm test", log: "1 failing", review: null });
+	expect(p).toContain("# Fix: Add x");
+	expect(p).toContain("ci failed");
+	expect(p).toContain("Make x.txt");
+	expect(p).toContain("1 failing");
+	expect(p).not.toContain("Review comments");
+	expect(fixPrompt({ title: "t", description: "d", failed: ["automatic review"], command: "", log: null, review: "Automatic review: no" })).toContain("## Review comments");
 });

@@ -26,12 +26,14 @@
 		"bindings": [
 			{ "class_name": "RepoDO", "name": "REPO" },
 			{ "class_name": "Box", "name": "BOX" },
-			{ "class_name": "UsersDO", "name": "USERS" }
+			{ "class_name": "UsersDO", "name": "USERS" },
+			{ "class_name": "Reviewer", "name": "REVIEWER" }
 		]
 	},
 	"exports": {
 		"RepoDO": { "type": "durable-object", "storage": "sqlite" },
 		"Box": { "type": "durable-object", "storage": "sqlite" },
-		"UsersDO": { "type": "durable-object", "storage": "sqlite" }
+		"UsersDO": { "type": "durable-object", "storage": "sqlite" },
+		"Reviewer": { "type": "durable-object", "storage": "sqlite" }
 	}
 }

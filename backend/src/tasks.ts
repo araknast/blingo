@@ -106,6 +106,18 @@ export function validatePlan(raw: unknown): { items: PlanItem[] } | { error: str
 	return left.size ? { error: `dependency cycle among ${[...left.keys()].join(", ")}` } : { items };
 }
 
+// The prompt for a CI fixer: a new agent on a fork whose last attempt at a task failed CI or review.
+export function fixPrompt(f: { title: string; description: string; failed: string[]; command: string; log: string | null; review: string | null }): string {
+	const parts = [
+		`# Fix: ${f.title}`,
+		`Your fork already holds an attempt at the task below, but it didn't pass this repository's checks: ${f.failed.join(" and ")} failed. Fix what failed, commit, and stop. Don't start the task over.`,
+		`## The task\n\n${f.description}`,
+	];
+	if (f.log) parts.push(`## CI output (\`${f.command}\`)\n\n\`\`\`\n${f.log}\n\`\`\``);
+	if (f.review) parts.push(`## Review comments\n\n${f.review}`);
+	return parts.join("\n\n");
+}
+
 // A completed task's explanation: the commit messages in its fork's patch series (`git format-patch`
 // mbox), newest first.
 export function explanation(mbox: string): string {

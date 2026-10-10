@@ -1,9 +1,11 @@
 import { DurableObject } from "cloudflare:workers";
 import { authRemote, forkRepo, headOf } from "./box";
+import { getAgentByName } from "agents";
 import { subscribePushes, unsubscribe } from "./events";
 import { MERGES, PATCH_SH, readSeries } from "./git-scripts";
 import { conflictKey, nearestNeighbour, placeFork, renameConflicts, type Basis, type Bubble } from "./bubbles";
-import { explanation, ready, renameOwed, shortTitle, type Owed, type PlanItem, type TaskState } from "./tasks";
+import { DEFAULTS, gate, updateSettings, type Settings } from "./settings";
+import { explanation, fixPrompt, ready, renameOwed, shortTitle, type Owed, type PlanItem, type TaskState } from "./tasks";
 
 const POLL_MS = 5_000;
 // A merge or ferge hides its bubbles for seconds. Longer than the alarm's own wall-clock limit means
@@ -16,13 +18,31 @@ const MAX_SERIES = 1_500_000;
 // (or merged in, for forks from before patch series); failed = its series didn't apply; conflict = a
 // pre-patch-series fork that didn't merge. `seq` orders applied series (see Basis).
 type Fork = { name: string; bubble: string; status: "rep" | "pending" | "merged" | "conflict" | "failed"; files: string; seq: number | null };
-// A notagent fork that can be pushed to and isn't placed yet. `base`: the commit it started from;
-// `head`: its head when last seen; `token`: the id of its live push token (NULL once revoked or
-// expired); `placing`: its placement is running; `sub`: its pushed-event subscription (NULL = polled);
-// `reason`: why its last placement failed.
-type Loose = { fork: string; base: string; head: string; token: string | null; expires: number; pushes: number; placing: number; sub: string | null; reason: string | null };
-export type Settings = { autoPlaceNotagents: boolean };
-const DEFAULTS: Settings = { autoPlaceNotagents: true };
+// A fork pushed to (or waiting for its first push) and not placed yet: a notagent's, or, with CI on,
+// an agent's. `base`: the commit it started from; `head`: its head when last seen; `token`: the id of
+// its live push token (NULL once revoked or expired); `placing`: its placement is running; `sub`: its
+// pushed-event subscription (NULL = polled); `reason`: why it isn't placed. CI results are for `head`:
+// `ci` running / passed / failed with its log tail, each review pending / approved / rejected (NULL =
+// not required) and their comments in `review_note`; `agent_pushes` counts an agent's attempts.
+type Loose = {
+	fork: string;
+	base: string;
+	head: string;
+	token: string | null;
+	expires: number;
+	pushes: number;
+	placing: number;
+	sub: string | null;
+	reason: string | null;
+	kind: "agent" | "notagent";
+	ci: string | null;
+	ci_log: string | null;
+	review_auto: string | null;
+	review_manual: string | null;
+	review_note: string | null;
+	agent_pushes: number;
+};
+const ciState = (l: Loose) => ({ ci: l.ci, reviewAuto: l.review_auto, reviewManual: l.review_manual });
 type AgentRun = { fork: string; prompt: string; started: number; status: string; finished: number | null; log: string | null };
 type TaskRow = TaskState & {
 	title: string;
@@ -84,6 +104,9 @@ export class RepoDO extends DurableObject<Env> {
 		this.addColumn("bubble", "epoch", "INTEGER NOT NULL DEFAULT 0");
 		this.addColumn("bubble", "ferge", "INTEGER NOT NULL DEFAULT 0");
 		this.addColumn("fork", "seq", "INTEGER");
+		for (const [c, d] of [["kind", "TEXT NOT NULL DEFAULT 'notagent'"], ["ci", "TEXT"], ["ci_log", "TEXT"], ["review_auto", "TEXT"], ["review_manual", "TEXT"], ["review_note", "TEXT"], ["agent_pushes", "INTEGER NOT NULL DEFAULT 0"]]) {
+			this.addColumn("loose", c, d);
+		}
 		// Watched notagent forks from before loose forks: pushed ones go on to placement.
 		this.sql.exec(`INSERT OR IGNORE INTO loose (fork, base, head, token, expires, pushes, placing)
 			SELECT w.fork, w.base, w.base, w.token, w.expires, p.fork IS NOT NULL, p.fork IS NOT NULL FROM watch w LEFT JOIN pushed p ON p.fork = w.fork;
@@ -167,6 +190,10 @@ export class RepoDO extends DurableObject<Env> {
 	// joins no bubble.
 	async place(fork: string, files: string[], mbox: string): Promise<{ bubble: string | null } | { error: string }> {
 		if (mbox.length > MAX_SERIES) return { error: `its patch series is over ${MAX_SERIES} bytes` };
+		// With CI on, a fork reaches a bubble only through its loose row, once it has passed.
+		const settings = this.settings();
+		const l = this.loose(fork);
+		if (settings.ci.enabled && (!l || gate(settings, ciState(l)) !== "passed")) return { error: "it hasn't passed CI" };
 		const b = this.sql.exec<{ bubble: string | null; epoch: number; seq: number }>("SELECT bubble, epoch, seq FROM basis WHERE fork = ?", fork).toArray()[0];
 		const bubbles = this.bubbles();
 		let target: string | null;
@@ -434,7 +461,18 @@ export class RepoDO extends DurableObject<Env> {
 			loose: this.sql
 				.exec<Loose>("SELECT * FROM loose WHERE pushes > 0 AND placing = 0")
 				.toArray()
-				.map((l) => ({ fork: l.fork, pushes: l.pushes, pushable: l.token !== null, reason: l.reason })),
+				.map((l) => ({
+					fork: l.fork,
+					kind: l.kind,
+					pushes: l.pushes,
+					pushable: l.token !== null,
+					reason: l.reason,
+					ci: l.ci,
+					ciLog: l.ci_log,
+					reviewAuto: l.review_auto,
+					reviewManual: l.review_manual,
+					reviewNote: l.review_note,
+				})),
 			settings: this.settings(),
 			// Running first, then the most recent finished runs.
 			agents: this.sql
@@ -451,8 +489,15 @@ export class RepoDO extends DurableObject<Env> {
 		this.sql.exec("INSERT INTO agent_run (fork, prompt, started) VALUES (?, ?, ?)", fork, prompt, Date.now());
 	}
 
+	// `fork` is the run's id: a fork, a superagent run (-s-), or a CI fixer on a fork (<fork>-c<n>).
 	agentDone(fork: string, status: string, log: string) {
 		this.sql.exec("UPDATE agent_run SET status = ?, finished = ?, log = ? WHERE fork = ?", status, Date.now(), log, fork);
+		const fixed = fork.match(/^(.*-f-[^-]+)-c\d+$/)?.[1];
+		if (fixed && (status === "failed" || status === "lost")) {
+			const l = this.loose(fixed);
+			if (l?.kind === "agent") this.toNotagent(fixed, `${l.reason ?? "CI failed"}; its fixer agent failed, so a person takes over`);
+			return;
+		}
 		if (status === "failed" || status === "lost") {
 			this.sql.exec("UPDATE task SET status = 'failed', finished = ? WHERE fork = ? AND status = 'in-progress'", Date.now(), fork);
 			this.sql.exec("DELETE FROM basis WHERE fork = ?", fork);
@@ -518,15 +563,21 @@ export class RepoDO extends DurableObject<Env> {
 		if ((await this.ctx.storage.getAlarm()) === null) await this.ctx.storage.setAlarm(Date.now() + 1_000);
 	}
 
-	// ---- loose forks (notagents) ----
+	// ---- loose forks and CI ----
 
 	settings(): Settings {
-		return { ...DEFAULTS, ...this.ctx.storage.kv.get<Partial<Settings>>("settings") };
+		const stored = this.ctx.storage.kv.get<Partial<Settings>>("settings") ?? {};
+		return { ...DEFAULTS, ...stored, ci: { ...DEFAULTS.ci, ...stored.ci } };
 	}
 
-	setSettings(s: Partial<Settings>): Settings {
-		this.ctx.storage.kv.put("settings", { ...this.settings(), ...s });
-		return this.settings();
+	setSettings(body: unknown): Settings | { error: string } {
+		const next = updateSettings(this.settings(), body);
+		if (!("error" in next)) this.ctx.storage.kv.put("settings", next);
+		return next;
+	}
+
+	private loose(fork: string): Loose | undefined {
+		return this.sql.exec<Loose>("SELECT * FROM loose WHERE fork = ?", fork).toArray()[0];
 	}
 
 	// When the alarm must look at loose forks again: a fork being placed now; a fork without a push
@@ -542,28 +593,152 @@ export class RepoDO extends DurableObject<Env> {
 		return r.expires === null ? null : Math.max(r.expires, Date.now()) + 1_000;
 	}
 
-	// A push to loose fork `fork` reached `head` (from its pushed event, or seen by checkLoose). With
-	// auto-placement on, its token is revoked ("shuts down the git server") and it is placed;
-	// otherwise it stays loose and can be pushed to again until someone asks for placement.
+	// A push to loose notagent fork `fork` reached `head` (from its pushed event, or seen by checkLoose).
 	async onPushed(fork: string, head: string) {
-		const l = this.sql.exec<Loose>("SELECT * FROM loose WHERE fork = ?", fork).toArray()[0];
-		if (!l || l.placing || head === l.head) return;
+		const l = this.loose(fork);
+		if (!l || l.placing || l.kind !== "notagent" || head === l.head) return;
 		this.sql.exec("UPDATE loose SET head = ?, pushes = pushes + 1, reason = NULL WHERE fork = ?", head, fork);
-		if (this.settings().autoPlaceNotagents) await this.startPlacing(fork);
+		await this.newHead(fork);
 	}
 
-	// Someone asks for a loose fork to be placed (it must have been pushed to).
+	// An agent finished on `fork` (its first run, or a CI fixer's). With CI off it is placed now (its
+	// patch series `files`/`mbox`); with CI on it becomes a loose fork and its new head goes through CI.
+	async submit(fork: string, files: string[], mbox: string): Promise<{ bubble: string | null } | { loose: true } | { error: string }> {
+		const l = this.loose(fork);
+		if (!l && !this.settings().ci.enabled) return this.place(fork, files, mbox);
+		const head = await headOf(this.env, fork);
+		if (!l) {
+			const base = this.sql.exec<{ base_head: string | null }>("SELECT base_head FROM task WHERE fork = ?", fork).toArray()[0]?.base_head ?? "";
+			this.sql.exec(
+				"INSERT INTO loose (fork, base, head, expires, pushes, kind, agent_pushes) VALUES (?, ?, ?, 0, 1, 'agent', 1)",
+				fork,
+				base,
+				head,
+			);
+		} else if (head === l.head) {
+			// The fixer changed nothing; that attempt counts and the fork stays failed.
+			this.sql.exec("UPDATE loose SET agent_pushes = agent_pushes + 1 WHERE fork = ?", fork);
+			await this.failed(fork, ["the fix (it changed nothing)"]);
+			return { loose: true };
+		} else {
+			this.sql.exec("UPDATE loose SET head = ?, pushes = pushes + 1, agent_pushes = agent_pushes + 1, reason = NULL WHERE fork = ?", head, fork);
+		}
+		await this.newHead(fork);
+		return { loose: true };
+	}
+
+	// A loose fork has a new head. Without CI it is placed (an agent's always; a notagent's with
+	// auto-placement on). With CI, its CI runs from scratch: the command in its own Box (none = passes).
+	private async newHead(fork: string) {
+		const s = this.settings();
+		const l = this.loose(fork)!;
+		if (!s.ci.enabled) {
+			if (l.kind === "agent" || s.autoPlaceNotagents) await this.startPlacing(fork);
+			return;
+		}
+		this.sql.exec("UPDATE loose SET ci = 'running', ci_log = NULL, review_auto = NULL, review_manual = NULL, review_note = NULL WHERE fork = ?", fork);
+		if (!s.ci.command) return this.ciDone(fork, l.head, true, "");
+		const { url } = await authRemote(this.env, fork, "read", 3600);
+		await this.env.BOX.getByName(`ci-${fork}`).startCI({ repo: this.ctx.storage.kv.get<string>("repo")!, fork, head: l.head, remote: url, command: s.ci.command, hosts: s.ci.hosts });
+	}
+
+	// CI finished for `fork` at `head` (stale results, for an older head, are dropped). On success the
+	// required reviews start: the Reviewer agent gets the task and the fork's patch series.
+	async ciDone(fork: string, head: string, ok: boolean, log: string) {
+		const l = this.loose(fork);
+		if (!l || l.head !== head || l.ci !== "running") return;
+		this.sql.exec("UPDATE loose SET ci = ?, ci_log = ? WHERE fork = ?", ok ? "passed" : "failed", log.slice(-8000), fork);
+		const review = this.settings().review;
+		if (ok && (review === "manual" || review === "both")) this.sql.exec("UPDATE loose SET review_manual = 'pending' WHERE fork = ?", fork);
+		if (ok && (review === "auto" || review === "both")) {
+			this.sql.exec("UPDATE loose SET review_auto = 'pending' WHERE fork = ?", fork);
+			const t = this.sql.exec<{ title: string; description: string }>("SELECT title, description FROM task WHERE fork = ?", fork).toArray()[0];
+			const { url } = await authRemote(this.env, fork, "read");
+			const p = await this.box().sh(PATCH_SH, [url, l.base]);
+			const series = p.exitCode === 0 ? readSeries(p.stdout).mbox : `(no patch series: ${p.stderr.slice(-500)})`;
+			const reviewer = await getAgentByName(this.env.REVIEWER, fork);
+			await reviewer.start({ repo: this.ctx.storage.kv.get<string>("repo")!, fork, head, title: t?.title ?? "", description: t?.description ?? "", series });
+		}
+		await this.evaluate(fork);
+	}
+
+	// The Reviewer agent's verdict for `fork` at `head`.
+	async reviewDone(fork: string, head: string, approve: boolean, comments: string) {
+		const l = this.loose(fork);
+		if (!l || l.head !== head || l.review_auto !== "pending") return;
+		this.sql.exec("UPDATE loose SET review_auto = ?, review_note = COALESCE(review_note || '\n\n', '') || ? WHERE fork = ?", approve ? "approved" : "rejected", `Automatic review: ${comments}`, fork);
+		await this.evaluate(fork);
+	}
+
+	// A person's review of a loose fork waiting for one.
+	async review(fork: string, approve: boolean, comment: string): Promise<{ ok: true } | { error: string }> {
+		const l = this.loose(fork);
+		if (!l || l.review_manual !== "pending") return { error: "that fork isn't waiting for a review" };
+		const note = comment ? `Manual review: ${comment}` : `Manual review: ${approve ? "approved" : "rejected"}`;
+		this.sql.exec("UPDATE loose SET review_manual = ?, review_note = COALESCE(review_note || '\n\n', '') || ? WHERE fork = ?", approve ? "approved" : "rejected", note, fork);
+		await this.evaluate(fork);
+		return { ok: true };
+	}
+
+	// After each CI step: passed → placed (an agent's always; a notagent's with auto-placement on, else
+	// on request); failed → a fixer agent for an agent's fork, or the human's next push.
+	private async evaluate(fork: string) {
+		const s = this.settings();
+		const l = this.loose(fork)!;
+		const g = gate(s, ciState(l));
+		if (g === "waiting") return;
+		if (g !== "passed") return this.failed(fork, g.failed);
+		this.sql.exec("UPDATE loose SET reason = NULL WHERE fork = ?", fork);
+		if (l.kind === "agent" || s.autoPlaceNotagents) await this.startPlacing(fork);
+	}
+
+	// A CI step failed. An agent's fork gets a fixer agent while it has pushes left; then it becomes a
+	// notagent's (its task too), for a person to push the fix.
+	private async failed(fork: string, steps: string[]) {
+		const s = this.settings();
+		const l = this.loose(fork)!;
+		const reason = `${steps.join(" and ")} failed`;
+		this.sql.exec("UPDATE loose SET reason = ? WHERE fork = ?", reason, fork);
+		if (l.kind !== "agent") return;
+		if (l.agent_pushes < s.maxAgentPushes) return this.startFixer(fork, steps);
+		this.toNotagent(fork, `${reason}; the agent used all ${s.maxAgentPushes} of its pushes, so a person takes over`);
+	}
+
+	private toNotagent(fork: string, reason: string) {
+		this.sql.exec("UPDATE loose SET kind = 'notagent', reason = ? WHERE fork = ?", reason, fork);
+		this.sql.exec("UPDATE task SET kind = 'notagent' WHERE fork = ?", fork);
+	}
+
+	// A new agent run on the same fork, told what the task was and what failed.
+	private async startFixer(fork: string, steps: string[]) {
+		const l = this.loose(fork)!;
+		const t = this.sql.exec<{ title: string; description: string }>("SELECT title, description FROM task WHERE fork = ?", fork).toArray()[0];
+		const repo = this.ctx.storage.kv.get<string>("repo")!;
+		const run = `${fork}-c${l.agent_pushes}`;
+		const prompt = fixPrompt({ title: t?.title ?? "", description: t?.description ?? "", failed: steps, command: this.settings().ci.command, log: l.ci_log, review: l.review_note });
+		try {
+			const { url } = await authRemote(this.env, fork, "write", 3 * 3600);
+			await this.env.BOX.getByName(run).startAgent({ repo, fork, run, remote: url, prompt, kind: "agent", memory: this.memories() });
+			this.agentStarted(run, `Fix: ${t?.title ?? fork}`);
+		} catch (e) {
+			console.error(`starting fixer ${run}`, e);
+			this.toNotagent(fork, `${l.reason ?? "CI failed"}; its fixer agent couldn't start, so a person takes over`);
+		}
+	}
+
+	// Someone asks for a loose fork to be placed: it must have been pushed to and, with CI on, passed.
 	async requestPlacement(fork: string): Promise<{ ok: true } | { error: string }> {
-		const l = this.sql.exec<Loose>("SELECT * FROM loose WHERE fork = ?", fork).toArray()[0];
+		const l = this.loose(fork);
 		if (!l) return { error: "no such loose fork" };
 		if (l.placing) return { error: "it is already being placed" };
 		if (!l.pushes) return { error: "nothing has been pushed to it yet" };
+		if (gate(this.settings(), ciState(l)) !== "passed") return { error: "it hasn't passed CI" };
 		await this.startPlacing(fork);
 		return { ok: true };
 	}
 
 	private async startPlacing(fork: string) {
-		const l = this.sql.exec<Loose>("SELECT * FROM loose WHERE fork = ?", fork).toArray()[0];
+		const l = this.loose(fork);
 		this.sql.exec("UPDATE loose SET placing = 1, token = NULL WHERE fork = ?", fork);
 		if (l?.token) {
 			using repo = await this.env.ARTIFACTS.get(fork);
@@ -572,11 +747,12 @@ export class RepoDO extends DurableObject<Env> {
 		await this.kick();
 	}
 
-	// A fresh 1-hour push token for a loose fork that isn't being placed (its old one expired, or it
-	// needs another push after a failed placement).
+	// A fresh 1-hour push token for a notagent's loose fork that isn't being placed (its old one
+	// expired, or it needs another push).
 	async pushToken(fork: string) {
 		const l = this.sql.exec<Loose>("SELECT * FROM loose WHERE fork = ? AND placing = 0", fork).toArray()[0];
 		if (!l) return { error: "no such loose fork" };
+		if (l.kind !== "notagent") return { error: "an agent is working on that fork" };
 		const { url: authed, remote, token } = await authRemote(this.env, fork, "write", 3600);
 		this.sql.exec("UPDATE loose SET token = ?, expires = ? WHERE fork = ?", token.id, Date.parse(token.expiresAt), fork);
 		await this.kick();

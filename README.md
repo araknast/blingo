@@ -86,9 +86,10 @@ created before users existed have no owner, so only the admin can reach them. An
 | `POST /notagents {repo?, bubble?}` | Fork and return a git remote with a 1-hour push token; a push gets placed (or waits as a loose fork when `autoPlaceNotagents` is off) |
 | `GET /agents/:fork` | One agent's sandbox status and log tail |
 | `GET /repos/:repo` | Bubbles, members, conflicts, bubbles merging, notagents waiting for a push (`waiting`), being placed (`placing`) or pushed and not placed (`loose`), settings, agent runs |
-| `GET /repos/:repo/settings` / `PUT … {autoPlaceNotagents}` | Repository settings |
+| `GET /repos/:repo/settings` / `PUT … {autoPlaceNotagents?, ci?: {enabled?, command?, hosts?}, review?, maxAgentPushes?}` | Repository settings. `review`: none / auto / manual / both |
 | `POST /repos/:repo/forks/:fork/place` | Place a loose notagent fork |
-| `POST /repos/:repo/forks/:fork/token` | A fresh 1-hour push token for a loose fork |
+| `POST /repos/:repo/forks/:fork/token` | A fresh 1-hour push token for a notagent's loose fork |
+| `POST /repos/:repo/forks/:fork/review {approve, comment?}` | A manual review of a loose fork waiting for one |
 | `GET /repos/:repo/:fork` | Kept diff of a merged fork |
 | `GET /repos/:repo/:fork?path=…` | A file as that fork sees it |
 | `DELETE /repos/:repo` | Delete the repository's git repos and all its records |

@@ -24,8 +24,25 @@ export type Task = {
 	ready: boolean;
 };
 // A notagent fork that was pushed to and isn't placed yet (auto-placement off, or placement failed).
-export type LooseFork = { fork: string; pushes: number; pushable: boolean; reason: string | null };
-export type Settings = { autoPlaceNotagents: boolean };
+// With CI on, an agent's fork is loose too while CI runs. `ci` and the reviews are for its latest push.
+export type LooseFork = {
+	fork: string;
+	kind: "agent" | "notagent";
+	pushes: number;
+	pushable: boolean;
+	reason: string | null;
+	ci: "running" | "passed" | "failed" | null;
+	ciLog: string | null;
+	reviewAuto: "pending" | "approved" | "rejected" | null;
+	reviewManual: "pending" | "approved" | "rejected" | null;
+	reviewNote: string | null;
+};
+export type Settings = {
+	autoPlaceNotagents: boolean;
+	ci: { enabled: boolean; command: string; hosts: string[] };
+	review: "none" | "auto" | "manual" | "both";
+	maxAgentPushes: number;
+};
 export type MemoryItem = { id: string; text: string; author: string; created: number };
 export type RepoState = {
 	bubbles: Bubble[];
