@@ -763,7 +763,7 @@ export class RepoDO extends DurableObject<Env> {
 		}
 		this.ctx.storage.kv.put("deployAuth", values);
 		if (typeof key === "string") key.trim() ? this.ctx.storage.kv.put("apiKey", key.trim()) : this.ctx.storage.kv.delete("apiKey");
-		if (key) await this.kick(); // tasks waiting for a key start now
+		await this.kick(); // a new key starts waiting tasks; autoFerge starts on pairs already in conflict
 		return this.publicSettings();
 	}
 
