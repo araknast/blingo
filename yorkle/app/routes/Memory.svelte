@@ -46,6 +46,7 @@
 	crumbs={[{ label: "Repositories", href: "/repos" }, { label: repoName(repo, session.me?.names), href: `/repos/${repo}` }, { label: "Memory" }]}
 	{repo}
 	openTasks={rd.data?.tasks.filter((t) => t.status !== "completed").length}
+	activeAgents={rd.data?.agents.filter((a) => a.status === "running").length}
 >
 	<div class="page">
 		<h1>Memory</h1>

@@ -125,6 +125,7 @@
 	]}
 	{repo}
 	openTasks={open}
+	activeAgents={data?.agents.filter((a) => a.status === "running").length}
 >
 	<div class="page">
 		{#if missing}

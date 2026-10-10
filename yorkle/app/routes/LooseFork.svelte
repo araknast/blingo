@@ -44,6 +44,7 @@
 	]}
 	{repo}
 	openTasks={rd.data?.tasks.filter((t) => t.status !== "completed").length}
+	activeAgents={rd.data?.agents.filter((a) => a.status === "running").length}
 >
 	<div class="page">
 		<p class="muted kind">{l?.kind === "agent" ? "An agent's fork" : "A person's fork"}</p>

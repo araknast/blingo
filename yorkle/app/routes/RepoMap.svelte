@@ -144,6 +144,7 @@
 	crumbs={[{ label: "Repositories", href: "/repos" }, { label: repoName(repo, session.me?.names) }]}
 	{repo}
 	openTasks={data?.tasks.filter((t) => t.status !== "completed").length}
+	activeAgents={data?.agents.filter((a) => a.status === "running").length}
 	full
 >
 	{#if repoData.missing}
