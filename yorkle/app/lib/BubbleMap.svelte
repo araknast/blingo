@@ -3,24 +3,32 @@
 	import { onDestroy, tick, untrack } from "svelte";
 	import { fade } from "svelte/transition";
 	import { MAX_DOTS, dotOffset, edge, fileCount, hash, orderMembers, radius } from "./layout";
-	import type { Bubble, Member, RepoState } from "./types";
+	import type { AgentRun, Bubble, Member, RepoState } from "./types";
 	import { menuGesture, plural, short } from "./util";
 
 	let {
 		data,
 		hrefFor,
+		agentHref,
+		looseHref,
 		onconflict,
 		oncontext,
 		demo = false,
 	}: {
 		data: RepoState | null;
 		hrefFor?: (bubble: string) => string;
+		agentHref?: (fork: string) => string;
+		looseHref?: (fork: string) => string;
 		onconflict?: (a: string, b: string) => void;
 		oncontext?: (at: { x: number; y: number; bubble: string | null }) => void;
 		demo?: boolean;
 	} = $props();
 
 	type Node = SimulationNodeDatum & { id: string; r: number; b: Bubble; members: Member[]; files: number; film: number };
+	// A running agent, drawn as its own movable pill; its fork flies into a bubble when it's placed.
+	type AgentNode = SimulationNodeDatum & { id: string; r: number; run: AgentRun };
+	const AGENT_W = 168;
+	const AGENT_H = 30;
 	type Pt = { x: number; y: number };
 	type Flyer = { key: number; fork: string; bubble: string; status: Member["status"]; from: Pt; t0: number };
 
@@ -39,7 +47,10 @@
 	let fitted = false;
 
 	const nodes = new Map<string, Node>();
+	const agentNodes = new Map<string, AgentNode>();
 	let view = $state.raw<Node[]>([]);
+	let agentView = $state.raw<AgentNode[]>([]);
+	let merges = $state.raw<[string, string][]>([]);
 	let links = $state.raw<[string, string][]>([]);
 	let flyers = $state.raw<Flyer[]>([]);
 	let now = $state(0);
@@ -48,11 +59,12 @@
 	let dockPos = new Map<string, Pt>(); // world position of each dock chip, as last rendered
 	let flyKey = 0;
 
-	const sim = forceSimulation<Node>([])
-		.force("collide", forceCollide<Node>((n) => n.r + 36).strength(1))
-		.force("charge", forceManyBody<Node>().strength(-40))
-		.force("x", forceX<Node>(0).strength(0.03))
-		.force("y", forceY<Node>(0).strength(0.07))
+	type Any = Node | AgentNode;
+	const sim = forceSimulation<Any>([])
+		.force("collide", forceCollide<Any>((n) => n.r + 36).strength(1))
+		.force("charge", forceManyBody<Any>().strength(-40))
+		.force("x", forceX<Any>(0).strength(0.03))
+		.force("y", forceY<Any>(0).strength(0.07))
 		.alphaDecay(0.035)
 		.on("tick", draw);
 	onDestroy(() => sim.stop());
@@ -60,6 +72,7 @@
 	function draw() {
 		// Fresh copies: the each block only re-renders items whose reference changed.
 		view = [...nodes.values()].map((n) => ({ ...n }));
+		agentView = [...agentNodes.values()].map((n) => ({ ...n }));
 		if (!userMoved) fit(fitted);
 	}
 
@@ -69,7 +82,7 @@
 	const toWorld = (sx: number, sy: number): Pt => ({ x: (sx - cx) / k, y: (sy - cy) / k });
 
 	function fit(smooth: boolean) {
-		const ns = [...nodes.values()];
+		const ns: Any[] = [...nodes.values(), ...agentNodes.values()];
 		if (!ns.length || !w) return;
 		const x0 = Math.min(...ns.map((n) => n.x! - n.r)), x1 = Math.max(...ns.map((n) => n.x! + n.r));
 		const y0 = Math.min(...ns.map((n) => n.y! - n.r)), y1 = Math.max(...ns.map((n) => n.y! + n.r + 34));
@@ -107,6 +120,7 @@
 			const p = memberPos(n, m.name);
 			if (p) before.set(m.name, { ...p, bubble: n.id });
 		}
+		for (const a of agentNodes.values()) before.set(a.id, { x: a.x!, y: a.y!, bubble: null });
 		for (const [f, p] of dockPos) if (!before.has(f)) before.set(f, { ...p, bubble: null });
 
 		const animate = fitted && !reduced;
@@ -119,9 +133,8 @@
 			const r = radius(b);
 			let n = nodes.get(b.id);
 			if (!n) {
-				const from = before.get(b.id);
-				const a = Math.random() * Math.PI * 2;
-				n = { id: b.id, x: from?.x ?? Math.cos(a) * 120, y: from?.y ?? Math.sin(a) * 80, r, b, members: [], files: 0, film: hash(b.id) % 4 };
+				const at = before.get(b.id) ?? spiral(nodes.size);
+				n = { id: b.id, x: at.x, y: at.y, r, b, members: [], files: 0, film: hash(b.id) % 4 };
 				nodes.set(b.id, n);
 				changed = true;
 			}
@@ -141,11 +154,25 @@
 		}
 		for (const id of nodes.keys()) if (!seen.has(id)) (nodes.delete(id), (changed = true));
 
+		// Running agents: new ones start on the outer ring, finished ones leave (their fork flies on).
+		const running = d.agents.filter((a) => a.status === "running");
+		for (const run of running) {
+			const a = agentNodes.get(run.fork);
+			if (a) a.run = run;
+			else {
+				const at = spiral(nodes.size + agentNodes.size + 2);
+				agentNodes.set(run.fork, { id: run.fork, r: AGENT_W / 2, run, x: at.x, y: at.y });
+				changed = true;
+			}
+		}
+		for (const id of agentNodes.keys()) if (!running.some((a) => a.fork === id)) (agentNodes.delete(id), (changed = true));
+
 		links = d.conflicts.filter(([a, b]) => nodes.has(a) && nodes.has(b));
-		sim.nodes([...nodes.values()]);
+		merges = (d.merging ?? []).filter(([a, b]) => nodes.has(a) && nodes.has(b));
+		sim.nodes([...nodes.values(), ...agentNodes.values()]);
 		sim.force(
 			"link",
-			forceLink<Node, { source: string | Node; target: string | Node }>(links.map(([a, b]) => ({ source: a, target: b })))
+			forceLink<Any, { source: string | Any; target: string | Any }>(links.map(([a, b]) => ({ source: a, target: b })))
 				.id((n) => n.id)
 				.distance((l) => (l.source as Node).r + (l.target as Node).r + 110)
 				.strength(0.15),
@@ -162,6 +189,16 @@
 			fly();
 		}
 		tick().then(cacheDock);
+	}
+
+	// Where a new node starts: a sunflower spiral around the map's current centre, so new bubbles spread
+	// out evenly instead of piling up where the simulation would push them.
+	function spiral(i: number): Pt {
+		const ns: Any[] = [...nodes.values(), ...agentNodes.values()];
+		const c = ns.length ? { x: ns.reduce((s, n) => s + n.x!, 0) / ns.length, y: ns.reduce((s, n) => s + n.y!, 0) / ns.length } : { x: 0, y: 0 };
+		const a = i * 2.399963;
+		const d = 150 * Math.sqrt(i);
+		return { x: c.x + Math.cos(a) * d, y: c.y + Math.sin(a) * d * 0.7 };
 	}
 
 	function ripple(id: string) {
@@ -230,8 +267,9 @@
 		oncontext({ x, y, bubble });
 	}
 
+	// On the splash (demo) bubbles can be dragged, but there's no panning, zooming or menu.
 	function down(e: PointerEvent, id: string | null) {
-		if (demo || e.button !== 0) return;
+		if (e.button !== 0 || (demo && id === null)) return;
 		drag = { id, x: e.clientX, y: e.clientY, moved: false, pointer: e.pointerId };
 		clearTimeout(press);
 		if (e.pointerType === "touch" && oncontext) {
@@ -256,7 +294,7 @@
 		}
 		userMoved = true;
 		if (drag.id) {
-			const n = nodes.get(drag.id)!;
+			const n = nodes.get(drag.id) ?? agentNodes.get(drag.id)!;
 			const r0 = box.getBoundingClientRect();
 			const p = toWorld(e.clientX - r0.left, e.clientY - r0.top);
 			n.fx = p.x;
@@ -273,7 +311,7 @@
 		clearTimeout(press);
 		if (!drag || e.pointerId !== drag.pointer) return;
 		if (drag.id) {
-			const n = nodes.get(drag.id);
+			const n = nodes.get(drag.id) ?? agentNodes.get(drag.id);
 			if (n) n.fx = n.fy = null;
 			sim.alphaTarget(0);
 		}
@@ -315,9 +353,10 @@
 		return `left:${left}px;top:${Math.max(8, Math.min(sy - 40, h - dockH - 220))}px`;
 	});
 
-	// Dock: forks not in a bubble yet.
-	const running = $derived(data?.agents.filter((a) => a.status === "running") ?? []);
-	const dockCount = $derived(running.length + (data?.waiting.length ?? 0) + (data?.placing.length ?? 0) + (data?.loose.length ?? 0));
+	// Dock: forks waiting for a push, being placed, or pushed and not placed (loose). Running agents are
+	// nodes on the map instead.
+	const dockCount = $derived((data?.waiting.length ?? 0) + (data?.placing.length ?? 0) + (data?.loose.length ?? 0));
+	const nameOf = (n: Node) => n.b.name || short(n.id);
 
 	const hl = (r: number) => {
 		// Specular glint: a short arc on the upper left of the film.
@@ -325,7 +364,8 @@
 		return `M ${Math.cos(a0) * rr} ${Math.sin(a0) * rr} A ${rr} ${rr} 0 0 1 ${Math.cos(a1) * rr} ${Math.sin(a1) * rr}`;
 	};
 	const dotR = (s: Member["status"]) => (s === "rep" ? 6.5 : 5);
-	const stateLabel = (n: Node) => (!n.b.visible ? "Merging" : n.b.locked ? "Locked" : plural(n.files, "file"));
+	const stateLabel = (n: Node) => (!n.b.visible ? "Merging" : n.b.ferge && n.b.locked ? "Ferge, locked" : n.b.ferge ? "Ferge" : n.b.locked ? "Locked" : plural(n.files, "file"));
+	const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 </script>
 
 <div class="map" class:demo bind:this={box} bind:clientWidth={w} bind:clientHeight={h}>
@@ -365,6 +405,18 @@
 		</defs>
 
 		<g transform="translate({cx} {cy}) scale({k})">
+			{#each merges as [a, b] (a + "|" + b)}
+				{@const na = view.find((n) => n.id === a)}
+				{@const nb = view.find((n) => n.id === b)}
+				{#if na && nb}
+					{@const p = edge(na.x!, na.y!, na.r + 6, nb.x!, nb.y!)}
+					{@const q = edge(nb.x!, nb.y!, nb.r + 6, na.x!, na.y!)}
+					<line class="merging-line" x1={p.x} y1={p.y} x2={q.x} y2={q.y} transition:fade={{ duration: 300 }}>
+						<title>{nameOf(na)} and {nameOf(nb)} are merging</title>
+					</line>
+				{/if}
+			{/each}
+
 			{#each links as [a, b] (a + "|" + b)}
 				{@const na = view.find((n) => n.id === a)}
 				{@const nb = view.find((n) => n.id === b)}
@@ -375,7 +427,7 @@
 						class="conflict"
 						role="button"
 						tabindex={demo ? undefined : 0}
-						aria-label="Conflict between bubbles {short(a)} and {short(b)}. Open to ferge them."
+						aria-label="Conflict between {view.find((n) => n.id === a)?.b.name || short(a)} and {view.find((n) => n.id === b)?.b.name || short(b)}. Open to ferge them."
 						onclick={() => onconflict?.(a, b)}
 						onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onconflict?.(a, b))}
 						transition:fade={{ duration: 300 }}
@@ -399,8 +451,9 @@
 					data-id={n.id}
 					class:merging={!n.b.visible}
 					class:locked={n.b.locked}
+					class:ferge={n.b.ferge}
 					class:hot={hovered === n.id}
-					aria-label="Bubble {short(n.id)}: {plural(n.members.length, 'fork')}, {stateLabel(n)}. Open its code."
+					aria-label="{nameOf(n)}: {plural(n.members.length, 'fork')}, {stateLabel(n)}. Open its code."
 					onpointerdown={(e) => (e.stopPropagation(), down(e, n.id))}
 					onpointerenter={() => !drag && (hovered = n.id)}
 					onpointerleave={() => hovered === n.id && (hovered = null)}
@@ -412,7 +465,7 @@
 					{#key ripples[n.id]}
 						{#if ripples[n.id]}<circle class="ripple" r={n.r} stroke="url(#film-{n.film})" />{/if}
 					{/key}
-					<circle class="rim" r={n.r} stroke={n.b.locked ? "url(#film-locked)" : `url(#film-${n.film})`} />
+					<circle class="rim" r={n.r} stroke={n.b.ferge ? "var(--amber)" : n.b.locked ? "url(#film-locked)" : `url(#film-${n.film})`} />
 					<path class="glint" d={hl(n.r)} />
 					{#each dots as m, i (m.name)}
 						{#if !flying.has(m.name)}
@@ -427,9 +480,26 @@
 							<path d="M -2.5 -1 v -2 a 2.5 2.5 0 0 1 5 0 v 2" />
 						</g>
 					{/if}
-					<text class="id" y={n.r + 17}>{short(n.id)}</text>
+					<text class="id" y={n.r + 17}>{clip(nameOf(n), 28)}</text>
 					<text class="sub" y={n.r + 31}>{stateLabel(n)}</text>
 				</a>
+				</g>
+			{/each}
+
+			{#each agentView as a (a.id)}
+				<g transform="translate({a.x} {a.y})" transition:fade={{ duration: 300 }}>
+					<a
+						href={demo ? undefined : agentHref?.(a.id)}
+						class="agent"
+						aria-label="Agent working: {a.run.prompt}. Open its run."
+						onpointerdown={(e) => (e.stopPropagation(), down(e, a.id))}
+						onclick={(e) => suppressClick && (e.preventDefault(), (suppressClick = false))}
+					>
+						<rect x={-AGENT_W / 2} y={-AGENT_H / 2} width={AGENT_W} height={AGENT_H} rx={AGENT_H / 2} />
+						<circle class="pulse-dot" cx={-AGENT_W / 2 + 15} cy="0" r="5" />
+						<text x={-AGENT_W / 2 + 27} y="4">{clip(a.run.prompt, 18)}</text>
+						<title>{a.run.prompt}</title>
+					</a>
 				</g>
 			{/each}
 
@@ -453,6 +523,7 @@
 			<span><i class="dot pending"></i>Waiting to merge</span>
 			<span><i class="dot merged"></i>Merged</span>
 			<span><i class="dot conflict"></i>Conflicted</span>
+			<span><svg width="18" height="8" aria-hidden="true"><line x1="1" y1="4" x2="17" y2="4" stroke="var(--ink-3)" stroke-width="2" stroke-dasharray="5 3" /></svg>Merging</span>
 			<span class="hint">Right-click for actions</span>
 		</div>
 		<div class="zoom">
@@ -466,8 +537,9 @@
 		{@const n = hoverNode}
 		<div class="card" style={cardStyle} aria-hidden="true">
 			<div class="card-head">
-				<strong class="mono">{short(n.id)}</strong>
+				<strong>{nameOf(n)}</strong>
 				{#if !n.b.visible}<span class="tag">Merging</span>{/if}
+				{#if n.b.ferge}<span class="tag">Ferge</span>{/if}
 				{#if n.b.locked}<span class="tag">Locked</span>{/if}
 			</div>
 			<p class="muted">{plural(n.members.length, "fork")}, {plural(n.files, "file")}</p>
@@ -487,38 +559,17 @@
 
 	{#if dockCount}
 		<div class="dock" bind:clientHeight={dockH} aria-label="Forks not in a bubble yet">
-			{#if running.length}
-				<div class="group">
-					<span class="label">Agents working</span>
-					{#each running as a (a.fork)}
-						<span class="chip" data-fork={a.fork} title={a.prompt}><i class="dot working pulse"></i><span class="prompt">{a.prompt}</span></span>
-					{/each}
-				</div>
-			{/if}
-			{#if data?.waiting.length}
-				<div class="group">
-					<span class="label">Waiting for a push</span>
-					{#each data.waiting as f (f)}
-						<span class="chip" data-fork={f}><i class="dot waiting"></i><span class="mono">{short(f)}</span></span>
-					{/each}
-				</div>
-			{/if}
-			{#if data?.loose.length}
-				<div class="group">
-					<span class="label">Pushed, not placed</span>
-					{#each data.loose as l (l.fork)}
-						<span class="chip" data-fork={l.fork} title={l.reason ?? plural(l.pushes, "push", "pushes")}><i class="dot waiting"></i><span class="mono">{short(l.fork)}</span></span>
-					{/each}
-				</div>
-			{/if}
-			{#if data?.placing.length}
-				<div class="group">
-					<span class="label">Finding a bubble</span>
-					{#each data.placing as f (f)}
-						<span class="chip" data-fork={f}><i class="dot placing pulse"></i><span class="mono">{short(f)}</span></span>
-					{/each}
-				</div>
-			{/if}
+			{#each data?.waiting ?? [] as f (f)}
+				<span class="chip" data-fork={f} title="Waiting for a push"><i class="dot waiting"></i><span class="mono">{short(f)}</span></span>
+			{/each}
+			{#each data?.loose ?? [] as l (l.fork)}
+				<a class="chip" data-fork={l.fork} href={looseHref?.(l.fork)} title={l.reason ?? (l.ci === "running" ? "CI running" : "Pushed, not placed yet")}>
+					<i class="dot {l.ci === 'failed' || l.reason ? 'conflict' : 'waiting'} {l.ci === 'running' ? 'pulse' : ''}"></i><span class="mono">{short(l.fork)}</span>
+				</a>
+			{/each}
+			{#each data?.placing ?? [] as f (f)}
+				<span class="chip" data-fork={f} title="Finding a bubble"><i class="dot placing pulse"></i><span class="mono">{short(f)}</span></span>
+			{/each}
 		</div>
 	{/if}
 </div>
@@ -543,7 +594,7 @@
 			--soap-edge: rgb(185 163 240 / 0.12);
 		}
 	}
-	.map.demo { background: none; }
+
 	svg { display: block; touch-action: none; user-select: none; cursor: grab; }
 	svg:active { cursor: grabbing; }
 	.demo svg { cursor: default; }
@@ -557,6 +608,15 @@
 	.bubble.merging .rim { stroke-dasharray: 14 9; animation: swirl 1.4s linear infinite; }
 	.bubble.merging .body { opacity: 0.6; }
 	.bubble.locked .glint { opacity: 0.4; }
+	.bubble.ferge .rim { stroke-dasharray: 3 5; stroke-linecap: round; stroke-width: 4; }
+	.merging-line { stroke: var(--ink-3); stroke-width: 2; stroke-dasharray: 10 7; animation: swirl 1.4s linear infinite; }
+
+	.agent { cursor: pointer; outline: none; }
+	.agent rect { fill: var(--raised); stroke: var(--working); stroke-width: 2; filter: drop-shadow(0 2px 4px rgb(15 24 33 / 0.12)); }
+	.agent:hover rect, .agent:focus-visible rect { stroke-width: 3; }
+	.agent .pulse-dot { fill: var(--working); animation: blink 1.6s ease-in-out infinite; }
+	.agent text { text-anchor: start; font-size: 12px; fill: var(--ink); }
+	@keyframes blink { 50% { opacity: 0.35; } }
 	@keyframes swirl { to { stroke-dashoffset: -46; } }
 
 	.ripple {
@@ -581,7 +641,7 @@
 	.lock path { fill: none; stroke: var(--ink-2); stroke-width: 1.5; }
 
 	text { text-anchor: middle; fill: var(--ink-2); pointer-events: none; }
-	text.id { font-family: var(--mono); font-size: 11px; fill: var(--ink); }
+	text.id { font-size: 12px; font-weight: 600; fill: var(--ink); }
 	text.sub { font-size: 11px; fill: var(--ink-3); }
 	.merging text.sub { font-style: italic; }
 
@@ -639,16 +699,13 @@
 		right: 0;
 		bottom: 0;
 		display: flex;
-		gap: 1.5rem;
+		flex-wrap: wrap;
+		gap: 0.4rem;
 		padding: 0.7rem 1rem;
-		background: color-mix(in srgb, var(--paper) 88%, transparent);
-		backdrop-filter: blur(6px);
-		border-top: 1px solid var(--line);
-		overflow-x: auto;
 		font-size: 0.8125rem;
+		pointer-events: none;
 	}
-	.group { display: flex; align-items: center; gap: 0.5rem; flex: none; }
-	.label { color: var(--ink-3); margin-right: 0.15rem; }
+	.dock .chip { pointer-events: auto; text-decoration: none; color: inherit; }
 	.chip {
 		display: inline-flex;
 		align-items: center;
@@ -659,7 +716,6 @@
 		background: var(--raised);
 		max-width: 16rem;
 	}
-	.chip .prompt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 	.chip .mono { font-size: 0.75rem; }
 
 	@media (max-width: 768px) {

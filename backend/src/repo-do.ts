@@ -793,7 +793,7 @@ export class RepoDO extends DurableObject<Env> {
 	private async failed(fork: string, steps: string[]) {
 		const s = this.settings();
 		const l = this.loose(fork)!;
-		const reason = `${steps.join(" and ")} failed`;
+		const reason = `${steps.map((s) => (s === "ci" ? "CI" : s)).join(" and ")} failed`;
 		this.sql.exec("UPDATE loose SET reason = ? WHERE fork = ?", reason, fork);
 		if (l.kind !== "agent") return;
 		if (l.agent_pushes < s.maxAgentPushes) return this.startFixer(fork, steps);

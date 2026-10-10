@@ -3,14 +3,13 @@
 	import { onDestroy } from "svelte";
 	import Dialog from "../lib/Dialog.svelte";
 	import ForkCommands from "../lib/ForkCommands.svelte";
-	import RepoTabs from "../lib/RepoTabs.svelte";
 	import Shell from "../lib/Shell.svelte";
 	import SuperagentDialog from "../lib/SuperagentDialog.svelte";
 	import { navigate } from "../lib/router.svelte";
-	import { ApiError, api } from "../lib/session.svelte";
+	import { ApiError, api, session } from "../lib/session.svelte";
 	import { toast, toastError } from "../lib/toast.svelte";
 	import type { RepoState } from "../lib/types";
-	import { poll, short } from "../lib/util";
+	import { poll, repoName, short } from "../lib/util";
 	import TaskList from "./tasks/TaskList.svelte";
 	import TaskView from "./tasks/TaskView.svelte";
 
@@ -110,12 +109,12 @@
 <Shell
 	crumbs={[
 		{ label: "Repositories", href: "/repos" },
-		{ label: repo, href: `/repos/${repo}`, mono: true },
+		{ label: repoName(repo, session.me?.names), href: `/repos/${repo}` },
 		...(id ? [{ label: "Tasks", href: `/repos/${repo}/tasks` }, { label: task?.title ?? `#${id.slice(2)}` }] : [{ label: "Tasks" }]),
 	]}
 	{repo}
+	openTasks={open}
 >
-	<RepoTabs {repo} current="tasks" {open} />
 	<div class="page">
 		{#if missing}
 			<h1>This repository isn't available</h1>
@@ -172,7 +171,7 @@
 				<label for="task-bubble">Start from</label>
 				<select id="task-bubble" bind:value={bubble}>
 					<option value="">Any bubble</option>
-					{#each data?.bubbles ?? [] as b (b.id)}<option value={b.id}>Bubble {short(b.id)}</option>{/each}
+					{#each data?.bubbles ?? [] as b (b.id)}<option value={b.id}>{b.name || short(b.id)}</option>{/each}
 				</select>
 			</div>
 		{/if}

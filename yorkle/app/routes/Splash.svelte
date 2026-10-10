@@ -1,18 +1,25 @@
 <script lang="ts">
 	import { onDestroy } from "svelte";
+	import { fade } from "svelte/transition";
 	import BubbleMap from "../lib/BubbleMap.svelte";
 	import { demoSteps } from "../lib/demo";
 
+	// The demo plays its steps, then crossfades into a fresh map at step 0, so the loop never jumps.
 	const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 	let step = $state(reduced ? demoSteps.length - 1 : 0);
-	const timer = reduced ? 0 : setInterval(() => (step = (step + 1) % demoSteps.length), 2200);
+	let cycle = $state(0);
+	const timer = reduced
+		? 0
+		: setInterval(() => {
+				if (step < demoSteps.length - 1) step++;
+				else ((step = 0), cycle++);
+			}, 2200);
 	onDestroy(() => clearInterval(timer));
 </script>
 
 <div class="splash">
 	<header>
 		<span class="wordmark">yorkle</span>
-		<nav><a class="button quiet-dark" href="/login">Log in</a></nav>
 	</header>
 	<section class="intro">
 		<h1>Run many coding agents on one repository.</h1>
@@ -24,12 +31,11 @@
 		<p class="invite">Signing up needs an invite code from someone who already uses yorkle.</p>
 	</section>
 	<figure class="stage">
-		<div class="map-wrap"><BubbleMap data={demoSteps[step]} demo /></div>
-		<figcaption>
-			<span><svg width="18" height="18" aria-hidden="true"><circle cx="9" cy="9" r="7.5" fill="none" stroke="url(#cap-film)" stroke-width="2" /><defs><linearGradient id="cap-film"><stop offset="0" stop-color="#7fd1c7" /><stop offset="1" stop-color="#f2c38b" /></linearGradient></defs></svg>A bubble holds forks that change different files, so they merge cleanly.</span>
-			<span><i class="dot merged"></i>Each dot is a fork, from an agent or from your own push.</span>
-			<span><svg width="22" height="10" aria-hidden="true"><line x1="1" y1="5" x2="21" y2="5" stroke="#e06a4e" stroke-width="2" stroke-dasharray="4 3" /></svg>A dashed line marks two bubbles that conflict.</span>
-		</figcaption>
+		<div class="map-wrap">
+			{#key cycle}
+				<div class="map-layer" transition:fade={{ duration: 700 }}><BubbleMap data={demoSteps[step]} demo /></div>
+			{/key}
+		</div>
 	</figure>
 </div>
 
@@ -55,6 +61,7 @@
 		overflow: hidden;
 	}
 	.splash :global(.map) {
+		--fog: transparent; /* the map's dots on the splash's own background */
 		--soap-core: rgb(255 255 255 / 0.1);
 		--soap-mid: rgb(255 255 255 / 0.03);
 		--soap-edge: rgb(185 163 240 / 0.14);
@@ -80,22 +87,11 @@
 	.light:hover { background: var(--teal); border-color: var(--teal); }
 	.outline { background: transparent; border-color: rgb(255 255 255 / 0.35); color: #fff; }
 	.outline:hover { border-color: #fff; }
-	.quiet-dark { background: transparent; border-color: transparent; color: var(--ink-2); }
-	.quiet-dark:hover { color: #fff; border-color: rgb(255 255 255 / 0.25); }
 	.invite { margin-top: 1rem; font-size: 0.875rem; color: var(--ink-3); }
 
 	.stage { margin: 0; display: flex; flex-direction: column; min-height: 0; padding: 0 clamp(1rem, 3vw, 2.5rem) 2rem 1rem; }
-	.map-wrap { flex: 1; min-height: 22rem; }
-	figcaption {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.6rem 1.75rem;
-		font-size: 0.8125rem;
-		color: var(--ink-3);
-		padding-top: 0.75rem;
-		border-top: 1px solid var(--line);
-	}
-	figcaption span { display: inline-flex; align-items: center; gap: 0.5rem; }
+	.map-wrap { flex: 1; min-height: 22rem; position: relative; border-radius: var(--r-md); overflow: hidden; }
+	.map-layer { position: absolute; inset: 0; }
 
 	@media (max-width: 900px) {
 		.splash { grid-template-columns: 1fr; grid-template-rows: auto auto 1fr; overflow: visible; }

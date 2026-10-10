@@ -1,10 +1,11 @@
 <script lang="ts">
+	import Dialog from "../lib/Dialog.svelte";
 	import Shell from "../lib/Shell.svelte";
 	import { navigate } from "../lib/router.svelte";
 	import { api, loadMe, session } from "../lib/session.svelte";
 	import { toastError } from "../lib/toast.svelte";
 	import type { RepoState } from "../lib/types";
-	import { plural } from "../lib/util";
+	import { plural, repoName } from "../lib/util";
 
 	let creating = $state(false);
 	let filter = $state("");
@@ -20,12 +21,22 @@
 		}
 	});
 
-	const repos = $derived((session.me?.repos ?? []).filter((r) => r.includes(filter.trim())).toSorted());
+	const nameOf = (r: string) => repoName(r, session.me?.names);
+	const repos = $derived(
+		(session.me?.repos ?? [])
+			.filter((r) => `${nameOf(r)} ${r}`.toLowerCase().includes(filter.trim().toLowerCase()))
+			.toSorted((a, b) => nameOf(a).localeCompare(nameOf(b))),
+	);
 
-	async function create() {
+	let createOpen = $state(false);
+	let newName = $state("");
+	async function create(e: SubmitEvent) {
+		e.preventDefault();
 		creating = true;
 		try {
-			const { repo } = await api<{ repo: string }>("POST", "/repos");
+			const { repo } = await api<{ repo: string }>("POST", "/repos", { name: newName });
+			createOpen = false;
+			newName = "";
 			await loadMe();
 			navigate(`/repos/${repo}`);
 		} catch (e) {
@@ -38,7 +49,7 @@
 
 <Shell crumbs={[{ label: "Repositories" }]}>
 	{#snippet actions()}
-		<button class="primary" onclick={create} disabled={creating}>Create repository</button>
+		<button class="primary" onclick={() => (createOpen = true)} disabled={creating}>Create repository</button>
 	{/snippet}
 	<div class="page">
 		<h1>Repositories</h1>
@@ -46,7 +57,7 @@
 			<div class="empty">
 				<h2>Create your first repository</h2>
 				<p>A repository starts empty. Start agents on it or push forks to it, and yorkle groups their work into bubbles.</p>
-				<button class="primary" onclick={create} disabled={creating}>Create repository</button>
+				<button class="primary" onclick={() => (createOpen = true)} disabled={creating}>Create repository</button>
 			</div>
 		{:else}
 			<div class="tools">
@@ -61,7 +72,7 @@
 					{#each repos as r (r)}
 						{@const s = summaries[r]}
 						<tr>
-							<td><a class="name mono" href="/repos/{r}">{r}</a></td>
+							<td><a class="name" href="/repos/{r}">{nameOf(r)}</a>{#if nameOf(r) !== r}<span class="muted id mono">{r}</span>{/if}</td>
 							{#if s === "error"}
 								<td colspan="3" class="muted">Couldn't load</td>
 							{:else if !s}
@@ -82,6 +93,17 @@
 	</div>
 </Shell>
 
+<Dialog bind:open={createOpen} title="Create a repository">
+	<form onsubmit={create}>
+		<div class="field">
+			<label for="repo-name">Name</label>
+			<input id="repo-name" bind:value={newName} required maxlength="60" placeholder="My project" />
+			<p class="hint">Its first bubble is called after it.</p>
+		</div>
+		<button class="primary" disabled={creating}>Create repository</button>
+	</form>
+</Dialog>
+
 <style>
 	.page { padding: 2rem clamp(1rem, 3vw, 2.5rem); max-width: 72rem; }
 	h1 { margin-bottom: 1.25rem; }
@@ -91,7 +113,8 @@
 	td { padding: 0.75rem 1rem; border-bottom: 1px solid var(--line-2); font-size: 0.9375rem; }
 	tr:last-child td { border-bottom: 0; }
 	tbody tr:hover { background: var(--raised); }
-	.name { font-size: 0.875rem; font-weight: 400; text-decoration: none; }
+	.name { font-weight: 500; text-decoration: none; }
+	.id { margin-left: 0.6rem; font-size: 0.75rem; }
 	.name:hover { text-decoration: underline; }
 	.forks { margin-left: 0.6rem; font-size: 0.8125rem; }
 	.empty { max-width: 32rem; padding: 2rem; background: var(--paper); border: 1px dashed var(--line); border-radius: var(--r-md); }

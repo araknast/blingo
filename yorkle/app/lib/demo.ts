@@ -3,7 +3,8 @@ import type { Bubble, Member, RepoState } from "./types";
 // A scripted repository for the splash page: forks arrive, join bubbles, merge, and two bubbles conflict.
 const f = (id: string) => `r-demo-f-${id}`;
 const m = (id: string, status: Member["status"], files: string[], bubble: string): Member => ({ name: f(id), bubble: f(bubble), status, files });
-const b = (id: string, members: Member[], visible = true): Bubble => ({ id: f(id), visible, locked: false, members });
+const NAMES: Record<string, string> = { "3fa1c09e": "demo", d94b7e13: "sunny otter", "5c08aa71": "calm river", e2b8f6c1: "brisk heron" };
+const b = (id: string, members: Member[], visible = true): Bubble => ({ id: f(id), name: NAMES[id] ?? "", visible, locked: false, ferge: false, members });
 
 const A = (extra: Member[] = []) =>
 	b("3fa1c09e", [
@@ -30,7 +31,7 @@ const agents = (...prompts: [string, string][]) =>
 const P1: [string, string] = ["a7c3e5d2", "Add keyboard shortcuts to the editor"];
 const P2: [string, string] = ["e2b8f6c1", "Write a CLI for exporting reports"];
 
-const state = (bubbles: Bubble[], o: Partial<RepoState> = {}): RepoState => ({ bubbles, conflicts: [], merging: [], waiting: [], placing: [], loose: [], settings: { autoPlaceNotagents: true, ci: { enabled: false, command: "", hosts: [] }, review: "none", maxAgentPushes: 3 }, agents: [], tasks: [], memory: [], ...o });
+const state = (bubbles: Bubble[], o: Partial<RepoState> = {}): RepoState => ({ name: "demo", bubbles, conflicts: [], merging: [], waiting: [], placing: [], loose: [], settings: { autoPlaceNotagents: true, ci: { enabled: false, command: "", hosts: [] }, review: "none", maxAgentPushes: 3, provider: "anthropic", models: { agent: "", superagent: "", ferge: "" }, fergeAgents: false, taskApproval: false, hasKey: false }, agents: [], tasks: [], memory: [], ...o });
 
 export const demoSteps: RepoState[] = [
 	state([A(), B(), C()], { waiting: [f("44f0b9a6")], agents: agents(P1, P2) }),

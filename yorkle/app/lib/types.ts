@@ -1,11 +1,13 @@
 // Shapes returned by the blingo API (see backend/src/index.ts and RepoDO.list).
 
-export type Me = { username: string; admin: boolean; repos: string[] };
+// `names`: repository id → display name (repositories from before names have none).
+export type Me = { username: string; admin: boolean; repos: string[]; names?: Record<string, string> };
 
 // pending = its patch series is queued in the bubble; failed = the series didn't apply.
 export type MemberStatus = "rep" | "pending" | "merged" | "conflict" | "failed";
 export type Member = { name: string; bubble: string; status: MemberStatus; files: string[] };
-export type Bubble = { id: string; visible: number | boolean; locked: boolean; members: Member[] };
+// `ferge`: the locked bubble a ferge made, holding the conflicting files.
+export type Bubble = { id: string; name: string; visible: number | boolean; locked: boolean; ferge: boolean; members: Member[] };
 export type AgentRun = { fork: string; prompt: string; started: number; status: string; finished: number | null; log: string | null };
 export type TaskStatus = "awaiting-approval" | "open" | "in-progress" | "completed" | "failed";
 export type Task = {
@@ -22,6 +24,7 @@ export type Task = {
 	created: number;
 	finished: number | null;
 	ready: boolean;
+	role: "agent" | "superagent" | "ferge" | null;
 };
 // A notagent fork that was pushed to and isn't placed yet (auto-placement off, or placement failed).
 // With CI on, an agent's fork is loose too while CI runs. `ci` and the reviews are for its latest push.
@@ -42,9 +45,15 @@ export type Settings = {
 	ci: { enabled: boolean; command: string; hosts: string[] };
 	review: "none" | "auto" | "manual" | "both";
 	maxAgentPushes: number;
+	provider: "anthropic" | "openrouter";
+	models: { agent: string; superagent: string; ferge: string };
+	fergeAgents: boolean;
+	taskApproval: boolean;
+	hasKey: boolean;
 };
 export type MemoryItem = { id: string; text: string; author: string; created: number };
 export type RepoState = {
+	name: string | null;
 	bubbles: Bubble[];
 	conflicts: [string, string][];
 	merging: [string, string][];

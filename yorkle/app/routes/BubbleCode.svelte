@@ -2,9 +2,9 @@
 	import { onDestroy } from "svelte";
 	import Shell from "../lib/Shell.svelte";
 	import { route } from "../lib/router.svelte";
-	import { ApiError, api } from "../lib/session.svelte";
+	import { ApiError, api, session } from "../lib/session.svelte";
 	import type { RepoState } from "../lib/types";
-	import { plural, poll, short } from "../lib/util";
+	import { plural, poll, repoName, short } from "../lib/util";
 	import Source from "./bubble/Source.svelte";
 	import Commits from "./bubble/Commits.svelte";
 	import CommitView from "./bubble/CommitView.svelte";
@@ -36,8 +36,8 @@
 <Shell
 	crumbs={[
 		{ label: "Repositories", href: "/repos" },
-		{ label: repo, href: `/repos/${repo}`, mono: true },
-		{ label: `Bubble ${short(bubble)}`, href: base },
+		{ label: repoName(repo, session.me?.names), href: `/repos/${repo}` },
+		{ label: b?.name || `Bubble ${short(bubble)}`, href: base },
 	]}
 	{repo}
 >
@@ -47,7 +47,7 @@
 		<div class="page gone">
 			<h1>This bubble has merged into another one</h1>
 			{#if absorbedInto}
-				<p>Its code now lives in bubble <a class="mono" href="/repos/{repo}/b/{absorbedInto}">{short(absorbedInto)}</a>.</p>
+				<p>Its code now lives in <a href="/repos/{repo}/b/{absorbedInto}">{data.bubbles.find((x) => x.id === absorbedInto)?.name || short(absorbedInto)}</a>.</p>
 			{:else}
 				<p>Its code now lives in another bubble. <a href="/repos/{repo}">Open the bubble map</a> to find it.</p>
 			{/if}
@@ -60,10 +60,11 @@
 					<circle cx="18" cy="18" r="15" fill="none" stroke="url(#hdr-film)" stroke-width="3" />
 				</svg>
 				<div>
-					<h1>Bubble <span class="mono id">{short(bubble)}</span></h1>
+					<h1>{#if b?.name}{b.name}{:else}Bubble <span class="mono id">{short(bubble)}</span>{/if}</h1>
 					<p class="muted meta">
 						{#if b}
 							{plural(b.members.length, "fork")}
+							{#if b.ferge}<span class="tag">Ferge</span>{/if}
 							{#if b.locked}<span class="tag">Locked</span>{/if}
 							{#if !b.visible}<span class="tag">Merging</span>{/if}
 						{:else}&nbsp;{/if}

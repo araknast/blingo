@@ -1,4 +1,5 @@
-// Screenshots of the repository page's Map and Tasks tabs, seeded with a mix of tasks.
+// Screenshots of the splash page and a repository's Map, Tasks, Agents, Memory and Settings tabs,
+// seeded with a mix of tasks.
 // usage: npm run dev -- --enable-containers=false   (both Workers on :8787), then
 //        node e2e/ui-screens.mjs [out dir]   # YORKLE_URL (default http://localhost:8787), BLINGO_TOKEN (default: backend/.dev.vars)
 // Creates one repository and deletes it at the end.
@@ -21,7 +22,7 @@ const api = async (method, path, body) => {
 
 // CHROMIUM = a browser binary, when Playwright's own download doesn't match its version.
 const browser = await chromium.launch(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : {});
-const { repo: R } = await api("POST", "/repos");
+const { repo: R } = await api("POST", "/repos", { name: "Screenshot repo" });
 console.log("repo", R);
 try {
 	const n1 = await api("POST", "/notagents", { repo: R, title: "Add a greeting file", description: "Add hello.txt with a friendly greeting." });
@@ -43,11 +44,12 @@ try {
 		console.log("wrote", name);
 	};
 
+	const tab = (name) => page.getByRole("list", { name: "Repository" }).getByRole("link", { name });
 	await page.goto(`${U}/repos/${R}`);
-	await page.getByRole("link", { name: /Tasks/ }).first().waitFor();
+	await tab(/Tasks/).waitFor();
 	await shot("1-map");
 
-	await page.getByRole("navigation", { name: "Repository" }).getByRole("link", { name: /Tasks/ }).click();
+	await tab(/Tasks/).click();
 	await page.getByText("Write the API docs").waitFor();
 	await shot("2-tasks-open");
 
@@ -70,6 +72,25 @@ try {
 	await page.goto(`${U}/repos/${R}/tasks?state=completed`);
 	await page.getByText("Nothing completed yet").waitFor();
 	await shot("7-completed-empty");
+
+	await tab("Agents").click();
+	await page.getByRole("heading", { name: "Agents" }).waitFor();
+	await shot("9-agents");
+	await tab("Memory").click();
+	await page.getByText("Use tabs for indentation.").waitFor();
+	await shot("10-memory");
+	await tab("Settings").click();
+	await page.getByRole("button", { name: "Save settings" }).waitFor();
+	await shot("11-settings");
+
+	const out_ = await browser.newContext({ viewport: { width: 1360, height: 860 } });
+	const splash = await out_.newPage();
+	await splash.goto(`${U}/`);
+	await splash.getByRole("heading", { name: /Run many coding agents/ }).waitFor();
+	await splash.waitForTimeout(2500);
+	await splash.screenshot({ path: join(out, "12-splash.png") });
+	console.log("wrote", "12-splash");
+	await out_.close();
 
 	await page.setViewportSize({ width: 390, height: 844 });
 	await page.goto(`${U}/repos/${R}/tasks`);

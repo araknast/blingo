@@ -4,7 +4,7 @@
 	import { route } from "./router.svelte";
 	import { api, logout, session } from "./session.svelte";
 	import { toast, toastError } from "./toast.svelte";
-	import { copy } from "./util";
+	import { copy, repoName } from "./util";
 
 	type Crumb = { label: string; href?: string; mono?: boolean };
 	let {
@@ -12,8 +12,24 @@
 		actions,
 		children,
 		repo,
+		openTasks,
 		full = false,
-	}: { crumbs: Crumb[]; actions?: Snippet; children: Snippet; repo?: string; full?: boolean } = $props();
+	}: { crumbs: Crumb[]; actions?: Snippet; children: Snippet; repo?: string; openTasks?: number; full?: boolean } = $props();
+
+	// The repository's views, as tabs in the sidebar. The map also covers its bubbles and loose forks.
+	const tabs = $derived.by(() => {
+		if (!repo) return [];
+		const base = `/repos/${repo}`;
+		const p = route.path.replace(/\/+$/, "");
+		const under = (s: string) => p === `${base}/${s}` || p.startsWith(`${base}/${s}/`);
+		return [
+			{ label: "Map", href: base, active: p === base || under("b") || under("forks") },
+			{ label: "Tasks", href: `${base}/tasks`, active: under("tasks"), count: openTasks },
+			{ label: "Agents", href: `${base}/agents`, active: under("agents") },
+			{ label: "Memory", href: `${base}/memory`, active: under("memory") },
+			{ label: "Settings", href: `${base}/settings`, active: under("settings") },
+		];
+	});
 
 	let drawer = $state(false);
 	let inviteOpen = $state(false);
@@ -27,7 +43,6 @@
 			toastError(e);
 		}
 	}
-	const here = (href: string) => route.path === href || route.path.startsWith(href + "/");
 	// Close the mobile drawer on navigation.
 	$effect(() => {
 		route.path;
@@ -42,7 +57,12 @@
 			<li><a href="/repos" aria-current={route.path === "/repos" ? "page" : undefined}>Repositories</a></li>
 			{#if repo}
 				<li class="repo-nav">
-					<a href="/repos/{repo}" class="mono" aria-current={here(`/repos/${repo}`) ? "page" : undefined}>{repo}</a>
+					<span class="repo-name" title={repo}>{repoName(repo, session.me?.names)}</span>
+					<ul aria-label="Repository">
+						{#each tabs as t (t.label)}
+							<li><a href={t.href} aria-current={t.active ? "page" : undefined}>{t.label}{#if t.count}<span class="n">{t.count}</span>{/if}</a></li>
+						{/each}
+					</ul>
 				</li>
 			{/if}
 		</ul>
@@ -120,7 +140,10 @@
 	}
 	.side ul a:hover { background: rgb(255 255 255 / 0.06); color: #fff; }
 	.side ul a[aria-current="page"] { background: rgb(255 255 255 / 0.1); color: #fff; }
-	.repo-nav a { padding-left: 1.4rem !important; font-size: 0.8125rem !important; }
+	.repo-nav { margin-top: 0.75rem; }
+	.repo-name { display: block; padding: 0.3rem 0.6rem; font-size: 0.75rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: rgb(255 255 255 / 0.55); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.repo-nav a { display: flex !important; justify-content: space-between; align-items: center; padding-left: 1rem !important; }
+	.repo-nav .n { font-size: 0.75rem; padding: 0 0.4rem; border-radius: 999px; background: rgb(255 255 255 / 0.12); }
 	.me { margin-top: auto; display: grid; gap: 0.4rem; }
 	.who { display: flex; align-items: center; gap: 0.6rem; padding: 0.5rem 0.6rem; font-size: 0.9375rem; color: #fff; }
 	.avatar {
