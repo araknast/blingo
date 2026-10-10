@@ -10,7 +10,7 @@
 	let { repo }: { repo: string } = $props();
 	// svelte-ignore state_referenced_locally (the page is keyed by repo in App)
 	const rd = repoState(repo, 5000);
-	const items = $derived(rd.data?.memory ?? []);
+	const items = $derived([...(rd.data?.memory ?? [])].reverse()); // newest first
 	let page = $state(0);
 	// Deleting the last note on a page steps back.
 	const shown = $derived(items.slice(Math.min(page, Math.max(0, Math.ceil(items.length / PAGE) - 1)) * PAGE).slice(0, PAGE));
@@ -40,6 +40,7 @@
 	}
 	// Notes agents leave are authored by their run's id (a fork or superagent run).
 	const isRun = (a: string) => a.includes("-f-") || a.includes("-s-");
+	const kind = (a: string) => (a.includes("-s-") ? "Superagent" : "Agent");
 </script>
 
 <Shell
@@ -61,7 +62,7 @@
 				{#each shown as m (m.id)}
 					<li>
 						<p>{m.text}</p>
-						<span class="muted small">{#if isRun(m.author)}<a class="mono" href="/repos/{repo}/agents/{m.author}">Agent {m.author.split(/-[fsc]-/).at(-1)}</a>{:else}{m.author}{/if}, {ago(m.created)}</span>
+						<span class="muted small">{#if isRun(m.author)}<a class="mono" href="/repos/{repo}/agents/{m.author}">{kind(m.author)} {m.author.split(/-[fsc]-/).at(-1)}</a>{:else}{m.author}{/if}, {ago(m.created)}</span>
 						<button class="quiet" aria-label="Delete note" onclick={() => remove(m.id)}>Delete</button>
 					</li>
 				{/each}
