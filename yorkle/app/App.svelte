@@ -2,6 +2,7 @@
 	import { match, navigate, route } from "./lib/router.svelte";
 	import { loadMe, session } from "./lib/session.svelte";
 	import Toasts from "./lib/Toasts.svelte";
+	import Confirm from "./lib/Confirm.svelte";
 	import Splash from "./routes/Splash.svelte";
 	import Login from "./routes/Login.svelte";
 	import Signup from "./routes/Signup.svelte";
@@ -71,3 +72,4 @@
 	{/if}
 {/if}
 <Toasts />
+<Confirm />

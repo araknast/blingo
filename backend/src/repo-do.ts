@@ -337,6 +337,17 @@ export class RepoDO extends DurableObject<Env> {
 		return n > 0;
 	}
 
+	// Turns down a task awaiting approval: it's deleted. Not while another task depends on it, which
+	// would then wait forever; reject those first.
+	rejectTask(id: string): { ok: true } | { error: string } {
+		if (this.task(id)?.status !== "awaiting-approval") return { error: "only a task awaiting approval can be rejected" };
+		const n = this.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM task_dep WHERE dep = ?", id).one().n;
+		if (n) return { error: `${n === 1 ? "a task depends" : `${n} tasks depend`} on it: reject ${n === 1 ? "that one" : "those"} first` };
+		this.sql.exec("DELETE FROM task_dep WHERE task = ?", id);
+		this.sql.exec("DELETE FROM task WHERE id = ?", id);
+		return { ok: true };
+	}
+
 	// Undoes a task added for a request that then failed (its notagent fork couldn't be made), so a
 	// retried request doesn't leave an orphan open task behind. Only while nothing has started it.
 	dropTask(id: string) {
@@ -717,7 +728,7 @@ export class RepoDO extends DurableObject<Env> {
 		this.sql.exec(
 			"DELETE FROM bubble; DELETE FROM fork; DELETE FROM conflict; DELETE FROM locked; DELETE FROM hidden; DELETE FROM loose; DELETE FROM agent_run; DELETE FROM task; DELETE FROM task_dep; DELETE FROM memory; DELETE FROM skill; DELETE FROM skill_file; DELETE FROM deploy; DELETE FROM owed; DELETE FROM basis; DELETE FROM renamed; DELETE FROM merging;",
 		);
-		for (const k of ["repo", "seq", "name", "namedFirst", "settings", "apiKey", "reviewerKey", "deployAuth"]) this.ctx.storage.kv.delete(k);
+		for (const k of ["repo", "seq", "name", "namedFirst", "settings", "apiKey", "keyProvider", "reviewerKey", "deployAuth"]) this.ctx.storage.kv.delete(k);
 		return deleted;
 	}
 
@@ -753,7 +764,10 @@ export class RepoDO extends DurableObject<Env> {
 		const values = this.ctx.storage.kv.get<Record<string, string>>("deployAuth") ?? {};
 		const s = this.settings();
 		const deploys = s.deploys.map((d) => ({ ...d, auth: d.auth.map((a) => ({ ...a, hasValue: !!values[deployKey(d.name, a.host, a.header)] })) }));
-		return { ...s, deploys, hasKey: !!this.ctx.storage.kv.get<string>("apiKey"), hasReviewerKey: !!this.ctx.storage.kv.get<string>("reviewerKey") };
+		// `keyProvider`: the provider the key was saved for (null for keys saved before it was recorded).
+		const hasKey = !!this.ctx.storage.kv.get<string>("apiKey");
+		const keyProvider = hasKey ? (this.ctx.storage.kv.get<Settings["provider"]>("keyProvider") ?? null) : null;
+		return { ...s, deploys, hasKey, keyProvider, hasReviewerKey: !!this.ctx.storage.kv.get<string>("reviewerKey") };
 	}
 
 	// `apiKey` (a string; "" removes it) is kept apart from the other settings and never returned.
@@ -780,7 +794,10 @@ export class RepoDO extends DurableObject<Env> {
 			if (v) values[k] = v;
 		}
 		this.ctx.storage.kv.put("deployAuth", values);
-		if (typeof key === "string") key.trim() ? this.ctx.storage.kv.put("apiKey", key.trim()) : this.ctx.storage.kv.delete("apiKey");
+		if (typeof key === "string") {
+			if (key.trim()) (this.ctx.storage.kv.put("apiKey", key.trim()), this.ctx.storage.kv.put("keyProvider", next.provider));
+			else (this.ctx.storage.kv.delete("apiKey"), this.ctx.storage.kv.delete("keyProvider"));
+		}
 		await this.kick(); // a new key starts waiting tasks; autoFerge starts on pairs already in conflict
 		return this.publicSettings();
 	}

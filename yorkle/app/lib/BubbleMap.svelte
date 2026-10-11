@@ -3,6 +3,8 @@
 	import { onDestroy, untrack, type Snippet } from "svelte";
 	import { fade } from "svelte/transition";
 	import { docked, needs, type Docked, type Need } from "./attention";
+	import Glyph from "./Glyph.svelte";
+	import Mark from "./Mark.svelte";
 	import { MAX_DOTS, dotOffset, edge, fileCount, hash, orderMembers, radius } from "./layout";
 	import type { Bubble, Member, RepoState } from "./types";
 	import { agentLabel, plural, short } from "./util";
@@ -13,6 +15,8 @@
 		agentHref,
 		looseHref,
 		taskHref,
+		pageHref,
+		seen,
 		onconflict,
 		oncontext,
 		stale = false,
@@ -24,6 +28,8 @@
 		agentHref?: (fork: string) => string;
 		looseHref?: (fork: string) => string;
 		taskHref?: (id: string) => string;
+		pageHref?: (tab: string) => string;
+		seen?: number;
 		onconflict?: (a: string, b: string) => void;
 		oncontext?: (at: { x: number; y: number; bubble: string | null }) => void;
 		stale?: boolean;
@@ -67,7 +73,7 @@
 	let spot = $state<string[] | null>(null);
 	let flyKey = 0;
 
-	const need = $derived(data ? needs(data) : []);
+	const need = $derived(data ? needs(data, seen) : []);
 	const dock = $derived(data ? docked(data, need) : []);
 	// Bubbles in a conflict or holding a series that didn't apply: drawn with a halo and drift to the top.
 	const hot = $derived(new Set(need.flatMap((n) => (n.kind === "conflict" ? [n.a, n.b] : n.kind === "member" ? [n.bubble] : []))));
@@ -478,31 +484,6 @@
 	const keep = $derived(Math.max(1, 1 / k));
 </script>
 
-<!-- A fork's mark. Shape as well as colour tells the states apart. -->
-{#snippet glyph(status: string)}
-	{#if status === "rep"}
-		<circle class="g-rep" r="6.5" />
-	{:else if status === "pending"}
-		<circle class="g-pending" r="5" />
-	{:else if status === "merged"}
-		<circle class="g-merged" r="5" />
-	{:else if status === "conflict"}
-		<rect class="g-conflict" x="-4.2" y="-4.2" width="8.4" height="8.4" rx="1" transform="rotate(45)" />
-	{:else if status === "failed"}
-		<circle class="g-failed" r="5.5" /><path class="g-failed-x" d="M -2.4 -2.4 L 2.4 2.4 M 2.4 -2.4 L -2.4 2.4" />
-	{:else if status === "running"}
-		<circle class="g-running" r="4.5" />
-	{:else if status === "placing" || status === "loose"}
-		<circle class="g-placing" r="4.5" />
-	{:else}
-		<circle class="g-waiting" r="4.5" />
-	{/if}
-{/snippet}
-
-{#snippet mark(status: string)}
-	<svg class="mark" width="14" height="14" viewBox="-7 -7 14 14" aria-hidden="true">{@render glyph(status)}</svg>
-{/snippet}
-
 {#snippet lockIcon()}
 	<rect x="-4" y="-1" width="8" height="6" rx="1" class="i-fill" />
 	<path d="M -2.5 -1 v -2 a 2.5 2.5 0 0 1 5 0 v 2" class="i-line" />
@@ -602,7 +583,7 @@
 							{#each dots as m, i (m.name)}
 								{#if !flying.has(m.name)}
 									{@const o = dotOffset(i, dots.length, n.r)}
-									<g class="fork" transform="translate({o.x} {o.y})">{@render glyph(m.status)}</g>
+									<g class="fork" transform="translate({o.x} {o.y})"><Glyph status={m.status} /></g>
 								{/if}
 							{/each}
 						</g>
@@ -647,7 +628,7 @@
 
 			{#each flyers as f (f.key)}
 				{@const p = flyerPos(f)}
-				{#if p}<g class="fork flyer" transform="translate({p.x} {p.y})">{@render glyph(f.status)}</g>{/if}
+				{#if p}<g class="fork flyer" transform="translate({p.x} {p.y})"><Glyph status={f.status} /></g>{/if}
 			{/each}
 		</g>
 	</svg>
@@ -702,11 +683,11 @@
 				<div class="key-body">
 					<p class="key-head">Forks</p>
 					<ul>
-						<li>{@render mark("rep")}Representative</li>
-						<li>{@render mark("pending")}Pending: queued to merge</li>
-						<li>{@render mark("merged")}Merged</li>
-						<li>{@render mark("failed")}Failed: its changes didn't apply</li>
-						<li>{@render mark("conflict")}Conflict</li>
+						<li><Mark status="rep" />Representative</li>
+						<li><Mark status="pending" />Pending: queued to merge</li>
+						<li><Mark status="merged" />Merged</li>
+						<li><Mark status="failed" />Failed: its changes didn't apply</li>
+						<li><Mark status="conflict" />Conflict</li>
 					</ul>
 					<p class="key-head">Bubbles</p>
 					<ul>
@@ -738,7 +719,7 @@
 									onfocusout={() => (spot = null)}
 								>
 									{#if n.kind === "conflict"}
-										{@render mark("conflict")}
+										<Mark status="conflict" />
 										<div class="what">
 											<p><strong>{nameById(n.a)}</strong> and <strong>{nameById(n.b)}</strong> conflict</p>
 											<div class="acts">
@@ -747,19 +728,25 @@
 											</div>
 										</div>
 									{:else if n.kind === "fork"}
-										{@render mark("failed")}
+										<Mark status="failed" />
 										<div class="what" data-fork={n.fork}>
 											<p><a href={looseHref?.(n.fork)}>{n.title}</a></p>
 											<p class="why">{n.why}</p>
 										</div>
 									{:else if n.kind === "task"}
-										{@render mark("failed")}
+										<Mark status="failed" />
 										<div class="what">
 											<p><a href={taskHref?.(n.id)}>{n.title}</a></p>
 											<p class="why">{n.why}. Retry it from its task.</p>
 										</div>
+									{:else if n.kind === "page"}
+										<Mark status={n.key === "n:memory" ? "review" : "failed"} />
+										<div class="what">
+											<p><a href={pageHref?.(n.tab)}>{n.title}</a></p>
+											<p class="why">{n.why}</p>
+										</div>
 									{:else}
-										{@render mark("failed")}
+										<Mark status="failed" />
 										<div class="what">
 											<p><a href={hrefFor?.(n.bubble)}><span class="mono">{short(n.fork)}</span> in {nameById(n.bubble)}</a></p>
 											<p class="why">{n.why}</p>
@@ -781,7 +768,7 @@
 				<div class="group" class:open data-group={g.status}>
 					{#if folded && !demo}
 						<button class="group-head" aria-expanded={open} onclick={() => (openGroup = open ? null : g.status)}>
-							{@render mark(g.status)}{agentLabel(g.status)}<span class="n">{g.items.length}</span>
+							<Mark status={g.status} />{agentLabel(g.status)}<span class="n">{g.items.length}</span>
 						</button>
 					{:else}
 						<span class="group-head">{agentLabel(g.status)}<span class="n">{g.items.length}</span></span>
@@ -794,10 +781,10 @@
 										{#if x.person}
 											<svg class="mark" width="14" height="14" viewBox="-7 -7 14 14" aria-hidden="true"><g class="person-icon">{@render personIcon()}</g></svg>
 										{:else}
-											{@render mark(x.status)}
+											<Mark status={x.status} />
 										{/if}
 										<span class="t">{x.title}</span>
-										<span class="visually-hidden">: {x.person ? "a person's fork, " : ""}{agentLabel(x.status).toLowerCase()}</span>
+										<span class="visually-hidden">: {x.person ? "a notagent's fork, " : ""}{agentLabel(x.status).toLowerCase()}</span>
 									</svelte:element>
 								</li>
 							{/each}
@@ -820,7 +807,7 @@
 			<p class="muted">{plural(n.members.length, "fork")}, {plural(n.files, "file")}</p>
 			<ul>
 				{#each n.members.slice(0, 6) as m}
-					<li>{@render mark(m.status)}<span class="mono">{short(m.name)}</span><span class="muted">{m.status === "rep" ? "representative" : m.status}</span></li>
+					<li><Mark status={m.status} /><span class="mono">{short(m.name)}</span><span class="muted">{m.status === "rep" ? "representative" : m.status}</span></li>
 				{/each}
 				{#if n.members.length > 6}<li class="muted">and {n.members.length - 6} more</li>{/if}
 			</ul>
@@ -862,24 +849,10 @@
 	.demo svg { cursor: default; }
 	svg:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 
-	/* Fork marks */
-	.g-rep { fill: var(--paper); stroke: var(--merged); stroke-width: 2.5; }
-	.g-pending { fill: var(--paper); stroke: var(--pending); stroke-width: 2; }
-	.g-merged { fill: var(--merged); }
-	.g-conflict { fill: var(--conflict); }
-	.g-failed { fill: var(--paper); stroke: var(--conflict); stroke-width: 1.8; }
-	.g-failed-x { stroke: var(--conflict); stroke-width: 1.8; stroke-linecap: round; }
-	.g-running { fill: var(--working); animation: blink 1.6s ease-in-out infinite; }
-	.g-placing { fill: var(--ink-3); animation: blink 1.6s ease-in-out infinite; }
-	.g-waiting { fill: none; stroke: var(--ink-3); stroke-width: 2; }
 	.i-fill { fill: var(--ink-2); }
 	.i-line { fill: none; stroke: var(--ink-2); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 	.person-icon .i-fill { fill: var(--ink-2); }
 	.flyer { pointer-events: none; filter: drop-shadow(0 1px 2px rgb(15 24 33 / 0.3)); }
-	@keyframes blink { 50% { opacity: 0.35; } }
-	@media (prefers-reduced-motion: reduce) {
-		.g-running, .g-placing { animation: none; }
-	}
 
 	/* Bubbles */
 	.bubble { cursor: pointer; outline: none; }
@@ -993,7 +966,6 @@
 	.key-hint { margin-top: 0.7rem; padding-top: 0.6rem; border-top: 1px solid var(--line-2); color: var(--ink-2); }
 	.k-merging { stroke: var(--ink-3); stroke-width: 2; stroke-dasharray: 5 3; }
 	.k-conflict { stroke: var(--conflict); stroke-width: 2.5; stroke-dasharray: 5 3; }
-	.mark { flex: none; overflow: visible; }
 	.mark.badge { border-radius: 50%; }
 
 	/* Needs you */
@@ -1037,7 +1009,7 @@
 	.needs li { display: flex; gap: 0.6rem; padding: 0.65rem 0.9rem; font-size: 0.875rem; }
 	.needs li + li { border-top: 1px solid var(--line-2); }
 	.needs li:hover { background: color-mix(in srgb, var(--conflict) 5%, transparent); }
-	.needs li > .mark { margin-top: 0.2rem; }
+	.needs li > :global(.mark) { margin-top: 0.2rem; }
 	.what { min-width: 0; flex: 1; }
 	.what p { overflow-wrap: anywhere; }
 	.what a { color: var(--ink); font-weight: 600; text-decoration: none; }

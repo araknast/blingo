@@ -7,6 +7,9 @@ function sync() {
 	route.search = location.search;
 }
 
+// A page with unsaved work sets this; leaving the page asks it first (Settings).
+export const leave: { guard: (() => Promise<boolean>) | null } = { guard: null };
+
 export function navigate(to: string, replace = false) {
 	history[replace ? "replaceState" : "pushState"](null, "", to);
 	sync();
@@ -22,7 +25,9 @@ addEventListener("click", (e) => {
 	const url = new URL(href, location.href);
 	if (url.origin !== location.origin || url.pathname.startsWith("/api/") || url.pathname === "/verify") return;
 	e.preventDefault();
-	navigate(url.pathname + url.search + url.hash);
+	const to = url.pathname + url.search + url.hash;
+	if (leave.guard && url.pathname !== location.pathname) leave.guard().then((ok) => ok && ((leave.guard = null), navigate(to)));
+	else navigate(to);
 });
 
 // "/repos/:repo/b/:bubble/src/*" → params, with the rest of the path under "*".

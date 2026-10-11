@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Mark from "../../lib/Mark.svelte";
 	import { parsePatch } from "diff";
 	import Diff from "../../lib/Diff.svelte";
 	import { forkDiff } from "../../lib/git";
@@ -41,7 +42,7 @@
 		{#each shown as m (m.name)}
 			<li class="panel">
 				<div class="row">
-					<i class="dot {m.status}"></i>
+					<Mark status={m.status} />
 					<div class="main">
 						<span class="mono name">{short(m.name)}</span>
 						<span class="muted">{what[m.status]}</span>

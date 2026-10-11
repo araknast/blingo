@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Mark from "../lib/Mark.svelte";
 	import Dialog from "../lib/Dialog.svelte";
 	import Pager, { PAGE } from "../lib/Pager.svelte";
 	import Shell from "../lib/Shell.svelte";
@@ -108,8 +109,8 @@
 								<td colspan="3" class="muted">Loading</td>
 							{:else}
 								<td>{s.bubbles}<span class="muted forks">{plural(s.forks, "fork")}</span></td>
-								<td>{#if s.working}<i class="dot working"></i> {s.working}{:else}<span class="muted">None</span>{/if}</td>
-								<td>{#if s.conflicts}<i class="dot conflict"></i> {s.conflicts}{:else}<span class="muted">None</span>{/if}</td>
+								<td>{#if s.working}<Mark status="running" /> {s.working}{:else}<span class="muted">None</span>{/if}</td>
+								<td>{#if s.conflicts}<Mark status="conflict" /> {s.conflicts}{:else}<span class="muted">None</span>{/if}</td>
 							{/if}
 						</tr>
 					{:else}

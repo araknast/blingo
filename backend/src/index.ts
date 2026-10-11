@@ -269,6 +269,10 @@ async function handle(request: Request, env: Env): Promise<Response> {
 			? Response.json({ task: d })
 			: Response.json({ error: "that task isn't awaiting approval" }, { status: 409 });
 	}
+	if (request.method === "POST" && a === "repos" && b && c === "tasks" && d && e === "reject") {
+		const r = await env.REPO.getByName(b).rejectTask(d);
+		return "error" in r ? Response.json(r, { status: 409 }) : Response.json({ task: d });
+	}
 	if (request.method === "POST" && a === "repos" && b && c === "tasks" && d && e === "stop") {
 		const r = await env.REPO.getByName(b).stopTask(d);
 		return "error" in r ? Response.json(r, { status: 409 }) : Response.json({ task: d });

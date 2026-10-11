@@ -27,6 +27,8 @@
 
 	const b = $derived(data?.bubbles.find((x) => x.id === bubble));
 	// An absorbed bubble's representative lives on as a member of the bubble that took it in.
+	// A fork not in a bubble yet (one waiting for review, say) can be browsed the same way.
+	const loose = $derived(!!data?.loose.some((l) => l.fork === bubble));
 	const absorbedInto = $derived(data && !b ? data.bubbles.find((x) => x.members.some((m) => m.name === bubble))?.id : undefined);
 
 	const base = $derived(`/repos/${repo}/b/${bubble}`);
@@ -39,13 +41,14 @@
 	crumbs={[
 		{ label: "Repositories", href: "/repos" },
 		{ label: repoName(repo, session.me?.names), href: `/repos/${repo}` },
-		{ label: b?.name || `Bubble ${short(bubble)}`, href: base },
+		{ label: b?.name || `${loose ? "Fork" : "Bubble"} ${short(bubble)}`, href: base },
 	]}
 	{repo}
+	{data}
 >
 	{#if missingRepo}
 		<div class="page"><h1>This repository isn't available</h1><p class="muted">It doesn't exist, or it belongs to someone else.</p></div>
-	{:else if data && !b}
+	{:else if data && !b && !loose}
 		<div class="page gone">
 			<h1>This bubble has merged into another one</h1>
 			{#if absorbedInto}
@@ -62,7 +65,7 @@
 					<circle cx="18" cy="18" r="15" fill="none" stroke="url(#hdr-film)" stroke-width="3" />
 				</svg>
 				<div>
-					<h1>{#if b?.name}{b.name}{:else}Bubble <span class="mono id">{short(bubble)}</span>{/if}</h1>
+					<h1>{#if b?.name}{b.name}{:else}{loose ? "Fork" : "Bubble"} <span class="mono id">{short(bubble)}</span>{/if}</h1>
 					<p class="muted meta">
 						{#if b}
 							{plural(b.members.length, "fork")}

@@ -1,7 +1,10 @@
 <script lang="ts">
 	import type { Snippet } from "svelte";
 	import Dialog from "./Dialog.svelte";
+	import { needs } from "./attention";
 	import { route } from "./router.svelte";
+	import { memorySeen } from "./seen";
+	import type { RepoState } from "./types";
 	import { api, logout, session } from "./session.svelte";
 	import { toast, toastError } from "./toast.svelte";
 	import { copy, repoName } from "./util";
@@ -12,12 +15,22 @@
 		actions,
 		children,
 		repo,
-		openTasks,
-		needsYou,
-		activeAgents,
-		runningDeploys,
+		data,
 		full = false,
-	}: { crumbs: Crumb[]; actions?: Snippet; children: Snippet; repo?: string; openTasks?: number; needsYou?: number; activeAgents?: number; runningDeploys?: number; full?: boolean } = $props();
+	}: { crumbs: Crumb[]; actions?: Snippet; children: Snippet; repo?: string; data?: RepoState | null; full?: boolean } = $props();
+
+	// The tabs' counts. Only the Map's is an alert: what needs you, from every tab, is listed there.
+	const counts = $derived.by(() => {
+		if (!data || !repo) return {};
+		const need = needs(data, memorySeen(repo));
+		return {
+			map: need.length,
+			tasks: data.tasks.filter((t) => t.status !== "completed").length,
+			agents: data.agents.filter((a) => a.status === "running").length,
+			deploy: data.deploys.filter((d) => d.status === "running").length,
+			memory: need.some((n) => n.key === "n:memory") ? data.memory.filter((m) => m.created > memorySeen(repo)).length : 0,
+		};
+	});
 
 	// The repository's views, as tabs in the sidebar. The map also covers its bubbles and loose forks.
 	const tabs = $derived.by(() => {
@@ -26,12 +39,12 @@
 		const p = route.path.replace(/\/+$/, "");
 		const under = (s: string) => p === `${base}/${s}` || p.startsWith(`${base}/${s}/`);
 		return [
-			{ label: "Map", href: base, active: p === base || under("b"), count: needsYou, alert: true },
-			{ label: "Tasks", href: `${base}/tasks`, active: under("tasks"), count: openTasks },
-			{ label: "Agents", href: `${base}/agents`, active: under("agents") || under("forks"), count: activeAgents },
-			{ label: "Deploy", href: `${base}/deploy`, active: under("deploy"), count: runningDeploys },
+			{ label: "Map", href: base, active: p === base || under("b"), count: counts.map, alert: true },
+			{ label: "Tasks", href: `${base}/tasks`, active: under("tasks"), count: counts.tasks },
+			{ label: "Agents", href: `${base}/agents`, active: under("agents") || under("forks"), count: counts.agents },
+			{ label: "Deploy", href: `${base}/deploy`, active: under("deploy"), count: counts.deploy },
 			{ label: "Skills", href: `${base}/skills`, active: under("skills") },
-			{ label: "Memory", href: `${base}/memory`, active: under("memory") },
+			{ label: "Memory", href: `${base}/memory`, active: under("memory"), count: counts.memory },
 			{ label: "Settings", href: `${base}/settings`, active: under("settings") },
 		];
 	});

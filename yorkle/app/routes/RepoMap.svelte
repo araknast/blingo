@@ -1,18 +1,21 @@
 <script lang="ts">
-	import { needs } from "../lib/attention";
 	import BubbleMap from "../lib/BubbleMap.svelte";
 	import ContextMenu, { type MenuItem } from "../lib/ContextMenu.svelte";
 	import Dialog from "../lib/Dialog.svelte";
 	import SkillPicker from "../lib/SkillPicker.svelte";
 	import ModelField from "../lib/ModelField.svelte";
 	import ForkCommands from "../lib/ForkCommands.svelte";
+	import ForkDetail from "../lib/ForkDetail.svelte";
 	import Shell from "../lib/Shell.svelte";
+	import { memorySeen } from "../lib/seen";
+	import AgentView from "./agents/AgentView.svelte";
+	import TaskView, { type TaskLinks } from "./tasks/TaskView.svelte";
 	import SuperagentDialog from "../lib/SuperagentDialog.svelte";
 	import { repoState } from "../lib/repoState.svelte";
-	import { navigate } from "../lib/router.svelte";
+	import { navigate, route } from "../lib/router.svelte";
 	import { api, session } from "../lib/session.svelte";
 	import { toast, toastError } from "../lib/toast.svelte";
-	import { plural, repoName, short } from "../lib/util";
+	import { plural, repoName, runKind, short } from "../lib/util";
 
 	let { repo }: { repo: string } = $props();
 
@@ -23,6 +26,30 @@
 	const bubbleHref = (id: string) => `/repos/${repo}/b/${id}`;
 	const bubbleName = (id: string) => data?.bubbles.find((b) => b.id === id)?.name || short(id);
 	let map = $state<ReturnType<typeof BubbleMap>>();
+	// svelte-ignore state_referenced_locally
+	const seen = memorySeen(repo);
+
+	// ---- Drawer: a run, a fork or a task opens beside the map (?d=run:<fork>, fork:<fork>, task:<id>) ----
+	const drawer = $derived.by(() => {
+		const d = new URLSearchParams(route.search).get("d");
+		const i = d?.indexOf(":") ?? -1;
+		return d && i > 0 ? { kind: d.slice(0, i), id: d.slice(i + 1) } : null;
+	});
+	const open = (kind: string, id: string) => `/repos/${repo}?d=${kind}:${encodeURIComponent(id)}`;
+	const links: TaskLinks = { task: (id) => open("task", id), run: (f) => open("run", f), fork: (f) => open("fork", f) };
+	const fullPage = $derived(
+		!drawer ? "" : drawer.kind === "run" ? `/repos/${repo}/agents/${drawer.id}` : drawer.kind === "fork" ? `/repos/${repo}/forks/${drawer.id}` : `/repos/${repo}/tasks/${drawer.id}`,
+	);
+	const drawerTask = $derived(drawer?.kind === "task" ? data?.tasks.find((t) => t.id === drawer.id) : undefined);
+	const drawerRun = $derived(drawer?.kind === "run" ? data?.agents.find((a) => a.fork === drawer.id) : undefined);
+	const closeDrawer = () => navigate(`/repos/${repo}`);
+	let drawerEl = $state<HTMLElement>();
+	$effect(() => {
+		if (drawer) drawerEl?.querySelector<HTMLElement>("h1")?.focus({ preventScroll: true });
+	});
+	function drawerKeys(e: KeyboardEvent) {
+		if (e.key === "Escape" && drawer && !document.querySelector("dialog[open]")) closeDrawer();
+	}
 
 	// ---- Right-click menu: on a bubble, its actions; on the background, the general ones ----
 	let menu = $state<{ x: number; y: number; bubble: string | null } | null>(null);
@@ -57,6 +84,7 @@
 			{ label: "Push a fork from this bubble", action: () => openPush(b.id) },
 			{ label: b.locked ? "Unlock bubble" : "Lock bubble", action: () => setLock(b.id, !b.locked) },
 			{ label: "Browse code", action: () => navigate(bubbleHref(b.id)) },
+			...(data?.settings.deploys.length ? [{ label: "Deploy this bubble…", action: () => navigate(`/repos/${repo}/deploy?bubble=${encodeURIComponent(b.id)}`) }] : []),
 		];
 	});
 
@@ -156,13 +184,12 @@
 	}
 </script>
 
+<svelte:window onkeydown={drawerKeys} />
+
 <Shell
 	crumbs={[{ label: "Repositories", href: "/repos" }, { label: repoName(repo, session.me?.names) }]}
 	{repo}
-	openTasks={data?.tasks.filter((t) => t.status !== "completed").length}
-	needsYou={data ? needs(data).length : undefined}
-	activeAgents={data?.agents.filter((a) => a.status === "running").length}
-	runningDeploys={data?.deploys.filter((d) => d.status === "running").length}
+	data={data}
 	full
 >
 	{#snippet actions()}
@@ -182,10 +209,12 @@
 				bind:this={map}
 				{data}
 				stale={repoData.stale}
-				taskHref={(id) => `/repos/${repo}/tasks/${id}`}
+				taskHref={(id) => open("task", id)}
+				pageHref={(tab) => `/repos/${repo}/${tab}`}
+				{seen}
 				hrefFor={bubbleHref}
-				agentHref={(fork) => `/repos/${repo}/agents/${fork}`}
-				looseHref={(fork) => `/repos/${repo}/forks/${fork}`}
+				agentHref={(fork) => open("run", fork)}
+				looseHref={(fork) => open("fork", fork)}
 				onconflict={askFerge}
 				oncontext={(at) => (menu = at)}
 			>
@@ -196,6 +225,29 @@
 					</div>
 				{/snippet}
 			</BubbleMap>
+			{#if drawer}
+				<aside class="drawer" bind:this={drawerEl} aria-label="Details">
+					<header class="drawer-bar">
+						<a href={fullPage}>Open full page</a>
+						<a class="close" href="/repos/{repo}" aria-label="Close">
+							<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 3l8 8M11 3l-8 8" /></svg>
+						</a>
+					</header>
+					<div class="drawer-body">
+						{#key route.search}
+							{#if drawer.kind === "run"}
+								<AgentView {repo} id={drawer.id} run={drawerRun} task={data?.tasks.find((t) => t.kind === "agent" && t.status === "in-progress" && t.fork === drawer.id)?.id} kind={runKind({ fork: drawer.id })} {data} forkHref={(f) => open("fork", f)} />
+							{:else if drawer.kind === "fork"}
+								<ForkDetail {repo} fork={drawer.id} {data} {refresh} />
+							{:else if drawerTask && data}
+								<TaskView task={drawerTask} {data} {repo} {refresh} {links} ongone={closeDrawer} />
+							{:else}
+								<p class="muted">{data ? "That task is gone: it was rejected, or never existed." : "Loading…"}</p>
+							{/if}
+						{/key}
+					</div>
+				</aside>
+			{/if}
 		</section>
 	{/if}
 </Shell>
@@ -295,6 +347,30 @@
 
 <style>
 	.stage { height: 100%; min-height: 0; position: relative; }
+	.drawer {
+		position: absolute;
+		top: 0;
+		right: 0;
+		bottom: 0;
+		width: min(44rem, 100%);
+		display: flex;
+		flex-direction: column;
+		background: var(--fog);
+		border-left: 1px solid var(--line);
+		box-shadow: -12px 0 32px rgb(15 24 33 / 0.12);
+		z-index: 8;
+		animation: slide 200ms cubic-bezier(0.16, 1, 0.3, 1);
+	}
+	@keyframes slide { from { translate: 2rem 0; opacity: 0; } }
+	@media (prefers-reduced-motion: reduce) { .drawer { animation: none; } }
+	/* On a narrow screen the map is only part of the page: the drawer takes the whole screen. */
+	@media (max-width: 900px) { .drawer { position: fixed; top: 3.5rem; left: 0; width: 100%; border-left: 0; z-index: 30; } }
+	.drawer-bar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.6rem 0.75rem 0.6rem 1.25rem; border-bottom: 1px solid var(--line-2); background: var(--paper); font-size: 0.875rem; }
+	.close { display: grid; place-items: center; width: 2rem; height: 2rem; border-radius: var(--r-sm); color: var(--ink-2); }
+	.close:hover { background: var(--line-2); color: var(--ink); }
+	.close path { stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
+	.drawer-body { flex: 1; overflow-y: auto; padding: 1.25rem 1.5rem 2rem; }
+	.drawer-body :global(h1) { font-size: 1.375rem; outline: none; }
 	.intro { margin-bottom: 1rem; color: var(--ink-2); }
 	.from { font-size: 0.875rem; color: var(--ink-2); }
 	.from span { color: var(--ink); }

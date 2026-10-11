@@ -1,35 +1,28 @@
 <script lang="ts">
 	// The repository's Tasks tab: an issue tracker. Lists tasks, or shows one (`id`).
-	import { onDestroy } from "svelte";
+	import { ask } from "../lib/confirm.svelte";
 	import Dialog from "../lib/Dialog.svelte";
 	import ForkCommands from "../lib/ForkCommands.svelte";
 	import Shell from "../lib/Shell.svelte";
 	import SkillPicker from "../lib/SkillPicker.svelte";
+	import TaskIcon from "../lib/TaskIcon.svelte";
+	import { repoState } from "../lib/repoState.svelte";
 	import SuperagentDialog from "../lib/SuperagentDialog.svelte";
 	import { navigate } from "../lib/router.svelte";
-	import { ApiError, api, session } from "../lib/session.svelte";
+	import { api, session } from "../lib/session.svelte";
 	import { toast, toastError } from "../lib/toast.svelte";
-	import type { RepoState } from "../lib/types";
-	import { poll, repoName, short } from "../lib/util";
+	import { repoName, short } from "../lib/util";
 	import TaskList from "./tasks/TaskList.svelte";
 	import TaskView from "./tasks/TaskView.svelte";
 
 	let { repo, id }: { repo: string; id?: string } = $props();
 
-	let data = $state<RepoState | null>(null);
-	let missing = $state(false);
-	async function refresh() {
-		try {
-			data = await api<RepoState>("GET", `/repos/${repo}`);
-		} catch (e) {
-			if (e instanceof ApiError && e.status === 404) missing = true;
-			else if (!data) toastError(e);
-		}
-	}
-	const stop = poll(refresh, 5000);
-	onDestroy(stop);
+	// svelte-ignore state_referenced_locally (the page is keyed by repo in App)
+	const rd = repoState(repo, 5000);
+	const data = $derived(rd.data);
+	const missing = $derived(rd.missing);
+	const refresh = rd.refresh;
 
-	const open = $derived(data?.tasks.filter((t) => t.status !== "completed").length ?? 0);
 	const task = $derived(id ? data?.tasks.find((t) => t.id === id) : undefined);
 	const href = (t: string) => `/repos/${repo}/tasks/${t}`;
 
@@ -45,40 +38,31 @@
 			toastError(e);
 		}
 	}
-	async function approve(t: string) {
+	// One task, or a whole plan's: approved one at a time, stopping at the first that fails.
+	async function approve(ids: string[]) {
 		try {
-			await api("POST", `/repos/${repo}/tasks/${t}/approve`);
-			toast("Task approved");
-			refresh();
+			for (const t of ids) await api("POST", `/repos/${repo}/tasks/${t}/approve`);
+			toast(ids.length === 1 ? "Task approved" : `${ids.length} tasks approved`);
 		} catch (e) {
 			toastError(e);
 		}
+		refresh();
 	}
-	async function editTask(t: string, title: string, description: string) {
+	async function reject(t: string) {
+		const title = data?.tasks.find((x) => x.id === t)?.title ?? "This task";
+		if (!(await ask({ title: "Reject this task?", body: `"${title}" is deleted and never starts.`, confirm: "Reject task", danger: true }))) return;
 		try {
-			await api("PATCH", `/repos/${repo}/tasks/${t}`, { title, description });
-			await refresh();
-			return true;
+			await api("POST", `/repos/${repo}/tasks/${t}/reject`);
+			toast("Task rejected");
+			refresh();
 		} catch (e) {
 			toastError(e);
-			return false;
 		}
 	}
 	async function retry(t: string) {
 		try {
 			await api("POST", `/repos/${repo}/tasks/${t}/retry`);
-			toast("Task reopened");
-			refresh();
-		} catch (e) {
-			toastError(e);
-		}
-	}
-
-	async function stopAgent(t: string) {
-		if (!confirm("Stop this task's agent? Its work so far is discarded; its transcript is kept for a retry.")) return;
-		try {
-			await api("POST", `/repos/${repo}/tasks/${t}/stop`);
-			toast("Agent stopped");
+			toast("Task reopened. A new agent starts on it");
 			refresh();
 		} catch (e) {
 			toastError(e);
@@ -95,6 +79,11 @@
 	let bubble = $state("");
 	let skills = $state<string[] | undefined>(undefined);
 	let busy = $state(false);
+	// The dependency picker: newest first, searchable.
+	let depQuery = $state("");
+	const depChoices = $derived(
+		[...(data?.tasks ?? [])].sort((a, b) => b.created - a.created).filter((t) => !depQuery.trim() || t.title.toLowerCase().includes(depQuery.trim().toLowerCase()) || deps.includes(t.id)),
+	);
 	async function create(e: SubmitEvent) {
 		e.preventDefault();
 		busy = true;
@@ -128,9 +117,7 @@
 		...(id ? [{ label: "Tasks", href: `/repos/${repo}/tasks` }, { label: task?.title ?? `#${id.slice(2)}` }] : [{ label: "Tasks" }]),
 	]}
 	{repo}
-	openTasks={open}
-	activeAgents={data?.agents.filter((a) => a.status === "running").length}
-	runningDeploys={data?.deploys.filter((d) => d.status === "running").length}
+	{data}
 >
 	<div class="page">
 		{#if missing}
@@ -140,13 +127,13 @@
 			<p class="muted">Loading…</p>
 		{:else if id}
 			{#if task}
-				<TaskView {task} {data} {href} {repo} ontake={take} onretry={retry} onstop={stopAgent} onapprove={approve} onedit={editTask} />
+				<TaskView {task} {data} {repo} {refresh} ongone={() => navigate(`/repos/${repo}/tasks`)} />
 			{:else}
 				<h1>No such task</h1>
 				<p class="muted"><a href="/repos/{repo}/tasks">Back to the tasks</a></p>
 			{/if}
 		{:else}
-			<TaskList {data} {href} ontake={take} onretry={retry} onnew={() => (newOpen = true)} onplan={() => (superOpen = true)} />
+			<TaskList {data} {href} ontake={take} onretry={retry} onapprove={approve} onreject={reject} onnew={() => (newOpen = true)} onplan={() => (superOpen = true)} />
 		{/if}
 	</div>
 </Shell>
@@ -170,15 +157,17 @@
 		<fieldset class="field">
 			<legend>Assignee</legend>
 			<label class="choice"><input type="radio" bind:group={kind} value="agent" /> Agent <span class="muted">starts by itself</span></label>
-			<label class="choice"><input type="radio" bind:group={kind} value="notagent" /> Human <span class="muted">someone takes it and pushes</span></label>
+			<label class="choice"><input type="radio" bind:group={kind} value="notagent" /> Notagent <span class="muted">someone takes it and pushes</span></label>
 		</fieldset>
 		{#if data?.tasks.length}
 			<fieldset class="field">
 				<legend>Depends on</legend>
+				<input class="dep-find" type="search" bind:value={depQuery} placeholder="Find a task" aria-label="Find a task to depend on" />
 				<div class="deps">
-					{#each data.tasks as t (t.id)}
-						<label class="choice"><input type="checkbox" bind:group={deps} value={t.id} /> {t.title} <span class="muted mono">#{t.id.slice(2)}</span></label>
+					{#each depChoices as t (t.id)}
+						<label class="choice"><input type="checkbox" bind:group={deps} value={t.id} /> <TaskIcon status={t.status} /> {t.title} <span class="muted mono">#{t.id.slice(2)}</span></label>
 					{/each}
+					{#if !depChoices.length}<p class="muted">No task matches.</p>{/if}
 				</div>
 				<p class="hint">It starts once one bubble holds all of these.</p>
 			</fieldset>
@@ -205,5 +194,6 @@
 	.choice { display: flex; gap: 0.5rem; align-items: baseline; font-weight: 400; margin: 0.2rem 0; }
 	.choice input { width: auto; }
 	.choice .muted { font-size: 0.8125rem; }
+	.dep-find { margin-bottom: 0.35rem; }
 	.deps { max-height: 12rem; overflow-y: auto; border: 1px solid var(--line); border-radius: var(--r-sm); padding: 0.35rem 0.6rem; }
 </style>

@@ -1,12 +1,13 @@
-export type Toast = { id: number; text: string; error: boolean };
+// `action`: one button on the toast, like Undo; it stays up a little longer.
+export type Toast = { id: number; text: string; error: boolean; action?: { label: string; run: () => void } };
 
 export const toasts = $state<Toast[]>([]);
 let next = 0;
 
-export function toast(text: string, error = false) {
+export function toast(text: string, error = false, action?: Toast["action"]) {
 	const id = next++;
-	toasts.push({ id, text, error });
-	setTimeout(() => dismiss(id), error ? 8000 : 4000);
+	toasts.push({ id, text, error, action });
+	setTimeout(() => dismiss(id), error ? 8000 : action ? 7000 : 4000);
 }
 
 export const toastError = (e: unknown) => toast(e instanceof Error ? e.message : String(e), true);

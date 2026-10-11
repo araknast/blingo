@@ -59,7 +59,7 @@ export const firstLine =(s: string) => s.split("\n", 1)[0];
 
 // Agent run status → what the UI calls it.
 export const agentLabel = (status: string) =>
-	({ running: "Working", placed: "Done", loose: "Waiting for CI", planned: "Tasks added", failed: "Failed", lost: "Failed: sandbox lost", waiting: "Waiting for a push", pushed: "Pushed", placing: "Finding a bubble" })[status] ?? status;
+	({ running: "Working", placed: "Placed", loose: "Waiting for CI", planned: "Tasks added", failed: "Failed", lost: "Failed: sandbox lost", waiting: "Waiting for a push", pushed: "Pushed", placing: "Finding a bubble" })[status] ?? status;
 
 // Notagent tasks that got a fork, as runs beside the agents' (a fork an agent ran on keeps that run).
 export function notagentRuns(d: RepoState): AgentRun[] {
@@ -77,6 +77,29 @@ export function notagentRuns(d: RepoState): AgentRun[] {
 export const active = (r: AgentRun) => (r.kind === "notagent" ? r.status !== "placed" && r.status !== "failed" : r.status === "running");
 // Agents' and people's runs, the ones still going first, then newest first.
 export const allRuns = (d: RepoState) => [...d.agents, ...notagentRuns(d)].sort((a, b) => Number(active(b)) - Number(active(a)) || b.started - a.started);
-// A run's status dot.
-export const runDot = (r: AgentRun) =>
-	r.status === "running" ? "working pulse" : r.status === "failed" || r.status === "lost" ? "conflict" : r.status === "placing" ? "placing pulse" : active(r) ? "waiting" : "merged";
+// A run's status in words, from its fork when it's loose: CI and reviews say more than "loose".
+export function runLabel(r: AgentRun, d: RepoState | null | undefined): string {
+	const l = r.status === "loose" || r.status === "pushed" ? d?.loose.find((x) => x.fork === r.fork) : undefined;
+	if (!l) return agentLabel(r.status);
+	if (l.reviewManual === "pending") return "Waiting for your review";
+	if (l.reviewAuto === "pending") return "Being reviewed";
+	if (l.reviewAuto === "rejected" || l.reviewManual === "rejected") return "Review rejected";
+	if (l.ci === "failed") return "CI failed";
+	if (l.ci === "running") return "Waiting for CI";
+	return r.status === "pushed" ? agentLabel("pushed") : "Ready to place";
+}
+// A run's mark (Glyph): shape and colour.
+export function runMark(r: AgentRun, d?: RepoState | null): string {
+	const l = r.status === "loose" || r.status === "pushed" ? d?.loose.find((x) => x.fork === r.fork) : undefined;
+	if (l?.reviewManual === "pending") return "review";
+	if (l && (l.ci === "failed" || l.reviewAuto === "rejected" || l.reviewManual === "rejected")) return "failed";
+	if (r.status === "running") return "running";
+	if (r.status === "failed" || r.status === "lost") return "failed";
+	if (r.status === "placing" || r.status === "loose") return "placing";
+	return active(r) ? "waiting" : "merged";
+}
+// Who did a run: an agent, a CI fixer, a superagent, or a person (a notagent).
+export const runKind = (r: Pick<AgentRun, "fork" | "kind">) =>
+	r.kind === "notagent" ? "Notagent" : r.fork.includes("-s-") ? "Superagent" : /-c\d+$/.test(r.fork) ? "CI fixer" : "Agent";
+// The id part of a run's name, for display.
+export const runId = (fork: string) => fork.split(/-[fsc]-/).at(-1) ?? fork;

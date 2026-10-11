@@ -3,18 +3,31 @@
 	// polled while it runs. Each tool call is one row with its result; text and the result stay open.
 	import { onDestroy, tick as nextTick } from "svelte";
 	import Code from "../../lib/Code.svelte";
+	import { ask } from "../../lib/confirm.svelte";
+	import Mark from "../../lib/Mark.svelte";
 	import Markdown from "../../lib/Markdown.svelte";
 	import { api } from "../../lib/session.svelte";
 	import { toast, toastError } from "../../lib/toast.svelte";
-	import type { AgentRun } from "../../lib/types";
-	import { agentLabel, ago, compact, duration, poll } from "../../lib/util";
+	import type { AgentRun, RepoState } from "../../lib/types";
+	import { ago, compact, duration, poll, runId, runLabel, runMark } from "../../lib/util";
 	import { elapsed as fmtElapsed } from "../../lib/elapsed";
 
-	let { repo, id, run, task, kind }: { repo: string; id: string; run?: AgentRun; task?: string; kind: string } = $props();
+	let {
+		repo,
+		id,
+		run,
+		task,
+		kind,
+		data,
+		forkHref = (fork: string) => `/repos/${repo}/forks/${fork}`,
+	}: { repo: string; id: string; run?: AgentRun; task?: string; kind: string; data?: RepoState | null; forkHref?: (fork: string) => string } = $props();
+
+	// Its fork, while it waits outside a bubble (for CI, a review, or a person).
+	const loose = $derived(data?.loose.find((l) => l.fork === id));
 
 	let stopping = $state(false);
 	async function stopAgent() {
-		if (!task || !confirm("Stop this agent? Its work so far is discarded; its transcript is kept for a retry.")) return;
+		if (!task || !(await ask({ title: "Stop this agent?", body: "Its work so far is discarded. Its transcript is kept, so a retry can pick up from it.", confirm: "Stop agent", danger: true }))) return;
 		stopping = true;
 		try {
 			await api("POST", `/repos/${repo}/tasks/${task}/stop`);
@@ -58,21 +71,27 @@
 	}, 1500);
 	onDestroy(() => stop());
 
-	// Claude Code-style live feedback while running: spinner glyph, rotating verb, elapsed seconds.
+	// Live feedback while running: what it's doing now, and for how long. The spinner holds still when
+	// motion is reduced.
 	const glyphs = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
-	const verbs = ["Thinking", "Pondering", "Reasoning", "Tinkering", "Cooking", "Weaving", "Mulling"];
+	const reduced = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 	let tick = $state(0);
-	const timer = setInterval(() => tick++, 100);
+	const timer = setInterval(() => tick++, reduced ? 1000 : 100);
 	onDestroy(() => clearInterval(timer));
+	let lastChange = $state(Date.now());
+	$effect(() => {
+		events.length;
+		lastChange = Date.now();
+	});
 	const elapsed = $derived.by(() => {
 		tick;
-		return fmtElapsed(Date.now() - (run?.started ?? Date.now()));
+		return fmtElapsed(Date.now() - lastChange);
 	});
 	const live = $derived((run?.status ?? status) === "running");
 
 	// One scrollable box; follow new output unless the reader has scrolled up.
 	let box = $state<HTMLElement>();
-	let pinned = true;
+	let pinned = $state(true);
 	const onscroll = () => (pinned = !box || box.scrollHeight - box.scrollTop - box.clientHeight < 24);
 	$effect(() => {
 		events.length;
@@ -80,7 +99,6 @@
 	});
 
 	const init = $derived(events.find((e) => e.type === "system" && e.subtype === "init"));
-	const result = $derived(events.findLast((e) => e.type === "result"));
 	const blocks = (e: Event): Block[] => (Array.isArray(e.message?.content) ? e.message.content : typeof e.message?.content === "string" ? [{ type: "text", text: e.message.content }] : []);
 	// A tool result's content: a string, or text blocks.
 	const output = (c: unknown) =>
@@ -132,6 +150,21 @@
 		return folded;
 	});
 
+	// What it's doing: the tool call still waiting for its result, else the model.
+	const doing = $derived.by(() => {
+		const open = items.findLast((it) => it.kind === "tool" && it.tool.result === undefined);
+		return open?.kind === "tool" ? `Running ${open.tool.name}` : "Waiting for the model";
+	});
+	const failedTools = $derived(items.flatMap((it) => (it.kind === "tool" ? [it.tool] : it.kind === "tools" ? it.tools : [])).filter((t) => t.error).length);
+	function jumpToFailure() {
+		const el = box?.querySelector<HTMLDetailsElement>("details.tool.error");
+		if (!el) return;
+		el.closest<HTMLDetailsElement>("details.group")?.setAttribute("open", "");
+		el.open = true;
+		el.scrollIntoView({ block: "center" });
+		el.querySelector("summary")?.focus();
+	}
+	const result = $derived(events.findLast((e) => e.type === "result"));
 	const rel = (p?: string) => (typeof p === "string" ? p.replace(/^\/workspace\/repo\//, "") : "");
 	// What a tool call did, in one line.
 	function summary(t: Tool): string {
@@ -161,28 +194,38 @@
 </script>
 
 <header class="head">
-	<p class="kind muted">{[kind, id.split(/-[fsc]-/).at(-1), init?.model].filter(Boolean).join(" · ")}</p>
-	<h1>{run?.prompt.split("\n")[0] ?? id}</h1>
-	<p class="muted">
-		<i class="dot {status === 'running' ? 'working pulse' : status === 'failed' || status === 'lost' ? 'conflict' : 'merged'}"></i>
-		{[
-			agentLabel(run?.status ?? status),
+	<p class="kind">{[kind, runId(id), init?.model].filter(Boolean).join(" · ")}</p>
+	<h1 tabindex="-1">{run?.prompt.split("\n")[0] ?? id}</h1>
+	<p class="status" role="status">
+		{#if run}<Mark status={runMark(run, data)} />{/if}
+		<span>{[
+			run ? runLabel(run, data) : status === "running" ? "Working" : "",
 			run && (run.finished ? `took ${duration(run.finished - run.started)}` : `started ${ago(run.started)}`),
 			usage && `${compact(usage.input + usage.cacheRead + usage.cacheWrite)} tokens in · ${compact(usage.output)} out`,
 			result?.num_turns && `${result.num_turns} ${result.num_turns === 1 ? "turn" : "turns"}`,
 		]
 			.filter(Boolean)
-			.join(" · ")}
+			.join(" · ")}</span>
 	</p>
-	{#if live && task}<button class="stop" onclick={stopAgent} disabled={stopping}>{stopping ? "Stopping…" : "Stop agent"}</button>{/if}
+	{#if live && task}<button class="stop danger" onclick={stopAgent} disabled={stopping}>{stopping ? "Stopping…" : "Stop agent"}</button>{/if}
 </header>
+
+{#if loose && (loose.reviewManual === "pending" || loose.kind === "notagent")}
+	<p class="callout lead"><Mark status={loose.reviewManual === "pending" ? "review" : "failed"} /><span>{loose.reviewManual === "pending" ? "Its fork is waiting for your review." : (loose.reason ?? "A person has taken over its fork.")} <a href={forkHref(id)}>Open its fork</a></span></p>
+{/if}
+{#if reason}
+	<p class="callout lead"><Mark status="failed" /><span><strong>Its change wasn't submitted:</strong> {reason}</span></p>
+{/if}
+{#if result?.is_error}
+	<p class="callout lead"><Mark status="failed" /><span><strong>It ended with an error.</strong> {#if failedTools}<button class="link" onclick={jumpToFailure}>Jump to the first failed tool call</button>{/if}</span></p>
+{/if}
 
 {#snippet tool(t: Tool)}
 	<details class="tool" class:error={t.error}>
 		<summary>
-			<i class="state" class:done={t.result !== undefined && !t.error} class:fail={t.error} class:pulse={t.result === undefined && live}></i>
+			<Mark status={t.error ? "failed" : t.result !== undefined ? "merged" : live ? "running" : "waiting"} label={t.error ? "Failed" : t.result !== undefined ? "Done" : live ? "Running" : "No result"} />
 			<span class="name">{t.name}</span>
-			<span class="arg">{summary(t)}</span>
+			<span class="arg" title={summary(t)}>{summary(t)}</span>
 		</summary>
 		<div class="body">
 			{#if t.name === "Bash"}
@@ -214,7 +257,7 @@
 {/snippet}
 
 {#snippet spin()}
-	<p class="thinking"><span class="glyph">{glyphs[tick % glyphs.length]}</span> {verbs[Math.floor(tick / 40) % verbs.length]}… <span class="muted">({elapsed})</span></p>
+	<p class="thinking"><span class="glyph" aria-hidden="true">{reduced ? "·" : glyphs[tick % glyphs.length]}</span> {doing}… <span class="muted">({elapsed})</span></p>
 {/snippet}
 
 {#if !loaded}
@@ -242,7 +285,7 @@
 			{:else if it.e.type === "system"}
 				<li><details class="quiet"><summary><span class="mark">✎</span> Memory update <span class="muted">({it.e.hook_event})</span></summary><pre>{hookContext(it.e.output)}</pre></details></li>
 			{:else if it.e.type === "result"}
-				<li class="result" class:error={it.e.is_error}>
+				<li class="result callout" class:ok={!it.e.is_error}>
 					<strong>{it.e.is_error ? "Ended with an error" : "Finished"}</strong>
 					{#if it.e.result}<Markdown text={it.e.result} />{/if}
 				</li>
@@ -257,10 +300,7 @@
 		{@render spin()}
 	{/if}
 	</div>
-{/if}
-
-{#if reason}
-	<p class="unsubmitted"><strong>Its change wasn't submitted:</strong> {reason}</p>
+	{#if live && !pinned}<button class="latest" onclick={() => ((pinned = true), box?.scrollTo({ top: box.scrollHeight, behavior: "smooth" }))}>Jump to latest</button>{/if}
 {/if}
 {#if run?.log}
 	<details class="log"><summary>Sandbox log</summary><pre>{run.log}</pre></details>
@@ -270,9 +310,13 @@
 <style>
 	.head { margin-bottom: 1.25rem; }
 	.stop { margin-top: 0.25rem; }
-	.kind { font-size: 0.8125rem; text-transform: uppercase; letter-spacing: 0.04em; }
+	.kind { font-size: 0.8125rem; color: var(--ink-3); overflow-wrap: anywhere; }
+	.status { display: flex; align-items: center; gap: 0.45rem; color: var(--ink-2); font-size: 0.9375rem; }
+	.lead { margin-bottom: 1rem; }
+	.link { background: none; border: 0; padding: 0; color: var(--focus); text-decoration: underline; font: inherit; }
+	.danger { color: var(--conflict); }
+	.latest { position: sticky; bottom: 1rem; margin: -2.75rem auto 0; display: flex; box-shadow: 0 4px 14px rgb(15 24 33 / 0.18); }
 	.head h1 { margin: 0.2rem 0 0.4rem; overflow-wrap: anywhere; }
-	.head .dot { vertical-align: 0.05em; margin-right: 0.2rem; }
 	.box { max-height: calc(100vh - 15rem); min-height: 10rem; overflow: auto; border: 1px solid var(--line); border-radius: var(--r-md); padding: 0.75rem; background: var(--paper); }
 	.events { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.35rem; }
 	.events li { min-width: 0; }
@@ -286,15 +330,13 @@
 	.mark { display: inline-block; width: 1.1em; color: var(--ink-3); font-family: var(--mono); }
 	.quiet summary { color: var(--ink-2); }
 	.group { border: 1px dashed var(--line); }
-	.group > summary { color: var(--ink-2); }
+	.group > summary { color: var(--ink-2); white-space: normal; }
 	.err { color: var(--conflict); }
 
 	/* A tool call: a status dot, the tool, its main argument; the body is input then output. */
 	.tool { font-family: var(--mono); }
 	.tool > summary { display: flex; align-items: baseline; gap: 0.55rem; }
-	.state { flex: none; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--pending); align-self: center; }
-	.state.done { background: var(--merged); }
-	.state.fail { background: var(--conflict); }
+	.tool > summary :global(.mark) { align-self: center; }
 	.name { flex: none; font-weight: 600; color: var(--ink); }
 	.arg { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--ink-2); }
 	.tool.error .name { color: var(--conflict); }
@@ -319,9 +361,7 @@
 	.todos .check { display: inline-block; width: 1.2em; }
 	.thought { font-family: var(--font); font-style: italic; color: var(--ink-2); border-left: 2px solid var(--line); margin: 0.2rem 0 0.2rem 0.9rem; max-height: none; }
 	.pad { padding: 0.5rem 0.75rem; margin: 0; font-size: 0.8125rem; }
-	.result { border-left: 3px solid var(--merged); padding-left: 0.9rem; margin-top: 0.5rem; }
-	.result.error { border-color: var(--conflict); }
-	.unsubmitted { border-left: 3px solid var(--conflict); padding-left: 0.9rem; margin-top: 1rem; overflow-wrap: anywhere; }
+	.result { display: block; margin-top: 0.5rem; }
 	.result :global(.md) { padding: 0.4rem 0; }
 	.thinking { margin-top: 0.75rem; font-size: 0.875rem; color: var(--ink-2); }
 	.glyph { display: inline-block; width: 1em; font-family: var(--mono); color: var(--ink); }

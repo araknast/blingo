@@ -14,7 +14,7 @@
 	--on-harbor: #d9e2ea;
 	--ink: #1a2430;
 	--ink-2: #4a5866;
-	--ink-3: #6b7a89;
+	--ink-3: #5d6b79; /* ≥4.5:1 on fog, paper and raised */
 	--line: #d3dae1;
 	--line-2: #e2e7ec;
 	--focus: #4f7fb8;
@@ -23,8 +23,8 @@
 	--lilac: #b9a3f0;
 	--amber: #f2c38b;
 
-	--working: #a8700f; /* ≥3:1 on white, for pill outlines and marks */
-	--merged: #2f8f83;
+	--working: #966309; /* ≥4.5:1 on white and paper, so it works as text too */
+	--merged: #277a70;
 	--pending: #6b7a89;
 	--conflict: #b8482e;
 	--add-bg: #e3f4ec;
@@ -53,14 +53,14 @@
 		--on-harbor: #c9d4de;
 		--ink: #e4eaf0;
 		--ink-2: #b2bfcb;
-		--ink-3: #8595a4;
+		--ink-3: #93a2b0;
 		--line: #33434f;
 		--line-2: #2a3845;
 		--focus: #8db4e2;
 		--working: #e0a338;
 		--merged: #4fb3a5;
 		--pending: #8595a4;
-		--conflict: #e06a4e;
+		--conflict: #e8806a;
 		--add-bg: #17352c;
 		--add-ink: #8fd8b6;
 		--del-bg: #3d2420;
@@ -179,3 +179,42 @@ label { display: block; font-size: 0.875rem; font-weight: 500; margin: 0 0 0.3re
 @media (prefers-reduced-motion: reduce) {
 	*, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
 }
+
+/* State marks (Glyph.svelte), shared by the map, lists and pages. */
+.mark { flex: none; overflow: visible; vertical-align: -0.15em; }
+.g-rep { fill: var(--paper); stroke: var(--merged); stroke-width: 2.5; }
+.g-pending { fill: var(--paper); stroke: var(--pending); stroke-width: 2; }
+.g-merged { fill: var(--merged); }
+.g-conflict { fill: var(--conflict); }
+.g-failed { fill: var(--paper); stroke: var(--conflict); stroke-width: 1.8; }
+.g-failed-x { stroke: var(--conflict); stroke-width: 1.8; stroke-linecap: round; }
+.g-running { fill: var(--working); animation: g-blink 1.6s ease-in-out infinite; }
+.g-placing { fill: var(--ink-3); animation: g-blink 1.6s ease-in-out infinite; }
+.g-waiting { fill: none; stroke: var(--ink-3); stroke-width: 2; }
+.g-approval { fill: none; stroke: var(--ink-2); stroke-width: 1.8; stroke-dasharray: 2.6 2.2; }
+.g-review { fill: var(--paper); stroke: var(--working); stroke-width: 2; }
+.g-review-dot { fill: var(--working); }
+@keyframes g-blink { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) {
+	.g-running, .g-placing { animation: none; }
+}
+
+.primary.danger-fill { background: var(--conflict); border-color: var(--conflict); color: #fff; }
+.primary.danger-fill:hover { filter: brightness(1.08); }
+
+/* A callout that explains why something stopped: tinted, not a side stripe. */
+.callout { display: flex; gap: 0.6rem; align-items: flex-start; padding: 0.7rem 0.9rem; border: 1px solid color-mix(in srgb, var(--conflict) 35%, var(--line)); background: color-mix(in srgb, var(--conflict) 7%, var(--raised)); border-radius: var(--r-md); overflow-wrap: anywhere; }
+.callout.ok { border-color: color-mix(in srgb, var(--merged) 35%, var(--line)); background: color-mix(in srgb, var(--merged) 7%, var(--raised)); }
+.callout > .mark { margin-top: 0.2rem; }
+
+/* A search box with its "/" key hint. */
+.search { position: relative; display: inline-flex; align-items: center; }
+.search input { padding-right: 1.8rem; }
+.search kbd { position: absolute; right: 0.45rem; font-size: 0.6875rem; padding: 0 0.3rem; border: 1px solid var(--line); border-radius: 3px; color: var(--ink-3); pointer-events: none; }
+.search input:focus + kbd { display: none; }
+
+/* Filter chips above a list. */
+.chips { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.chips button { padding: 0.2rem 0.65rem; font-size: 0.8125rem; border-radius: 999px; gap: 0.35rem; }
+.chips button[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: var(--paper); }
+.chips .n { font-variant-numeric: tabular-nums; opacity: 0.75; }

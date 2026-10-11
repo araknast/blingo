@@ -116,7 +116,7 @@ waits to be taken); a superagent adds a whole plan. Every task has a short title
 batch by key, or an existing task by id. Agents get `# title` then the description as their prompt.
 With the setting `taskApproval`, every new task (filed, planned, from `/agents` or `/notagents`, or a ferge
 agent's) starts as `awaiting-approval`: it never starts, it can be edited (`PATCH /repos/:r/tasks/:id
-{title?, description?}`), and `POST …/approve` opens it.
+{title?, description?}`), `POST …/approve` opens it, and `POST …/reject` deletes it (refused while another task depends on it).
 In yorkle, tasks are the repository's **Tasks** tab (`/repos/:r/tasks`, `/repos/:r/tasks/:id`),
 an issue tracker beside the Map tab.
 `schedule()` runs from `addTasks`, `retryTask` and every alarm. It starts each `ready` agent task:

@@ -58,6 +58,8 @@ export type Settings = {
 	taskApproval: boolean;
 	deploys: DeployConfig[];
 	hasKey: boolean;
+	// The provider the stored key was saved for; null when unknown (saved before this was recorded).
+	keyProvider?: "anthropic" | "openrouter" | "claude-subscription" | null;
 	hasReviewerKey: boolean;
 };
 export type RepoSummary = { bubbles: number; forks: number; working: number; conflicts: number };

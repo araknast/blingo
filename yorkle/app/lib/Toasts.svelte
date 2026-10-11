@@ -7,6 +7,7 @@
 	{#each toasts as t (t.id)}
 		<div class="toast" class:error={t.error} transition:fly={{ y: 12, duration: 180 }}>
 			<span>{t.text}</span>
+			{#if t.action}<button class="act" onclick={() => (t.action!.run(), dismiss(t.id))}>{t.action.label}</button>{/if}
 			<button class="quiet" aria-label="Dismiss" onclick={() => dismiss(t.id)}>✕</button>
 		</div>
 	{/each}
@@ -34,7 +35,8 @@
 		box-shadow: 0 6px 24px rgb(15 24 33 / 0.25);
 	}
 	.toast span { flex: 1; overflow-wrap: anywhere; }
-	.toast.error { border-left: 4px solid var(--conflict); }
+	.toast.error { box-shadow: inset 0 0 0 1px var(--conflict), 0 6px 24px rgb(15 24 33 / 0.25); }
+	.toast .act { border: 1px solid rgb(255 255 255 / 0.35); font-weight: 600; }
 	.toast button { color: inherit; padding: 0.2rem 0.5rem; }
 	.toast button:hover { background: rgb(255 255 255 / 0.12); }
 </style>

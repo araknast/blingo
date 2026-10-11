@@ -17,6 +17,7 @@ test("conflicts, stuck forks, failed tasks and unapplied series need a person; w
 	];
 	d.tasks = [{ id: "t1", title: "Fix the parser", description: "", kind: "agent", status: "failed", bubble: null, fork: null, deps: [], explanation: null, superagent: null, created: 0, finished: 0, ready: true, skills: null, role: "agent" }];
 	d.bubbles[0].members[1].status = "failed";
+	d.settings.hasKey = true;
 
 	const n = needs(d);
 	expect(n.map((x) => x.key)).toEqual(["c:r-demo-f-3fa1c09e|r-demo-f-5c08aa71", "f:review", "f:ci-red", "f:handed", "t:t1", `m:${d.bubbles[0].members[1].name}`]);
@@ -32,4 +33,25 @@ test("conflicts, stuck forks, failed tasks and unapplied series need a person; w
 	expect(dock).toEqual(expect.arrayContaining(["r-demo-f-e2b8f6c1", "r-demo-f-b1d7c2e8", "in-ci", "fixer", "unpushed"]));
 	expect(dock).not.toContain("review");
 	expect(dock).not.toContain("handed");
+});
+
+test("the repository's setup, a failed deployment and new notes from agents need a person too", () => {
+	const d: RepoState = structuredClone(demoSteps[0]);
+	const pages = (x: RepoState, seen?: number) => needs(x, seen).filter((n) => n.kind === "page").map((n) => n.key);
+	expect(pages(d)).toEqual(["k:none"]);
+	d.settings.hasKey = true;
+	d.settings.keyProvider = "anthropic";
+	d.settings.provider = "openrouter";
+	expect(pages(d)).toEqual(["k:provider"]);
+	d.settings.provider = "anthropic";
+	const run = (id: string, name: string, status: "running" | "succeeded" | "failed", started: number) => ({ id, name, bubble: "b", head: "h", status, started, finished: null, log: null, by: "me" });
+	d.deploys = [run("1", "prod", "failed", 1), run("2", "prod", "succeeded", 2), run("3", "staging", "failed", 3)];
+	expect(pages(d)).toEqual(["d:3"]); // prod ran again and passed
+	d.memory = [
+		{ id: "m1", text: "a", author: "kofi", created: 10 },
+		{ id: "m2", text: "b", author: "r-demo-f-1234", created: 10 },
+		{ id: "m3", text: "c", author: "r-demo-s-1234", created: 3 },
+	];
+	expect(needs(d, 5).find((n) => n.key === "n:memory")).toMatchObject({ title: "A new note from agents" });
+	expect(pages(d, 20)).toEqual(["d:3"]);
 });

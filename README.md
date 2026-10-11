@@ -83,7 +83,7 @@ created before users existed have no owner, so only the admin can reach them. An
 | `POST /invites` → `{code}` | Admin only. A single-use invite code |
 | `POST /repos {name?}` → `{repo}` | A new, empty repository with a display name |
 | `POST /agents {prompt, repo, bubble?, model?}` | Fork and run Claude Code on it. The repository must have an API key (else 400). No `bubble` → any bubble; `model` overrides the repository's agent model for this run. With task approval on → `{task, awaitingApproval: true}` |
-| `PATCH /repos/:repo/tasks/:id {title?, description?}` / `POST …/approve` | Edit or approve a task awaiting approval |
+| `PATCH /repos/:repo/tasks/:id {title?, description?}` / `POST …/approve` / `POST …/reject` | Edit, approve, or reject (delete) a task awaiting approval; reject refuses while another task depends on it |
 | `POST /notagents {repo?, bubble?}` | Fork and return a git remote with a 1-hour push token; a push gets placed (or waits as a loose fork when `autoPlaceNotagents` is off) |
 | `GET /agents/:fork` | One agent's sandbox status and log tail |
 | `GET /agents/:fork/transcript` | `{status, events}`: the run's Claude Code stream-json events (thinking, text, tool calls and results) |
