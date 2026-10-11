@@ -421,6 +421,16 @@ export class RepoDO extends DurableObject<Env> {
 
 	// The skills an agent loads: those a task names (a JSON list; NULL = all), with their files.
 	// A superagent gets every skill, as a list only (it assigns them to tasks).
+	// One skill's files, to read in the UI: SKILL.md's text, and every file's path and size.
+	skillFiles(name: string): { name: string; description: string; skillMd: string; files: { path: string; bytes: number }[] } | null {
+		const s = this.sql.exec<{ name: string; description: string }>("SELECT name, description FROM skill WHERE name = ?", name).toArray()[0];
+		if (!s) return null;
+		const rows = this.sql.exec<{ path: string; data: string }>("SELECT path, data FROM skill_file WHERE skill = ? ORDER BY path", name).toArray();
+		const md = rows.find((r) => r.path === "SKILL.md");
+		const skillMd = md ? new TextDecoder().decode(Uint8Array.from(atob(md.data), (c) => c.charCodeAt(0))) : "";
+		return { ...s, skillMd, files: rows.map((r) => ({ path: r.path, bytes: Math.floor((r.data.length * 3) / 4) - (r.data.endsWith("==") ? 2 : r.data.endsWith("=") ? 1 : 0) })) };
+	}
+
 	skillPack(named: string | null): Skill[] {
 		const names = named === null ? this.skillNames() : (JSON.parse(named) as string[]);
 		return this.sql
@@ -836,6 +846,15 @@ export class RepoDO extends DurableObject<Env> {
 			this.deployDone(id, false, `couldn't start: ${e instanceof Error ? e.message : e}`);
 		}
 		return { id };
+	}
+
+	// A person cancels a running deployment. Its Box stops the command; if the Box has no job (it never
+	// started, or already reported), the record is closed here.
+	async cancelDeploy(id: string): Promise<{ ok: true } | { error: string }> {
+		if (!this.sql.exec("SELECT 1 FROM deploy WHERE id = ? AND status = 'running'", id).toArray().length) return { error: "that deployment isn't running" };
+		const stopped = await this.env.BOX.getByName(`deploy-${id}`).stopCI().catch(() => false);
+		if (!stopped) this.deployDone(id, false, "cancelled by a person");
+		return { ok: true };
 	}
 
 	deployDone(id: string, ok: boolean, log: string) {

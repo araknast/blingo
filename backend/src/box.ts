@@ -471,16 +471,28 @@ export class Box extends DurableObject<Env> {
 		await this.finish(job, job.kind === "superagent" ? "planned" : loose ? "loose" : "placed", log);
 	}
 
+	private async ciDone(job: CiJob, ok: boolean, log: string) {
+		this.ctx.storage.kv.delete("ci");
+		this.ctx.storage.kv.put("status", ok ? "passed" : "failed");
+		this.ctx.storage.kv.put("log", log);
+		await this.container.destroy().catch(() => {});
+		const repo = this.env.REPO.getByName(job.repo);
+		if (job.deploy) await repo.deployDone(job.deploy.id, ok, log);
+		else await repo.ciDone(job.fork, job.head, ok, log);
+	}
+
+	// A person cancels the CI job or deployment running here: it fails with its output so far. What its
+	// command already did (a half-finished deploy, say) isn't undone.
+	async stopCI(): Promise<boolean> {
+		const job = this.ctx.storage.kv.get<CiJob>("ci");
+		if (!job) return false;
+		const tail = this.container.running ? (await this.sh(`tail -c 7900 ${TASK}/log 2>/dev/null || true`).catch(() => ({ stdout: "" }))).stdout : "";
+		await this.ciDone(job, false, `${tail.trimEnd()}\ncancelled by a person`.trim());
+		return true;
+	}
+
 	private async ciAlarm(job: CiJob) {
-		const done = async (ok: boolean, log: string) => {
-			this.ctx.storage.kv.delete("ci");
-			this.ctx.storage.kv.put("status", ok ? "passed" : "failed");
-			this.ctx.storage.kv.put("log", log);
-			await this.container.destroy().catch(() => {});
-			const repo = this.env.REPO.getByName(job.repo);
-			if (job.deploy) await repo.deployDone(job.deploy.id, ok, log);
-			else await repo.ciDone(job.fork, job.head, ok, log);
-		};
+		const done = (ok: boolean, log: string) => this.ciDone(job, ok, log);
 		if (!this.container.running) return done(false, "the CI container stopped before CI finished");
 		const exit = (await this.sh(`cat ${TASK}/exit 2>/dev/null || true`)).stdout.trim();
 		if (exit === "") return void (await this.ctx.storage.setAlarm(Date.now() + CI_CHECK_MS));

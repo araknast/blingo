@@ -51,14 +51,20 @@
 		if (!form) return false;
 		busy = true;
 		try {
+			// Only what changed here: the server merges it, so a save doesn't undo changes made elsewhere since.
 			const { ci, deploys, hasKey: _, hasReviewerKey: __, keyProvider: ___, ...rest } = form;
-			await api("PUT", `/repos/${repo}/settings`, {
-				...rest,
-				ci: { enabled: ci.enabled, command: ci.command, hosts: split(ci.hostsText) },
-				deploys: deploys.map(deployBody),
-				...(apiKey ? { apiKey } : dropKey ? { apiKey: "" } : {}),
-				...(reviewerKey ? { reviewerKey } : dropReviewerKey ? { reviewerKey: "" } : {}),
-			});
+			const was = JSON.parse(saved) as Form;
+			const changed = (k: string, now: unknown) => JSON.stringify(now) !== JSON.stringify((was as Record<string, unknown>)[k]);
+			const body: Record<string, unknown> = Object.fromEntries(Object.entries(rest).filter(([k, v]) => changed(k, v)));
+			if (changed("ci", ci)) body.ci = { enabled: ci.enabled, command: ci.command, hosts: split(ci.hostsText) };
+			if (changed("deploys", deploys)) body.deploys = deploys.map(deployBody);
+			if (apiKey) body.apiKey = apiKey;
+			else if (dropKey) body.apiKey = "";
+			if (reviewerKey) body.reviewerKey = reviewerKey;
+			else if (dropReviewerKey) body.reviewerKey = "";
+			// The key is checked against the provider it's saved for, so a new key sends the provider too.
+			if (body.apiKey && !("provider" in body)) body.provider = form.provider;
+			await api("PUT", `/repos/${repo}/settings`, body);
 			apiKey = reviewerKey = "";
 			dropKey = dropReviewerKey = false;
 			form = null; // take the saved values

@@ -306,6 +306,10 @@ async function handle(request: Request, env: Env): Promise<Response> {
 		await env.REPO.getByName(b).addSkill(skill);
 		return Response.json({ name: skill.name }, { status: 201 });
 	}
+	if (request.method === "GET" && a === "repos" && b && c === "skills" && d && !e) {
+		const skill = await env.REPO.getByName(b).skillFiles(d);
+		return skill ? Response.json(skill) : Response.json({ error: "no such skill" }, { status: 404 });
+	}
 	if (request.method === "DELETE" && a === "repos" && b && c === "skills" && d) {
 		return (await env.REPO.getByName(b).deleteSkill(d))
 			? Response.json({ ok: true })
@@ -316,6 +320,10 @@ async function handle(request: Request, env: Env): Promise<Response> {
 		if (typeof body.name !== "string" || typeof body.bubble !== "string") return Response.json({ error: "name and bubble required" }, { status: 400 });
 		const r = await env.REPO.getByName(b).startDeploy(body.name, body.bubble, auth.user);
 		return "error" in r ? Response.json(r, { status: 409 }) : Response.json(r, { status: 202 });
+	}
+	if (request.method === "POST" && a === "repos" && b && c === "deploys" && d && e === "cancel") {
+		const r = await env.REPO.getByName(b).cancelDeploy(d);
+		return "error" in r ? Response.json(r, { status: 409 }) : Response.json({ deploy: d });
 	}
 	if (a === "repos" && b && c === "settings" && !d) {
 		const repo = env.REPO.getByName(b);

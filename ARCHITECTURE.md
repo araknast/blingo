@@ -146,7 +146,7 @@ placed.
 **Skills.** `POST /repos/:r/skills {files: [{path, data(base64)}]}` takes a skills folder picked in yorkle's
 Skills tab (`webkitdirectory`); `parseSkillUpload` needs a `SKILL.md` with `name` and `description` frontmatter
 and no odd paths, and a skill with the same name is replaced. `DELETE …/skills/:name` removes it (and drops it
-from tasks that named it). A task's `skills` (from `POST /agents`, `POST …/tasks`, or a superagent's plan item)
+from tasks that named it). `GET …/skills/:name` returns its `SKILL.md` text and each file's path and size. A task's `skills` (from `POST /agents`, `POST …/tasks`, or a superagent's plan item)
 is a list of names: omitted = all the repository's skills at start, `[]` = none. `startAgent` empties
 `~/.claude/skills` in the container and unpacks only the chosen ones there (Claude Code lists them to the
 model itself) and names them in the system prompt; nothing is written into the clone.
@@ -160,6 +160,8 @@ visible with nothing queued, and one deployment runs once per bubble at a time. 
 for a host; their values are stored apart (KV `deployAuth`, never returned: the API says `hasValue`) and
 `Outbound` adds the header to requests to that host, so the credential never enters the sandbox. The result
 (`deployDone`) fills the `deploy` row shown on the Deploy tab; a run with no result after 40 minutes is failed.
+`POST …/deploys/:id/cancel` (`cancelDeploy`) has its Box stop the command (`stopCI`): the run fails with its
+output so far and "cancelled by a person". What the command already did isn't undone.
 
 **Memory.** Agents and superagents get the repo's memory items through `--append-system-prompt`
 (never written into the repo). Items added while an agent runs reach it too: `addMemory` has each

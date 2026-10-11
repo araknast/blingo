@@ -1,6 +1,7 @@
 <script lang="ts">
 	// The repository's skills: Claude Code skill folders that agents can load.
 	import { ask } from "../lib/confirm.svelte";
+	import Markdown from "../lib/Markdown.svelte";
 	import Shell from "../lib/Shell.svelte";
 	import { repoState } from "../lib/repoState.svelte";
 	import { api, session } from "../lib/session.svelte";
@@ -16,6 +17,20 @@
 	const shown = $derived(items.slice(Math.min(page, Math.max(0, Math.ceil(items.length / PAGE) - 1)) * PAGE).slice(0, PAGE));
 
 	let busy = $state(false);
+	// A skill's contents, fetched when its row is opened.
+	type Contents = { skillMd: string; files: { path: string; bytes: number }[] };
+	let contents = $state<Record<string, Contents | "loading" | "error">>({});
+	async function load(name: string, open: boolean) {
+		if (!open || contents[name]) return;
+		contents[name] = "loading";
+		try {
+			contents[name] = await api<Contents>("GET", `/repos/${repo}/skills/${encodeURIComponent(name)}`);
+		} catch {
+			contents[name] = "error";
+		}
+	}
+	const body = (md: string) => md.replace(/^---\n[\s\S]*?\n---\n?/, ""); // without its frontmatter
+	const size = (n: number) => (n < 1000 ? `${n} B` : `${(n / 1000).toFixed(n < 10000 ? 1 : 0)} KB`);
 	// Tasks not finished yet that picked this skill by name.
 	const usedBy = (name: string) => rd.data?.tasks.filter((t) => t.status !== "completed" && t.skills?.includes(name)).length ?? 0;
 	const b64 = async (f: File) => {
@@ -87,6 +102,18 @@
 						<p class="muted">{s.description}</p>
 						<span class="muted small">added {ago(s.created)}{#if usedBy(s.name)} · named by {usedBy(s.name) === 1 ? "a task" : `${usedBy(s.name)} tasks`}{/if}</span>
 						<button class="quiet" aria-label="Remove {s.name}" onclick={() => remove(s.name)}>Remove</button>
+						<details class="contents" ontoggle={(e) => load(s.name, (e.currentTarget as HTMLDetailsElement).open)}>
+							<summary>What's in it</summary>
+							{#if contents[s.name] === "loading" || !contents[s.name]}
+								<p class="muted">Loading…</p>
+							{:else if contents[s.name] === "error"}
+								<p class="muted">Couldn't load it. Close and open this again to retry.</p>
+							{:else}
+								{@const c = contents[s.name] as Contents}
+								<ul class="files">{#each c.files as f (f.path)}<li><span class="mono">{f.path}</span><span class="muted">{size(f.bytes)}</span></li>{/each}</ul>
+								<div class="skill-md"><Markdown text={body(c.skillMd)} /></div>
+							{/if}
+						</details>
 					</li>
 				{/each}
 			</ul>
@@ -102,8 +129,14 @@
 	.upload:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; }
 	.upload.busy { opacity: 0.6; cursor: progress; }
 	.skills { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; }
-	.skills li { display: grid; grid-template-columns: 1fr auto; gap: 0.15rem 1rem; padding: 0.75rem 1rem; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--raised); }
+	.skills > li { display: grid; grid-template-columns: 1fr auto; gap: 0.15rem 1rem; padding: 0.75rem 1rem; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--raised); }
 	.skills p { overflow-wrap: anywhere; }
-	.skills button { grid-row: 1 / span 3; grid-column: 2; align-self: center; }
+	.skills > li > button { grid-row: 1 / span 3; grid-column: 2; align-self: center; }
+	.contents { grid-column: 1 / -1; margin-top: 0.35rem; font-size: 0.875rem; }
+	.contents summary { cursor: pointer; color: var(--ink-2); width: max-content; }
+	.contents[open] summary { margin-bottom: 0.5rem; }
+	.files { list-style: none; margin: 0 0 0.75rem; padding: 0.5rem 0.75rem; display: grid; gap: 0.15rem; background: var(--paper); border-radius: var(--r-sm); }
+	.files li { display: flex; justify-content: space-between; gap: 1rem; }
+	.skill-md { max-height: 24rem; overflow: auto; border-top: 1px solid var(--line-2); }
 	.small { font-size: 0.8125rem; }
 </style>

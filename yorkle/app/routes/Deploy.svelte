@@ -2,6 +2,7 @@
 	// The repository's deployments: every run and its status, and starting one on a bubble. `?bubble=`
 	// (from the map's menu) picks the bubble.
 	import { atFailure } from "../lib/atFailure";
+	import { ask } from "../lib/confirm.svelte";
 	import Dialog from "../lib/Dialog.svelte";
 	import Mark from "../lib/Mark.svelte";
 	import Pager, { PAGE } from "../lib/Pager.svelte";
@@ -56,6 +57,16 @@
 			busy = false;
 		}
 	}
+	async function cancel(id: string, what: string) {
+		if (!(await ask({ title: `Cancel ${what}?`, body: "Its command stops now. Whatever it already did, like a half-finished upload, isn't undone.", confirm: "Cancel deployment", danger: true }))) return;
+		try {
+			await api("POST", `/repos/${repo}/deploys/${id}/cancel`);
+			toast("Deployment cancelled");
+			await rd.refresh();
+		} catch (err) {
+			toastError(err);
+		}
+	}
 	const label = { running: "Running", succeeded: "Succeeded", failed: "Failed" } as const;
 	const mark = { running: "running", succeeded: "merged", failed: "failed" } as const;
 	const by = (who: string) => (/-[fsc]-/.test(who) ? `agent ${runId(who)}` : who);
@@ -86,7 +97,7 @@
 			<ul class="runs">
 				{#each shown as d (d.id)}
 					<li>
-						<details open={d.status === "failed" && d === runs.find((x) => x.name === d.name)}>
+						<details open={d.status === "running" || (d.status === "failed" && d === runs.find((x) => x.name === d.name))}>
 							<summary>
 								<span class="status {d.status}"><Mark status={mark[d.status]} />{label[d.status]}</span>
 								<span class="mono">{d.name}</span>
@@ -94,7 +105,9 @@
 								<span class="muted small">by {by(d.by)}, {ago(d.started)}{d.finished ? `, took ${duration(d.finished - d.started)}` : ""}</span>
 							</summary>
 							<pre use:atFailure>{d.log || (d.status === "running" ? "Running…" : "(no output)")}</pre>
-							{#if d.status !== "running" && configs.some((c) => c.name === d.name)}
+							{#if d.status === "running"}
+								<div class="again"><button class="danger" onclick={() => cancel(d.id, `${d.name} on ${bubbleName(d.bubble)}`)}>Cancel</button></div>
+							{:else if configs.some((c) => c.name === d.name)}
 								<div class="again"><button onclick={() => openDeploy(d.name, d.bubble)}>Run again</button></div>
 							{/if}
 						</details>
@@ -153,6 +166,7 @@
 	summary:hover { background: var(--paper); }
 	summary:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 	pre { margin: 0; padding: 0.75rem 1rem; border-top: 1px solid var(--line); max-height: 24rem; overflow: auto; font-size: 0.8125rem; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--paper); }
+	.danger { color: var(--conflict); }
 	.again { padding: 0.6rem 1rem; border-top: 1px solid var(--line-2); }
 	.status { display: inline-flex; align-items: center; gap: 0.4rem; font-weight: 600; }
 	.status.failed { color: var(--conflict); }
