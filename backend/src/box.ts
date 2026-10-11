@@ -33,8 +33,7 @@ git commit -qm "$2" || true`;
 // Superagent: same args, but a read-only clone and nothing is pushed; its plan is $TASK/tasks.json.
 const SUPER_SH = `set -e
 rm -rf /workspace/repo; git clone -q "$1" /workspace/repo; cd /workspace/repo
-claude --print --dangerously-skip-permissions --no-session-persistence --output-format stream-json --verbose --settings "$4" --model "$MODEL" --append-system-prompt "$3" -- "$2" >${TASK}/transcript.jsonl
-test -s ${TASK}/tasks.json`;
+claude --print --dangerously-skip-permissions --no-session-persistence --output-format stream-json --verbose --settings "$4" --model "$MODEL" --append-system-prompt "$3" -- "$2" >${TASK}/transcript.jsonl`;
 
 // CI: $1 fork remote (read), $2 the commit to check, $3 the repository's CI command. Exit = its exit.
 const CI_SH = `set -e
@@ -440,11 +439,12 @@ export class Box extends DurableObject<Env> {
 		const repo = this.env.REPO.getByName(job.repo);
 		let loose = false;
 		if (job.kind === "superagent") {
+			const raw = (await this.sh(`cat ${TASK}/tasks.json 2>/dev/null || true`)).stdout;
 			let plan: ReturnType<typeof validatePlan>;
 			try {
-				plan = validatePlan(JSON.parse((await this.sh(`cat ${TASK}/tasks.json`)).stdout), await repo.skillNames());
+				plan = validatePlan(JSON.parse(raw), await repo.skillNames());
 			} catch {
-				plan = { error: "tasks.json is not JSON" };
+				plan = { error: raw.trim() ? "tasks.json is not JSON" : `it wrote no plan to ${TASK}/tasks.json` };
 			}
 			if ("error" in plan) return unsubmitted(`plan rejected: ${plan.error}`);
 			await repo.addTasks(job.repo, plan.items, job.fork);
