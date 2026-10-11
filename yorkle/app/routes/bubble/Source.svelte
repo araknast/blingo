@@ -8,10 +8,11 @@
 	import type { Commit, TreeEntry } from "../../lib/types";
 	import { ago, firstLine } from "../../lib/util";
 
-	let { repo, bubble, path, base }: { repo: string; bubble: string; path: string; base: string } = $props();
+	let { repo, bubble, path, base, at: pinned }: { repo: string; bubble: string; path: string; base: string; at?: string } = $props();
 
 	// ?at=<commit> pins the view to a commit; otherwise the bubble's latest code.
-	const at = new URLSearchParams(route.search).get("at") ?? undefined;
+	// svelte-ignore state_referenced_locally (keyed by path and search where it's used)
+	const at = pinned ?? new URLSearchParams(route.search).get("at") ?? undefined;
 	const atQ = at ? `?at=${at}` : "";
 
 	type View =

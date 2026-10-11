@@ -632,8 +632,9 @@ export class RepoDO extends DurableObject<Env> {
 		};
 	}
 
-	// How many things need a person, by the rules of the map's "Needs you" list (yorkle's
-	// lib/attention.ts `needs`; keep the two in step), less new memory notes, which are per viewer.
+	// How many things need a person, by the rules of the Overview's "Needs you" list (yorkle's
+	// lib/attention.ts `needs`; keep the two in step), less new memory notes, which are per viewer. A
+	// missing key isn't one (notagents still work); a key saved for another provider is.
 	private needsCount() {
 		const n = (q: string, ...p: unknown[]) => this.sql.exec<{ n: number }>(q, ...p).one().n;
 		const s = this.settings();
@@ -644,7 +645,7 @@ export class RepoDO extends DurableObject<Env> {
 		);
 		const key = this.ctx.storage.kv.get<string>("apiKey");
 		const keyProvider = this.ctx.storage.kv.get<string>("keyProvider");
-		const keyNeed = !key || (keyProvider && keyProvider !== s.provider) ? 1 : 0;
+		const keyNeed = key && keyProvider && keyProvider !== s.provider ? 1 : 0;
 		const deploys = n(
 			"SELECT COUNT(*) AS n FROM deploy d WHERE status = 'failed' AND started = (SELECT MAX(started) FROM deploy WHERE name = d.name)",
 		);
@@ -653,6 +654,7 @@ export class RepoDO extends DurableObject<Env> {
 			loose +
 			n("SELECT COUNT(*) AS n FROM task WHERE status = 'failed'") +
 			n("SELECT COUNT(*) AS n FROM fork WHERE status = 'failed' AND bubble IN (SELECT id FROM bubble)") +
+			n("SELECT COUNT(*) AS n FROM bubble WHERE ferge = 1 AND id IN (SELECT id FROM locked)") +
 			keyNeed +
 			deploys
 		);

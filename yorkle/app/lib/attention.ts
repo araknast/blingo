@@ -1,38 +1,45 @@
 import type { AgentRun, RepoState } from "./types";
 import { agentLabel, allRuns, active, short } from "./util";
 
-// What the map asks a person to act on. Clean merges and agents at work are background; these aren't.
-export type Need =
-	| { kind: "conflict"; key: string; a: string; b: string }
-	| { kind: "fork"; key: string; fork: string; title: string; why: string }
-	| { kind: "task"; key: string; id: string; title: string; why: string }
-	| { kind: "member"; key: string; bubble: string; fork: string; why: string }
-	// Somewhere else in the repository: `tab` is the page to open ("settings", "deploy", "memory").
-	| { kind: "page"; key: string; tab: string; title: string; why: string };
+// What a person has to act on. Clean merges and agents at work are background; these aren't. Each belongs
+// to the tab where it's dealt with (its badge counts it); the Overview lists them all.
+export type Tab = "bubbles" | "agents" | "tasks" | "deploy" | "memory" | "settings";
+export type Need = { key: string; tab: Tab } & (
+	| { kind: "conflict"; a: string; b: string }
+	| { kind: "fork"; fork: string; title: string; why: string }
+	| { kind: "task"; id: string; title: string; why: string }
+	| { kind: "member"; bubble: string; fork: string; why: string }
+	// A ferge's locked bubble: its conflicting files wait to be fixed and the bubble unlocked.
+	| { kind: "ferge"; bubble: string; why: string }
+	// Something on a tab with no item of its own to link to (a setting, a deployment, memory).
+	| { kind: "page"; title: string; why: string }
+);
 
 const PROVIDER = { anthropic: "Anthropic", openrouter: "OpenRouter", "claude-subscription": "a Claude subscription" };
 
 // The backend counts the same things for the repository list (RepoDO.needsCount): keep the two in step.
 // `memorySeen`: when this viewer last opened the Memory tab; notes agents wrote since then need a look.
 export function needs(d: RepoState, memorySeen = Infinity): Need[] {
-	const out: Need[] = d.conflicts.map(([a, b]) => ({ kind: "conflict", key: `c:${a}|${b}`, a, b }));
+	const out: Need[] = d.conflicts.map(([a, b]) => ({ kind: "conflict", tab: "bubbles", key: `c:${a}|${b}`, a, b }));
 	const titleOf = new Map(d.tasks.filter((t) => t.fork).map((t) => [t.fork!, t.title]));
 	for (const l of d.loose) {
 		const why = looseWhy(l, d.settings.autoPlaceNotagents);
-		if (why) out.push({ kind: "fork", key: `f:${l.fork}`, fork: l.fork, title: titleOf.get(l.fork) ?? short(l.fork), why });
+		if (why) out.push({ kind: "fork", tab: "agents", key: `f:${l.fork}`, fork: l.fork, title: titleOf.get(l.fork) ?? short(l.fork), why });
 	}
 	const runOf = new Map(d.agents.map((a) => [a.fork, a]));
 	for (const t of d.tasks) {
 		if (t.status !== "failed") continue;
 		const run = t.fork ? runOf.get(t.fork) : undefined;
-		out.push({ kind: "task", key: `t:${t.id}`, id: t.id, title: t.title, why: run ? `Agent ${agentLabel(run.status).toLowerCase()}` : "Task failed" });
+		out.push({ kind: "task", tab: "tasks", key: `t:${t.id}`, id: t.id, title: t.title, why: run ? `Agent ${agentLabel(run.status).toLowerCase()}` : "Task failed" });
 	}
-	for (const b of d.bubbles)
+	for (const b of d.bubbles) {
 		for (const m of b.members)
-			if (m.status === "failed") out.push({ kind: "member", key: `m:${m.name}`, bubble: b.id, fork: m.name, why: "Its changes didn't apply" });
+			if (m.status === "failed") out.push({ kind: "member", tab: "bubbles", key: `m:${m.name}`, bubble: b.id, fork: m.name, why: "Its changes didn't apply" });
+		if (b.ferge && b.locked) out.push({ kind: "ferge", tab: "bubbles", key: `g:${b.id}`, bubble: b.id, why: "Fix its conflicting files in a fork, then unlock it" });
+	}
+	// No key isn't a problem: a repository runs on notagents alone. A key for another provider is: agents fail.
 	const s = d.settings;
-	if (!s.hasKey) out.push({ kind: "page", key: "k:none", tab: "settings", title: "No API key", why: "Agents don't start until the repository has one" });
-	else if (s.keyProvider && s.keyProvider !== s.provider)
+	if (s.hasKey && s.keyProvider && s.keyProvider !== s.provider)
 		out.push({ kind: "page", key: "k:provider", tab: "settings", title: "The API key doesn't match", why: `It was saved for ${PROVIDER[s.keyProvider]}, but agents use ${PROVIDER[s.provider]}` });
 	// A deployment whose last run failed, until it runs again.
 	const last = new Map<string, RepoState["deploys"][number]>();
@@ -42,6 +49,13 @@ export function needs(d: RepoState, memorySeen = Infinity): Need[] {
 	const fresh = d.memory.filter((m) => isRun(m.author) && m.created > memorySeen).length;
 	if (fresh) out.push({ kind: "page", key: "n:memory", tab: "memory", title: `${fresh === 1 ? "A new note" : `${fresh} new notes`} from agents`, why: "Every agent reads them. Check they're right" });
 	return out;
+}
+
+// How many items each tab has.
+export function needsByTab(d: RepoState, memorySeen = Infinity): Partial<Record<Tab, number>> {
+	const by: Partial<Record<Tab, number>> = {};
+	for (const n of needs(d, memorySeen)) by[n.tab] = (by[n.tab] ?? 0) + 1;
+	return by;
 }
 
 // Memory notes agents leave are authored by their run's id (an agent's fork, a superagent or CI fixer run).

@@ -56,9 +56,12 @@ until_ "[x['status'] for x in d['deploys'] if x['id']=='$D1'] == ['failed']" "th
 [ "$(code -X POST $U/repos/$R/deploys/$D1/cancel)" = 409 ] || fail "cancelling a finished one should be refused"
 ok "cancel stops a running deployment and keeps its output"
 
-# The summary's count: the key mismatch and the cancelled deployment.
+# The summary's count: the key mismatch and the cancelled deployment; a missing key isn't counted.
 N=$(api $U/repos/$R/summary | python3 -c 'import json,sys;print(json.load(sys.stdin)["needs"])')
 [ "$N" = 2 ] || fail "summary needs = $N: $(api $U/repos/$R/summary)"
-ok "the repository summary counts what needs you ($N)"
+api -X PUT --json '{"apiKey":""}' $U/repos/$R/settings >/dev/null
+N=$(api $U/repos/$R/summary | python3 -c 'import json,sys;print(json.load(sys.stdin)["needs"])')
+[ "$N" = 1 ] || fail "with no key, summary needs = $N (a missing key isn't a need)"
+ok "the repository summary counts what needs you, and not a missing key"
 
 [ -n "${KEEP:-}" ] && echo "kept $R" || api -X DELETE $U/repos/$R >/dev/null

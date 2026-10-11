@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { docked, needs } from "./attention";
+import { docked, needs, needsByTab } from "./attention";
 import { demoSteps } from "./demo";
 import type { LooseFork, RepoState } from "./types";
 
@@ -38,11 +38,12 @@ test("conflicts, stuck forks, failed tasks and unapplied series need a person; w
 test("the repository's setup, a failed deployment and new notes from agents need a person too", () => {
 	const d: RepoState = structuredClone(demoSteps[0]);
 	const pages = (x: RepoState, seen?: number) => needs(x, seen).filter((n) => n.kind === "page").map((n) => n.key);
-	expect(pages(d)).toEqual(["k:none"]);
+	expect(pages(d)).toEqual([]); // no key: notagents still work
 	d.settings.hasKey = true;
 	d.settings.keyProvider = "anthropic";
 	d.settings.provider = "openrouter";
 	expect(pages(d)).toEqual(["k:provider"]);
+	expect(needs(d).find((n) => n.key === "k:provider")).toMatchObject({ tab: "settings" });
 	d.settings.provider = "anthropic";
 	const run = (id: string, name: string, status: "running" | "succeeded" | "failed", started: number) => ({ id, name, bubble: "b", head: "h", status, started, finished: null, log: null, by: "me" });
 	d.deploys = [run("1", "prod", "failed", 1), run("2", "prod", "succeeded", 2), run("3", "staging", "failed", 3)];
@@ -54,4 +55,15 @@ test("the repository's setup, a failed deployment and new notes from agents need
 	];
 	expect(needs(d, 5).find((n) => n.key === "n:memory")).toMatchObject({ title: "A new note from agents" });
 	expect(pages(d, 20)).toEqual(["d:3"]);
+});
+
+test("every item belongs to a tab, and an open ferge waits on the bubbles tab", () => {
+	const d: RepoState = structuredClone(demoSteps[4]);
+	d.bubbles[1].ferge = d.bubbles[1].locked = true;
+	d.bubbles[0].members[1].status = "failed";
+	d.loose = [loose("review", { kind: "agent", reviewManual: "pending" })];
+	d.tasks = [{ id: "t1", title: "x", description: "", kind: "agent", status: "failed", bubble: null, fork: null, deps: [], explanation: null, superagent: null, created: 0, finished: 0, ready: true, skills: null, role: "agent" }];
+	expect(needs(d).find((n) => n.kind === "ferge")).toMatchObject({ tab: "bubbles", bubble: d.bubbles[1].id });
+	// The conflict, the failed member and the ferge; the review; the task.
+	expect(needsByTab(d)).toEqual({ bubbles: 3, agents: 1, tasks: 1 });
 });

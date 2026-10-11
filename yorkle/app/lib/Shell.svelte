@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { Snippet } from "svelte";
 	import Dialog from "./Dialog.svelte";
-	import { needs } from "./attention";
+	import { needsByTab, type Tab } from "./attention";
 	import { route } from "./router.svelte";
 	import { memorySeen } from "./seen";
 	import type { RepoState } from "./types";
@@ -19,35 +19,35 @@
 		full = false,
 	}: { crumbs: Crumb[]; actions?: Snippet; children: Snippet; repo?: string; data?: RepoState | null; full?: boolean } = $props();
 
-	// The tabs' counts. Only the Map's is an alert: what needs you, from every tab, is listed there.
+	// Under the Overview, each tab with what needs you there (red) and what's going on (grey).
 	const counts = $derived.by(() => {
-		if (!data || !repo) return {};
-		const need = needs(data, memorySeen(repo));
+		if (!data || !repo) return { need: {} as Partial<Record<Tab, number>>, info: {} as Record<string, number> };
 		return {
-			map: need.length,
-			tasks: data.tasks.filter((t) => t.status !== "completed").length,
-			agents: data.agents.filter((a) => a.status === "running").length,
-			deploy: data.deploys.filter((d) => d.status === "running").length,
-			memory: need.some((n) => n.key === "n:memory") ? data.memory.filter((m) => m.created > memorySeen(repo)).length : 0,
+			need: needsByTab(data, memorySeen(repo)),
+			info: {
+				tasks: data.tasks.filter((t) => t.status !== "completed").length,
+				agents: data.agents.filter((a) => a.status === "running").length,
+				deploy: data.deploys.filter((d) => d.status === "running").length,
+			} as Record<string, number>,
 		};
 	});
-
-	// The repository's views, as tabs in the sidebar. The map also covers its bubbles and loose forks.
 	const tabs = $derived.by(() => {
 		if (!repo) return [];
 		const base = `/repos/${repo}`;
 		const p = route.path.replace(/\/+$/, "");
 		const under = (s: string) => p === `${base}/${s}` || p.startsWith(`${base}/${s}/`);
+		const tab = (id: Tab | "skills", label: string, active = under(id)) => ({ label, href: `${base}/${id}`, active, need: counts.need[id as Tab] ?? 0, info: counts.info[id] ?? 0 });
 		return [
-			{ label: "Map", href: base, active: p === base || under("b"), count: counts.map, alert: true },
-			{ label: "Tasks", href: `${base}/tasks`, active: under("tasks"), count: counts.tasks },
-			{ label: "Agents", href: `${base}/agents`, active: under("agents") || under("forks"), count: counts.agents },
-			{ label: "Deploy", href: `${base}/deploy`, active: under("deploy"), count: counts.deploy },
-			{ label: "Skills", href: `${base}/skills`, active: under("skills") },
-			{ label: "Memory", href: `${base}/memory`, active: under("memory"), count: counts.memory },
-			{ label: "Settings", href: `${base}/settings`, active: under("settings") },
+			tab("bubbles", "Bubbles", under("bubbles") || under("b")),
+			tab("tasks", "Tasks"),
+			tab("agents", "Agents", under("agents") || under("forks")),
+			tab("deploy", "Deploy"),
+			tab("skills", "Skills"),
+			tab("memory", "Memory"),
+			tab("settings", "Settings"),
 		];
 	});
+	const overview = $derived(!!repo && route.path.replace(/\/+$/, "") === `/repos/${repo}`);
 
 	let drawer = $state(false);
 	let inviteOpen = $state(false);
@@ -75,10 +75,17 @@
 			<li><a href="/repos" aria-current={route.path === "/repos" ? "page" : undefined}>Repositories</a></li>
 			{#if repo}
 				<li class="repo-nav">
-					<span class="repo-name" title={repo}>{repoName(repo, session.me?.names)}</span>
-					<ul aria-label="Repository">
+					<!-- The repository's name is its Overview; its tabs hang under it. -->
+					<a class="repo-name" href="/repos/{repo}" title="{repoName(repo, session.me?.names)}: overview" aria-current={overview ? "page" : undefined}>{repoName(repo, session.me?.names)}</a>
+					<ul class="sub" aria-label="Repository tabs">
 						{#each tabs as t (t.label)}
-							<li><a href={t.href} aria-current={t.active ? "page" : undefined}>{t.label}{#if t.count}<span class="n" class:alert={"alert" in t}>{t.count}<span class="visually-hidden">{"alert" in t ? " need you" : ""}</span></span>{/if}</a></li>
+							<li>
+								<a href={t.href} aria-current={t.active ? "page" : undefined}>
+									<span class="label">{t.label}</span>
+									{#if t.info}<span class="n" title="{t.info} {t.label === 'Tasks' ? 'open' : 'running'}">{t.info}<span class="visually-hidden"> {t.label === "Tasks" ? "open" : "running"}</span></span>{/if}
+									{#if t.need}<span class="n alert" title="{t.need} need you">{t.need}<span class="visually-hidden"> need you</span></span>{/if}
+								</a>
+							</li>
 						{/each}
 					</ul>
 				</li>
@@ -159,8 +166,11 @@
 	.side ul a:hover { background: rgb(255 255 255 / 0.06); color: #fff; }
 	.side ul a[aria-current="page"] { background: rgb(255 255 255 / 0.1); color: #fff; }
 	.repo-nav { margin-top: 0.75rem; }
-	.repo-name { display: block; padding: 0.3rem 0.6rem; font-size: 0.75rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: rgb(255 255 255 / 0.55); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-	.repo-nav a { display: flex !important; justify-content: space-between; align-items: center; padding-left: 1rem !important; }
+	.side ul a.repo-name { font-weight: 600; white-space: nowrap; }
+	.repo-nav .sub a { display: flex; align-items: center; gap: 0.35rem; }
+	.repo-nav .label { margin-right: auto; overflow: hidden; text-overflow: ellipsis; }
+	/* The tabs hang under the Overview. */
+	.repo-nav .sub { margin: 2px 0 0 0.85rem; padding-left: 0.4rem; border-left: 1px solid rgb(255 255 255 / 0.14); }
 	.repo-nav .n { font-size: 0.75rem; padding: 0 0.4rem; border-radius: 999px; background: rgb(255 255 255 / 0.12); font-variant-numeric: tabular-nums; }
 	.repo-nav .n.alert { background: var(--conflict); color: #fff; font-weight: 600; }
 	.me { margin-top: auto; display: grid; gap: 0.4rem; }

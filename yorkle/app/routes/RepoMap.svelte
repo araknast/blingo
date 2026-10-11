@@ -5,6 +5,7 @@
 	import SkillPicker from "../lib/SkillPicker.svelte";
 	import ModelField from "../lib/ModelField.svelte";
 	import ForkCommands from "../lib/ForkCommands.svelte";
+	import BubbleView from "../lib/BubbleView.svelte";
 	import ForkDetail from "../lib/ForkDetail.svelte";
 	import Shell from "../lib/Shell.svelte";
 	import { memorySeen } from "../lib/seen";
@@ -15,6 +16,7 @@
 	import { navigate, route } from "../lib/router.svelte";
 	import { api, session } from "../lib/session.svelte";
 	import { toast, toastError } from "../lib/toast.svelte";
+	import { ferge as fergeBubbles, fergeFiles as filesBoth, setLock as lockBubble } from "../lib/bubbleActions";
 	import { plural, repoName, runKind, short } from "../lib/util";
 
 	let { repo }: { repo: string } = $props();
@@ -23,7 +25,6 @@
 	const repoData = repoState(repo, 2500);
 	const data = $derived(repoData.data);
 	const refresh = repoData.refresh;
-	const bubbleHref = (id: string) => `/repos/${repo}/b/${id}`;
 	const bubbleName = (id: string) => data?.bubbles.find((b) => b.id === id)?.name || short(id);
 	let map = $state<ReturnType<typeof BubbleMap>>();
 	// svelte-ignore state_referenced_locally
@@ -37,8 +38,23 @@
 	});
 	const open = (kind: string, id: string) => `/repos/${repo}?d=${kind}:${encodeURIComponent(id)}`;
 	const links: TaskLinks = { task: (id) => open("task", id), run: (f) => open("run", f), fork: (f) => open("fork", f) };
+	// A bubble's code view keeps its own path in `p` ("/src/a/b?at=…"), so its links stay in the drawer.
+	const bubbleRest = $derived.by(() => {
+		const p = (new URLSearchParams(route.search).get("p") ?? "").replace(/^\//, "");
+		const [rest, q] = p.split("?");
+		return { rest, at: new URLSearchParams(q ?? "").get("at") ?? undefined };
+	});
+	const bubbleBase = (id: string) => `${open("bubble", id)}&p=`;
 	const fullPage = $derived(
-		!drawer ? "" : drawer.kind === "run" ? `/repos/${repo}/agents/${drawer.id}` : drawer.kind === "fork" ? `/repos/${repo}/forks/${drawer.id}` : `/repos/${repo}/tasks/${drawer.id}`,
+		!drawer
+			? ""
+			: drawer.kind === "run"
+				? `/repos/${repo}/agents/${drawer.id}`
+				: drawer.kind === "fork"
+					? `/repos/${repo}/forks/${drawer.id}`
+					: drawer.kind === "bubble"
+						? `/repos/${repo}/b/${drawer.id}/${bubbleRest.rest}${bubbleRest.at ? `?at=${bubbleRest.at}` : ""}`
+						: `/repos/${repo}/tasks/${drawer.id}`,
 	);
 	const drawerTask = $derived(drawer?.kind === "task" ? data?.tasks.find((t) => t.id === drawer.id) : undefined);
 	const drawerRun = $derived(drawer?.kind === "run" ? data?.agents.find((a) => a.fork === drawer.id) : undefined);
@@ -83,7 +99,7 @@
 			{ label: "Plan tasks from this bubble", action: () => openSuper(b.id) },
 			{ label: "Push a fork from this bubble", action: () => openPush(b.id) },
 			{ label: b.locked ? "Unlock bubble" : "Lock bubble", action: () => setLock(b.id, !b.locked) },
-			{ label: "Browse code", action: () => navigate(bubbleHref(b.id)) },
+			{ label: "Browse code", action: () => navigate(bubbleBase(b.id)) },
 			...(data?.settings.deploys.length ? [{ label: "Deploy this bubble…", action: () => navigate(`/repos/${repo}/deploy?bubble=${encodeURIComponent(b.id)}`) }] : []),
 		];
 	});
@@ -148,39 +164,23 @@
 
 	// ---- Lock, ferge ----
 	async function setLock(id: string, lock: boolean) {
-		try {
-			await api("POST", `/repos/${repo}/${lock ? "lock" : "unlock"}`, { bubble: id });
-			toast(lock ? `Locked ${bubbleName(id)}` : `Unlocked ${bubbleName(id)}`);
-			refresh();
-		} catch (e) {
-			toastError(e);
-		}
+		if (await lockBubble(repo, data, id, lock)) refresh();
 	}
 
 	let fergePair = $state<[string, string] | null>(null);
 	let fergeOpen = $state(false);
 	const askFerge = (a: string, b: string) => ((fergePair = [a, b]), (fergeOpen = true));
 	// The files both bubbles changed: what the ferge's locked bubble will hold.
-	const fergeFiles = $derived.by(() => {
-		if (!fergePair || !data) return [];
-		const files = (id: string) => new Set(data!.bubbles.find((b) => b.id === id)?.members.flatMap((m) => m.files) ?? []);
-		const b = files(fergePair[1]);
-		return [...files(fergePair[0])].filter((f) => b.has(f)).sort();
-	});
+	const fergeFiles = $derived(fergePair ? filesBoth(data, fergePair[0], fergePair[1]) : []);
 	async function ferge() {
 		if (!fergePair) return;
 		busy = true;
-		try {
-			const r = await api<{ locked: string; files: string[] }>("POST", `/repos/${repo}/ferge`, { a: fergePair[0], b: fergePair[1] });
-			fergeOpen = false;
-			await refresh();
-			map?.focusOn([r.locked]);
-			toast(`Ferged. ${bubbleName(r.locked)} holds ${plural(r.files.length, "conflicting file")}.`);
-		} catch (e) {
-			toastError(e);
-		} finally {
-			busy = false;
-		}
+		const locked = await fergeBubbles(repo, data, fergePair[0], fergePair[1]);
+		busy = false;
+		if (!locked) return;
+		fergeOpen = false;
+		await refresh();
+		map?.focusOn([locked]);
 	}
 </script>
 
@@ -204,7 +204,7 @@
 			<p>It doesn't exist, or it belongs to someone else. <a href="/repos">Go to your repositories</a>.</p>
 		</div>
 	{:else}
-		<section class="stage" aria-label="Bubble map">
+		<section class="stage" class:drawn={!!drawer} aria-label="Bubble map">
 			<BubbleMap
 				bind:this={map}
 				{data}
@@ -212,7 +212,7 @@
 				taskHref={(id) => open("task", id)}
 				pageHref={(tab) => `/repos/${repo}/${tab}`}
 				{seen}
-				hrefFor={bubbleHref}
+				hrefFor={(id, rest = "") => bubbleBase(id) + (rest ? `/${rest}` : "")}
 				agentHref={(fork) => open("run", fork)}
 				looseHref={(fork) => open("fork", fork)}
 				onconflict={askFerge}
@@ -237,6 +237,8 @@
 						{#key route.search}
 							{#if drawer.kind === "run"}
 								<AgentView {repo} id={drawer.id} run={drawerRun} task={data?.tasks.find((t) => t.kind === "agent" && t.status === "in-progress" && t.fork === drawer.id)?.id} kind={runKind({ fork: drawer.id })} {data} forkHref={(f) => open("fork", f)} />
+							{:else if drawer.kind === "bubble"}
+								<BubbleView {repo} bubble={drawer.id} rest={bubbleRest.rest} at={bubbleRest.at} base={bubbleBase(drawer.id)} {data} {refresh} />
 							{:else if drawer.kind === "fork"}
 								<ForkDetail {repo} fork={drawer.id} {data} {refresh} />
 							{:else if drawerTask && data}
@@ -347,6 +349,7 @@
 
 <style>
 	.stage { height: 100%; min-height: 0; position: relative; }
+	.drawn :global(.card) { display: none; } /* a bubble's hover card would sit beside the drawer */
 	.drawer {
 		position: absolute;
 		top: 0;

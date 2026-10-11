@@ -24,7 +24,7 @@
 		demo = false,
 	}: {
 		data: RepoState | null;
-		hrefFor?: (bubble: string) => string;
+		hrefFor?: (bubble: string, rest?: string) => string;
 		agentHref?: (fork: string) => string;
 		looseHref?: (fork: string) => string;
 		taskHref?: (id: string) => string;
@@ -46,7 +46,6 @@
 
 	let box: HTMLDivElement;
 	let svg: SVGSVGElement;
-	let findInput = $state<HTMLInputElement>();
 	let w = $state(0);
 	let h = $state(0);
 	let k = $state(1);
@@ -385,7 +384,7 @@
 		return () => svg.removeEventListener("wheel", onWheel);
 	});
 
-	// ---- Keyboard: arrows pan, + and − zoom, F or 0 fits; "/" anywhere on the page finds ----
+	// ---- Keyboard: arrows pan, + and − zoom, F or 0 fits ----
 	function keys(e: KeyboardEvent) {
 		if (demo || e.altKey || e.ctrlKey || e.metaKey) return;
 		const step = e.shiftKey ? 240 : 80;
@@ -400,46 +399,6 @@
 		else if (e.key === "-" || e.key === "_") zoomBy(0.8);
 		else if (e.key === "f" || e.key === "F" || e.key === "0") refit();
 		else return;
-	}
-	$effect(() => {
-		if (demo) return;
-		const slash = (e: KeyboardEvent) => {
-			if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey) return;
-			const t = e.target as HTMLElement;
-			if (t.closest("input, textarea, select, [contenteditable]") || document.querySelector("dialog[open]")) return;
-			e.preventDefault();
-			findInput?.focus();
-		};
-		addEventListener("keydown", slash);
-		return () => removeEventListener("keydown", slash);
-	});
-
-	// ---- Find: a bubble by name, or a fork by id or title ----
-	let query = $state("");
-	let missed = $state(false);
-	const findOptions = $derived([...new Set([...view.map((n) => nameOf(n)), ...dock.map((x) => x.title)])].sort());
-	function find(e: SubmitEvent) {
-		e.preventDefault();
-		const q = query.trim().toLowerCase();
-		if (!q) return;
-		const bubble =
-			view.find((n) => nameOf(n).toLowerCase() === q) ??
-			view.find((n) => n.members.some((m) => short(m.name).toLowerCase() === q || m.name.toLowerCase() === q)) ??
-			view.find((n) => nameOf(n).toLowerCase().includes(q));
-		if (bubble) {
-			missed = false;
-			focusOn([bubble.id]);
-			box.querySelector<SVGAElement>(`a.bubble[data-id="${CSS.escape(bubble.id)}"]`)?.focus({ preventScroll: true });
-			return;
-		}
-		const chip = dock.find((x) => x.title.toLowerCase().includes(q) || short(x.fork).toLowerCase() === q);
-		if (chip) {
-			missed = false;
-			openGroup = chip.status;
-			queueMicrotask(() => box.querySelector<HTMLElement>(`[data-fork="${CSS.escape(chip.fork)}"]`)?.focus());
-			return;
-		}
-		missed = true;
 	}
 
 	// ---- Dock: forks not in a bubble yet, grouped by what they're doing; folded when there are many ----
@@ -456,7 +415,7 @@
 	// ---- "Needs you" ----
 	let needsOpen = $state(!globalThis.matchMedia?.("(max-width: 768px)").matches);
 	const nameById = (id: string) => byId.get(id)?.b.name || data?.bubbles.find((b) => b.id === id)?.name || short(id);
-	const spotOf = (n: Need) => (n.kind === "conflict" ? [n.a, n.b] : n.kind === "member" ? [n.bubble] : null);
+	const spotOf = (n: Need) => (n.kind === "conflict" ? [n.a, n.b] : n.kind === "member" || n.kind === "ferge" ? [n.bubble] : null);
 
 	// ---- Hover card ----
 	const hoverNode = $derived(hovered ? byId.get(hovered) : undefined);
@@ -651,24 +610,6 @@
 		<p class="visually-hidden" aria-live="polite">{announce}</p>
 
 		<div class="bar" bind:offsetHeight={barH}>
-			<form class="find" role="search" onsubmit={find}>
-				<label class="visually-hidden" for="map-find">Find a bubble or fork</label>
-				<input
-					id="map-find"
-					type="search"
-					list="map-find-options"
-					placeholder="Find a bubble or fork"
-					autocomplete="off"
-					bind:this={findInput}
-					bind:value={query}
-					oninput={() => (missed = false)}
-					aria-invalid={missed}
-					aria-describedby={missed ? "map-find-miss" : undefined}
-				/>
-				<kbd aria-hidden="true">/</kbd>
-				<datalist id="map-find-options">{#each findOptions as o}<option value={o}></option>{/each}</datalist>
-				{#if missed}<span id="map-find-miss" class="miss" role="status">Nothing called that</span>{/if}
-			</form>
 			<div class="zoom" role="group" aria-label="Zoom">
 				<button aria-label="Zoom out" title="Zoom out (−)" onclick={() => zoomBy(0.8)}>
 					<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6h8" /></svg>
@@ -738,6 +679,13 @@
 										<div class="what">
 											<p><a href={taskHref?.(n.id)}>{n.title}</a></p>
 											<p class="why">{n.why}. Retry it from its task.</p>
+										</div>
+									{:else if n.kind === "ferge"}
+										<Mark status="conflict" />
+										<div class="what">
+											<p><a href={hrefFor?.(n.bubble, "conflicts")}>{nameById(n.bubble)} holds a ferge's conflicts</a></p>
+											<p class="why">{n.why}</p>
+											<div class="acts"><button class="small" onclick={() => focusOn([n.bubble])}>Show</button></div>
 										</div>
 									{:else if n.kind === "page"}
 										<Mark status={n.key === "n:memory" ? "review" : "failed"} />
@@ -925,11 +873,6 @@
 
 	.bar { position: absolute; left: 1rem; top: 1rem; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0.5rem; max-width: calc(100% - 2rem); z-index: 4; pointer-events: none; }
 	.bar > * { pointer-events: auto; }
-	.find { position: relative; display: flex; align-items: center; }
-	.find input { width: 15rem; padding: 0.35rem 1.8rem 0.35rem 0.6rem; font-size: 0.875rem; background: var(--overlay); }
-	.find kbd { position: absolute; right: 0.45rem; top: 0.42rem; font-size: 0.6875rem; padding: 0 0.3rem; border: 1px solid var(--line); border-radius: 3px; color: var(--ink-3); pointer-events: none; }
-	.find input:focus + kbd { display: none; }
-	.miss { position: absolute; top: 100%; left: 0; margin-top: 0.25rem; font-size: 0.75rem; color: var(--conflict); white-space: nowrap; }
 	.zoom { display: flex; gap: 2px; }
 	.zoom button { padding: 0.3rem 0.6rem; min-width: 2rem; justify-content: center; background: var(--overlay); }
 	.zoom svg path { stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
@@ -1092,6 +1035,5 @@
 	.needs.narrow.clear { left: auto; }
 	@media (max-width: 768px) {
 		.card { display: none; }
-		.find input { width: 11rem; }
-	}
+		}
 </style>

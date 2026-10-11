@@ -11,6 +11,7 @@
 	import BubbleCode from "./routes/BubbleCode.svelte";
 	import Tasks from "./routes/Tasks.svelte";
 	import Agents from "./routes/Agents.svelte";
+	import Bubbles from "./routes/Bubbles.svelte";
 	import Deploy from "./routes/Deploy.svelte";
 	import Skills from "./routes/Skills.svelte";
 	import Memory from "./routes/Memory.svelte";
@@ -38,6 +39,7 @@
 		if ((m = match("/repos/:repo/tasks", path))) return { page: "tasks", params: m };
 		if ((m = match("/repos/:repo/agents/:id", path))) return { page: "agents", params: m };
 		if ((m = match("/repos/:repo/agents", path))) return { page: "agents", params: m };
+		if ((m = match("/repos/:repo/bubbles", path))) return { page: "bubbles", params: m };
 		if ((m = match("/repos/:repo/deploy", path))) return { page: "deploy", params: m };
 		if ((m = match("/repos/:repo/skills", path))) return { page: "skills", params: m };
 		if ((m = match("/repos/:repo/memory", path))) return { page: "memory", params: m };
@@ -58,6 +60,7 @@
 	{:else if view.page === "repos"}<Repos />
 	{:else if view.page === "repo"}{#key view.params.repo}<RepoMap repo={view.params.repo} />{/key}
 	{:else if view.page === "agents"}{#key view.params.repo + "/" + view.params.id}<Agents repo={view.params.repo} id={view.params.id} />{/key}
+	{:else if view.page === "bubbles"}{#key view.params.repo}<Bubbles repo={view.params.repo} />{/key}
 	{:else if view.page === "deploy"}{#key view.params.repo}<Deploy repo={view.params.repo} />{/key}
 	{:else if view.page === "skills"}{#key view.params.repo}<Skills repo={view.params.repo} />{/key}
 	{:else if view.page === "memory"}{#key view.params.repo}<Memory repo={view.params.repo} />{/key}
