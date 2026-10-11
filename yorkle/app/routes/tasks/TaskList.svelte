@@ -86,31 +86,13 @@
 		return [...by].filter(([, ts]) => ts.length > 1).map(([s, ts]) => ({ id: s, prompt: data.agents.find((a) => a.fork === s)?.prompt ?? "A superagent's plan", tasks: ts }));
 	});
 
-	// j/k move between tasks; "/" finds.
-	let list = $state<HTMLElement>();
-	let search = $state<HTMLInputElement>();
-	function keys(e: KeyboardEvent) {
-		if (e.ctrlKey || e.metaKey || e.altKey) return;
-		const t = e.target as HTMLElement;
-		if (t.closest("input, textarea, select, [contenteditable]") || document.querySelector("dialog[open]")) return;
-		if (e.key === "/") (e.preventDefault(), search?.focus());
-		else if (e.key === "j" || e.key === "k") {
-			const links = [...(list?.querySelectorAll<HTMLAnchorElement>("a.title") ?? [])];
-			if (!links.length) return;
-			const i = links.indexOf(document.activeElement as HTMLAnchorElement);
-			links[Math.max(0, Math.min(links.length - 1, i < 0 ? 0 : i + (e.key === "j" ? 1 : -1)))].focus();
-			e.preventDefault();
-		}
-	}
 </script>
-
-<svelte:window onkeydown={keys} />
 
 <h1>Tasks</h1>
 <div class="toolbar">
 	<label class="search">
 		<span class="visually-hidden">Find a task</span>
-		<input type="search" bind:this={search} bind:value={query} placeholder="Find a task by title or #id" />
+		<input type="search" bind:value={query} placeholder="Find a task by title or #id" />
 		<kbd aria-hidden="true">/</kbd>
 	</label>
 	<span class="grow"></span>
@@ -161,7 +143,7 @@
 			{/if}
 		</div>
 	{:else}
-		<ul bind:this={list}>
+		<ul>
 			{#each visible as t, i (t.id)}
 				{@const g = groupOf(t)}
 				{@const blockers = waitingOn(t)}
@@ -207,7 +189,6 @@
 		<Pager bind:page total={shown.length} />
 	{/if}
 </section>
-<p class="keys muted"><kbd>/</kbd> find · <kbd>j</kbd> <kbd>k</kbd> move between tasks · <kbd>Enter</kbd> opens one</p>
 
 <style>
 	h1 { margin-bottom: 1rem; }
@@ -248,11 +229,8 @@
 	.empty h2 { font-size: 1.0625rem; margin-bottom: 0.4rem; }
 	.empty p { max-width: 32rem; margin: 0 auto; }
 	.link { background: none; border: 0; padding: 0; color: var(--focus); text-decoration: underline; }
-	.keys { margin-top: 0.75rem; font-size: 0.8125rem; }
-	.keys kbd { font-size: 0.75rem; padding: 0 0.3rem; border: 1px solid var(--line); border-radius: 3px; }
 	@media (max-width: 600px) {
 		.task { flex-wrap: wrap; }
 		.actions { width: 100%; justify-content: flex-end; }
-		.keys { display: none; }
 	}
 </style>

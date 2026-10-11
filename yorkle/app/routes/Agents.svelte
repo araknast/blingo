@@ -49,24 +49,7 @@
 	const reviewing = (r: AgentRun) => r.status === "loose" && !!rd.data?.loose.find((l) => l.fork === r.fork && l.reviewManual === "pending");
 	const href = (r: AgentRun) => (r.kind === "notagent" || reviewing(r) ? `/repos/${repo}/forks/${r.fork}` : `/repos/${repo}/agents/${r.fork}`);
 
-	let list = $state<HTMLElement>();
-	let search = $state<HTMLInputElement>();
-	function keys(e: KeyboardEvent) {
-		if (id || e.ctrlKey || e.metaKey || e.altKey) return;
-		const t = e.target as HTMLElement;
-		if (t.closest("input, textarea, select, [contenteditable]") || document.querySelector("dialog[open]")) return;
-		if (e.key === "/") (e.preventDefault(), search?.focus());
-		else if (e.key === "j" || e.key === "k") {
-			const links = [...(list?.querySelectorAll<HTMLAnchorElement>("a") ?? [])];
-			if (!links.length) return;
-			const i = links.indexOf(document.activeElement as HTMLAnchorElement);
-			links[Math.max(0, Math.min(links.length - 1, i < 0 ? 0 : i + (e.key === "j" ? 1 : -1)))].focus();
-			e.preventDefault();
-		}
-	}
 </script>
-
-<svelte:window onkeydown={keys} />
 
 <Shell
 	crumbs={[
@@ -93,7 +76,7 @@
 				<div class="toolbar">
 					<label class="search">
 						<span class="visually-hidden">Find a run</span>
-						<input type="search" bind:this={search} bind:value={query} placeholder="Find by prompt or id" />
+						<input type="search" bind:value={query} placeholder="Find by prompt or id" />
 						<kbd aria-hidden="true">/</kbd>
 					</label>
 					<div class="chips" role="group" aria-label="Show">
@@ -106,7 +89,7 @@
 				{#if !listed.length}
 					<p class="muted">Nothing matches. <button class="link" onclick={() => ((filter = "all"), (query = ""))}>Show every run</button></p>
 				{:else}
-					<ul class="runs" bind:this={list}>
+					<ul class="runs">
 						{#each shown as r, i (r.fork)}
 							{@const g = groupOf(r)}
 							{#if filter === "all" && (i === 0 || groupOf(shown[i - 1]) !== g)}
@@ -122,7 +105,6 @@
 						{/each}
 					</ul>
 					<Pager bind:page total={listed.length} />
-					<p class="keys muted"><kbd>/</kbd> find · <kbd>j</kbd> <kbd>k</kbd> move between runs · <kbd>Enter</kbd> opens one</p>
 				{/if}
 			{/if}
 		{/if}
@@ -147,10 +129,7 @@
 	.prompt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 	.meta { font-size: 0.8125rem; color: var(--ink-3); white-space: nowrap; }
 	.link { background: none; border: 0; padding: 0; color: var(--focus); text-decoration: underline; }
-	.keys { margin-top: 0.75rem; font-size: 0.8125rem; }
-	.keys kbd { font-size: 0.75rem; padding: 0 0.3rem; border: 1px solid var(--line); border-radius: 3px; }
 	@media (max-width: 700px) {
 		.runs a { grid-template-columns: 1fr; gap: 0.25rem; }
-		.keys { display: none; }
 	}
 </style>
