@@ -36,5 +36,6 @@ test("resolveSkills: all by default, none for [], else exactly the named ones", 
 	expect(resolveSkills([], ["a", "b"])).toEqual([]);
 	expect(resolveSkills(["b", "b"], ["a", "b"])).toEqual(["b"]);
 	expect(resolveSkills(["z"], ["a"])).toHaveProperty("error");
+	expect(resolveSkills(["run:", " `b` "], ["run", "b"])).toEqual(["run", "b"]);
 	expect(resolveSkills("a", ["a"])).toHaveProperty("error");
 });

@@ -68,7 +68,7 @@ Use "notagent" only for tasks that need a human (credentials, decisions, manual 
 			: `You are doing one task on a fork of a shared repository; other agents do other tasks in parallel.
 Commit your work with messages that explain what you did and why: they become the task's record.`;
 	const mem = memory.length ? `\n\nNotes from earlier agents on this repository:\n${memory.map((m) => `- ${m}`).join("\n")}` : "";
-	const list = skills.map((s) => `- ${s.name}: ${s.description}`).join("\n");
+	const list = skills.map((s) => `- "${s.name}" — ${s.description}`).join("\n");
 	const sk = !skills.length
 		? ""
 		: kind === "superagent"

@@ -54,6 +54,8 @@ export function parseSkillUpload(raw: unknown): Skill | { error: string } {
 export function resolveSkills(requested: unknown, available: string[]): string[] | { error: string } {
 	if (requested === undefined || requested === null) return available;
 	if (!Array.isArray(requested) || requested.some((s) => typeof s !== "string")) return { error: "skills must be a list of skill names" };
-	const unknown = requested.find((s) => !available.includes(s));
-	return unknown ? { error: `no such skill: ${unknown}` } : [...new Set(requested as string[])];
+	// A planner may copy a name with the prompt list's punctuation ("run:", "`run`"); names never contain it.
+	const names = (requested as string[]).map((s) => s.trim().replace(/^[`"']+|[`"':,]+$/g, ""));
+	const unknown = names.find((s) => !available.includes(s));
+	return unknown ? { error: `no such skill: ${unknown}` } : [...new Set(names)];
 }
