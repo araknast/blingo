@@ -168,7 +168,7 @@
 							{/if}
 						</div>
 						{#if keyMismatch}
-							<p class="callout warn"><Mark status="failed" /><span>The saved key is for {PROVIDER[keyFor!]}. Paste a {PROVIDER[form.provider]} {form.provider === "claude-subscription" ? "token" : "key"}, or agents won't start.</span></p>
+							<p class="callout warn"><Mark status="failed" /><span>The saved key is for {PROVIDER[keyFor!]}. Paste {form.provider === "claude-subscription" ? "a Claude subscription token" : form.provider === "openrouter" ? "an OpenRouter key" : "an Anthropic API key"}, or agents won't start.</span></p>
 						{:else if dropKey}
 							<p class="callout warn"><Mark status="failed" /><span>When you save, the key is removed and no new agent starts until there's another.</span></p>
 						{/if}
