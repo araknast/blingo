@@ -102,7 +102,7 @@
 					{#each visible as r (r)}
 						{@const s = summaries[r]}
 						<tr>
-							<td><a class="name" href="/repos/{r}">{nameOf(r)}</a>{#if nameOf(r) !== r}<span class="muted id mono">{r}</span>{/if}</td>
+							<td><a class="name" href="/repos/{r}">{nameOf(r)}</a>{#if s && s !== "error" && s.needs}<a class="needs" href="/repos/{r}" title="Open its map to see what needs you">{s.needs} {s.needs === 1 ? "needs" : "need"} you</a>{/if}{#if nameOf(r) !== r}<span class="muted id mono">{r}</span>{/if}</td>
 							{#if s === "error"}
 								<td colspan="3" class="muted">Couldn't load</td>
 							{:else if !s}
@@ -153,4 +153,6 @@
 		th:nth-child(3), td:nth-child(3) { display: none; }
 		.forks { display: none; }
 	}
+	.needs { display: inline-block; margin-left: 0.6rem; padding: 0 0.5rem; border-radius: 999px; background: var(--conflict); color: #fff; font-size: 0.75rem; font-weight: 600; line-height: 1.5; text-decoration: none; vertical-align: 0.1em; font-variant-numeric: tabular-nums; }
+	.needs:hover { filter: brightness(1.08); }
 </style>

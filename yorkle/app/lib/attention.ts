@@ -12,6 +12,7 @@ export type Need =
 
 const PROVIDER = { anthropic: "Anthropic", openrouter: "OpenRouter", "claude-subscription": "a Claude subscription" };
 
+// The backend counts the same things for the repository list (RepoDO.needsCount): keep the two in step.
 // `memorySeen`: when this viewer last opened the Memory tab; notes agents wrote since then need a look.
 export function needs(d: RepoState, memorySeen = Infinity): Need[] {
 	const out: Need[] = d.conflicts.map(([a, b]) => ({ kind: "conflict", key: `c:${a}|${b}`, a, b }));

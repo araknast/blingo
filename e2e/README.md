@@ -8,6 +8,7 @@ test delete them when they finish.
 |---|---|---|---|
 | `smoke-local.mjs` | `wrangler dev --enable-containers=false` (defaults: `localhost:8799`, token from `backend/.dev.vars`) | memory, notagent tasks and titles, `POST /repos/:r/tasks`, dependencies, list order, push detection | seconds |
 | `ui-screens.mjs [dir]` | `npm run dev -- --enable-containers=false` (yorkle on `:8787`), or a deployed yorkle with `YORKLE_URL` and `BLINGO_TOKEN` | screenshots of the splash and a repository's Map, Tasks, Agents, Memory and Settings tabs, a task page and dialogs (into `e2e/screens/`, gitignored) | seconds; set `CHROMIUM` if Playwright's browser doesn't match |
+| `tabs.sh` | deployed (`BLINGO_URL`, `BLINGO_TOKEN`) | the API behind the tabs: skill contents, rejecting a task awaiting approval, the key's provider, partial settings saves, cancelling a deployment, the summary's needs count (`KEEP=1` keeps the repository) | ~2 min |
 | `ui-map.mjs [dir]` | deployed (`YORKLE_URL`, `BLINGO_TOKEN`) | screenshots of a lived-in map (named bubbles, a ferge bubble, a running agent, a loose fork that failed CI), the loose fork's page and an agent's run page | ~3 min |
 | `tasks.mjs [repo2]` | deployed | agents + memory end to end; superagent plan, dependency scheduling, conflict → ferge → fix → unlock, and that dependent tasks wait throughout (`repo2` = only that part) | ~5 Claude runs, ~5 min |
 | `loose.sh` | deployed | loose notagent forks: auto-placement off, several pushes, placement on request, a merge-commit history refused then pushed again | ~2 min |

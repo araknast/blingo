@@ -62,7 +62,8 @@ export type Settings = {
 	keyProvider?: "anthropic" | "openrouter" | "claude-subscription" | null;
 	hasReviewerKey: boolean;
 };
-export type RepoSummary = { bubbles: number; forks: number; working: number; conflicts: number };
+// `needs`: what needs a person, as the map's "Needs you" list counts it (less new memory notes).
+export type RepoSummary = { bubbles: number; forks: number; working: number; conflicts: number; needs?: number };
 export type Skill = { name: string; description: string; created: number };
 export type MemoryItem = { id: string; text: string; author: string; created: number };
 export type RepoState = {

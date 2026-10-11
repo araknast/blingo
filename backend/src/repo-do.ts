@@ -628,7 +628,34 @@ export class RepoDO extends DurableObject<Env> {
 			forks: n("SELECT COUNT(*) AS n FROM fork WHERE bubble IN (SELECT id FROM bubble)"),
 			working: n("SELECT COUNT(*) AS n FROM agent_run WHERE status = 'running'"),
 			conflicts: n("SELECT COUNT(*) AS n FROM conflict"),
+			needs: this.needsCount(),
 		};
+	}
+
+	// How many things need a person, by the rules of the map's "Needs you" list (yorkle's
+	// lib/attention.ts `needs`; keep the two in step), less new memory notes, which are per viewer.
+	private needsCount() {
+		const n = (q: string, ...p: unknown[]) => this.sql.exec<{ n: number }>(q, ...p).one().n;
+		const s = this.settings();
+		const loose = n(
+			`SELECT COUNT(*) AS n FROM loose WHERE pushes > 0 AND placing = 0 AND (review_manual = 'pending' OR (kind = 'notagent' AND (reason IS NOT NULL
+				OR ci = 'failed' OR review_auto = 'rejected' OR review_manual = 'rejected' OR (? AND COALESCE(ci, '') <> 'running' AND COALESCE(review_auto, '') <> 'pending'))))`,
+			s.autoPlaceNotagents ? 0 : 1,
+		);
+		const key = this.ctx.storage.kv.get<string>("apiKey");
+		const keyProvider = this.ctx.storage.kv.get<string>("keyProvider");
+		const keyNeed = !key || (keyProvider && keyProvider !== s.provider) ? 1 : 0;
+		const deploys = n(
+			"SELECT COUNT(*) AS n FROM deploy d WHERE status = 'failed' AND started = (SELECT MAX(started) FROM deploy WHERE name = d.name)",
+		);
+		return (
+			n("SELECT COUNT(*) AS n FROM conflict") +
+			loose +
+			n("SELECT COUNT(*) AS n FROM task WHERE status = 'failed'") +
+			n("SELECT COUNT(*) AS n FROM fork WHERE status = 'failed' AND bubble IN (SELECT id FROM bubble)") +
+			keyNeed +
+			deploys
+		);
 	}
 
 	list() {

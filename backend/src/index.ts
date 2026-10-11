@@ -197,6 +197,11 @@ async function handle(request: Request, env: Env): Promise<Response> {
 		if (body.name !== undefined && !repoName(body.name)) return Response.json({ error: "name must be 1 to 60 characters" }, { status: 400 });
 		return Response.json({ repo: await createRepo(env, auth, repoName(body.name)) }, { status: 201 });
 	}
+	// Before the code browser, which takes any /repos/:r/:x/:y.
+	if (request.method === "GET" && a === "repos" && b && c === "skills" && d && !e) {
+		const skill = await env.REPO.getByName(b).skillFiles(d);
+		return skill ? Response.json(skill) : Response.json({ error: "no such skill" }, { status: 404 });
+	}
 	// Code browser: tree, log, commit and blob reads of a fork (or of the bubble a merged fork joined).
 	if (request.method === "GET" && a === "repos" && b && c && d) {
 		const from = await env.REPO.getByName(b).readFrom(c);
@@ -305,10 +310,6 @@ async function handle(request: Request, env: Env): Promise<Response> {
 		if ("error" in skill) return Response.json(skill, { status: 400 });
 		await env.REPO.getByName(b).addSkill(skill);
 		return Response.json({ name: skill.name }, { status: 201 });
-	}
-	if (request.method === "GET" && a === "repos" && b && c === "skills" && d && !e) {
-		const skill = await env.REPO.getByName(b).skillFiles(d);
-		return skill ? Response.json(skill) : Response.json({ error: "no such skill" }, { status: 404 });
 	}
 	if (request.method === "DELETE" && a === "repos" && b && c === "skills" && d) {
 		return (await env.REPO.getByName(b).deleteSkill(d))
