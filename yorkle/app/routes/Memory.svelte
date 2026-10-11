@@ -104,14 +104,17 @@
 				onkeydown={(e) => (e.ctrlKey || e.metaKey) && e.key === "Enter" && add(e)}
 			></textarea>
 			<div class="add-foot">
-				<span class="count" class:full={note.length > 450}>{note.length}/500</span>
+				<span class="count" class:full={note.length > 450}>{note.length}/500 · <kbd>Ctrl</kbd>+<kbd>Enter</kbd> adds it</span>
 				<button class="primary" disabled={busy || !note.trim()}>Add note</button>
 			</div>
 		</form>
 		{#if !rd.data}
 			<p class="muted">Loading…</p>
 		{:else if !all.length}
-			<p class="muted">No notes yet.</p>
+			<div class="empty">
+				<p class="empty-title">No notes yet</p>
+				<p>Add what an agent would otherwise have to rediscover: how to build and test, conventions, a gotcha that cost someone an hour. Agents add their own as they learn.</p>
+			</div>
 		{:else}
 			<div class="toolbar">
 				<div class="chips" role="group" aria-label="Written by">
@@ -129,11 +132,13 @@
 						{@const fresh = isRun(m.author) && m.created > seen}
 						<li class:fresh>
 							<div class="text"><Markdown text={m.text} /></div>
-							<span class="by">
-								{#if fresh}<span class="badge new">New</span>{/if}
-								<span>{#if isRun(m.author)}<a href="/repos/{repo}/agents/{m.author}">{runKind({ fork: m.author })} <span class="mono">{runId(m.author)}</span></a>{:else}{m.author}{/if}, {ago(m.created)}</span>
-							</span>
-							<button class="quiet" aria-label="Delete the note: {m.text.slice(0, 50)}" onclick={() => remove(m.id)}>Delete</button>
+							<div class="foot">
+								<span class="by">
+									{#if fresh}<span class="badge new">New</span>{/if}
+									<span>{#if isRun(m.author)}<a href="/repos/{repo}/agents/{m.author}">{runKind({ fork: m.author })} <span class="mono">{runId(m.author)}</span></a>{:else}{m.author}{/if} · {ago(m.created)}</span>
+								</span>
+								<button class="quiet del" aria-label="Delete the note: {m.text.slice(0, 50)}" onclick={() => remove(m.id)}>Delete</button>
+							</div>
 						</li>
 					{/each}
 				</ul>
@@ -146,23 +151,34 @@
 <style>
 	.page { padding: 1.5rem clamp(1rem, 3vw, 2.5rem) 3rem; max-width: 52rem; }
 	.lede { margin: 0.4rem 0 1.25rem; color: var(--ink-2); max-width: 65ch; }
-	.cost { display: block; margin-top: 0.25rem; color: var(--ink); }
-	.add { display: grid; gap: 0.4rem; margin-bottom: 1.5rem; }
-	.add textarea { min-height: 4.5rem; resize: vertical; }
-	.add-foot { display: flex; justify-content: space-between; align-items: center; }
+	.cost { display: block; margin-top: 0.35rem; font-size: 0.875rem; color: var(--ink-3); }
+	.add { margin-bottom: 1.75rem; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--raised); }
+	.add:focus-within { border-color: var(--focus); box-shadow: 0 0 0 1px var(--focus); }
+	.add textarea { display: block; min-height: 4.5rem; border: 0; background: none; padding: 0.75rem 0.9rem 0.25rem; }
+	.add textarea:focus-visible { outline: none; } /* the card shows focus */
+	.add-foot { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: 0.4rem 0.5rem 0.5rem 0.9rem; }
 	.count { font-size: 0.8125rem; color: var(--ink-3); font-variant-numeric: tabular-nums; }
 	.count.full { color: var(--conflict); }
+	kbd { font: inherit; font-size: 0.75rem; padding: 0 0.3rem; border: 1px solid var(--line); border-radius: 3px; }
 	.toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 1rem; margin-bottom: 0.75rem; }
-	.toolbar input { width: 14rem; max-width: 100%; }
+	.toolbar input { flex: 0 1 14rem; min-width: 0; }
+	@media (max-width: 600px) { .toolbar input { flex-basis: 100%; } }
 	.notes { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; }
-	.notes li { display: grid; grid-template-columns: 1fr auto; gap: 0.15rem 1rem; padding: 0.6rem 1rem 0.75rem; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--raised); }
-	.notes li.fresh { border-color: color-mix(in srgb, var(--working) 45%, var(--line)); }
-	.text { min-width: 0; overflow-wrap: anywhere; }
-	.text :global(.md) { padding: 0; }
+	.notes li { padding: 0.75rem 1rem 0.5rem; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--raised); }
+	.notes li.fresh { border-color: color-mix(in srgb, var(--working) 45%, var(--line)); box-shadow: inset 3px 0 var(--working); }
+	.text { min-width: 0; font-size: 0.9375rem; overflow-wrap: anywhere; }
+	.text :global(.md) { padding: 0; line-height: 1.55; }
 	.text :global(.md > :first-child) { margin-top: 0; }
 	.text :global(.md > :last-child) { margin-bottom: 0; }
-	.by { font-size: 0.8125rem; color: var(--ink-3); display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
+	/* Agents often write a note as one bullet: no indent for it. */
+	.text :global(.md > ul:only-child) { list-style: none; padding-left: 0; }
+	.text :global(ul), .text :global(ol) { padding-left: 1.25rem; }
+	.foot { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-top: 0.35rem; }
+	.by { font-size: 0.8125rem; color: var(--ink-3); display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; min-width: 0; }
 	.by a { color: var(--ink-2); }
 	.badge.new { color: var(--working); border-color: currentColor; }
-	.notes button { grid-row: 1 / span 2; grid-column: 2; align-self: center; }
+	.del { font-size: 0.8125rem; padding: 0.2rem 0.5rem; color: var(--ink-3); }
+	.del:hover, .del:focus-visible { color: var(--conflict); }
+	.empty { padding: 1.25rem; border: 1px dashed var(--line); border-radius: var(--r-md); color: var(--ink-2); max-width: 65ch; }
+	.empty-title { font-weight: 600; color: var(--ink); margin-bottom: 0.3rem; }
 </style>
