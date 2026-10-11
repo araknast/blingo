@@ -79,11 +79,11 @@
 	let tick = $state(0);
 	const timer = setInterval(() => tick++, reduced ? 1000 : 100);
 	onDestroy(() => clearInterval(timer));
-	// Time since the run started (transcript lines carry no timestamps), so a reload keeps it.
-	const opened = Date.now();
+	// Time since the run started (transcript lines carry no timestamps), so a reload keeps it; none
+	// without the run.
 	const elapsed = $derived.by(() => {
 		tick;
-		return fmtElapsed(Date.now() - (run?.started ?? opened));
+		return run && fmtElapsed(Date.now() - run.started);
 	});
 	const live = $derived((run?.status ?? status) === "running");
 
@@ -255,7 +255,7 @@
 {/snippet}
 
 {#snippet spin()}
-	<p class="thinking"><span class="glyph" aria-hidden="true">{reduced ? "·" : glyphs[tick % glyphs.length]}</span> {doing}… <span class="muted">({elapsed})</span></p>
+	<p class="thinking"><span class="glyph" aria-hidden="true">{reduced ? "·" : glyphs[tick % glyphs.length]}</span> {doing}…{#if elapsed} <span class="muted">({elapsed})</span>{/if}</p>
 {/snippet}
 
 {#if !loaded}
