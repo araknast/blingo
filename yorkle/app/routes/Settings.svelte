@@ -67,8 +67,8 @@
 			await api("PUT", `/repos/${repo}/settings`, body);
 			apiKey = reviewerKey = "";
 			dropKey = dropReviewerKey = false;
-			form = null; // take the saved values
 			await rd.refresh();
+			form = null; // take the saved values (after the refresh, or the stale ones come back)
 			toast("Settings saved");
 			return true;
 		} catch (err) {
