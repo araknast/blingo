@@ -57,7 +57,7 @@
 				events = full.events;
 				cursor = full.next;
 			} else {
-				events = [...events, ...t.events];
+				if (t.events.length) events = [...events, ...t.events]; // reassigning resets the elapsed timer
 				cursor = t.next;
 			}
 			status = t.status;
@@ -74,6 +74,7 @@
 	// Live feedback while running: what it's doing now, and for how long. The spinner holds still when
 	// motion is reduced.
 	const glyphs = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+	const verbs = ["Thinking", "Pondering", "Reasoning", "Tinkering", "Cooking", "Weaving", "Mulling"];
 	const reduced = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 	let tick = $state(0);
 	const timer = setInterval(() => tick++, reduced ? 1000 : 100);
@@ -153,7 +154,7 @@
 	// What it's doing: the tool call still waiting for its result, else the model.
 	const doing = $derived.by(() => {
 		const open = items.findLast((it) => it.kind === "tool" && it.tool.result === undefined);
-		return open?.kind === "tool" ? `Running ${open.tool.name}` : "Waiting for the model";
+		return open?.kind === "tool" ? `Running ${open.tool.name}` : verbs[Math.floor(tick / (reduced ? 4 : 40)) % verbs.length];
 	});
 	const failedTools = $derived(items.flatMap((it) => (it.kind === "tool" ? [it.tool] : it.kind === "tools" ? it.tools : [])).filter((t) => t.error).length);
 	function jumpToFailure() {
