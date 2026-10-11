@@ -9,7 +9,7 @@ export GIT_AUTHOR_NAME=e2e GIT_AUTHOR_EMAIL=e2e@x GIT_COMMITTER_NAME=e2e GIT_COM
 
 api() { curl -s -H "authorization: Bearer $T" "$@"; }
 # key <repo>: give a repository the API key its agents run on (blingo has none of its own).
-key() { : "${E2E_ANTHROPIC_KEY:?set E2E_ANTHROPIC_KEY: agents run only on the key of their repository}"; api -X PUT --json "{\"apiKey\":\"$E2E_ANTHROPIC_KEY\"}" "$U/repos/$1/settings" >/dev/null; }
+key() { : "${E2E_OPENROUTER_KEY:?set E2E_OPENROUTER_KEY: agents run only on the key of their repository}"; api -X PUT --json "{\"provider\":\"openrouter\",\"apiKey\":\"$E2E_OPENROUTER_KEY\",\"models\":{\"agent\":\"${MODEL:-deepseek/deepseek-v4.1-flash}\"}}" "$U/repos/$1/settings" >/dev/null; }
 # j <file.json> <key>
 j() { python3 -c "import json,sys;print(json.load(open(sys.argv[1]))[sys.argv[2]])" "$@"; }
 # tasks_done <repo>: every task in the repository is completed; prints the ones that aren't.
