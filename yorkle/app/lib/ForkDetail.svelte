@@ -49,7 +49,7 @@
 </script>
 
 <p class="kind">{l?.kind === "agent" ? "An agent's fork" : "A notagent's fork"} <span class="mono">{short(fork)}</span></p>
-<h1 tabindex="-1">{task?.title ?? `Fork ${short(fork)}`}</h1>
+<h1 tabindex="-1">{task?.title ?? data?.agents.find((a) => a.fork === fork)?.prompt ?? `Fork ${short(fork)}`}</h1>
 {#if task?.description && task.description !== task.title}<details class="task"><summary>Task</summary><Markdown text={task.description} /></details>{/if}
 
 {#if !data}
@@ -125,7 +125,8 @@
 	dt { color: var(--ink-2); }
 	dd { margin: 0; display: flex; align-items: center; gap: 0.4rem; }
 	.changes { font-size: 0.875rem; }
-	.note { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--raised); padding: 0.25rem 1rem; max-height: 24rem; overflow: auto; }
+	.note { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--raised); max-height: 24rem; overflow: auto; }
+	.note :global(.md) { padding: 0.85rem 1rem 0; }
 	.log { max-height: 22rem; overflow: auto; margin: 0; padding: 0.75rem; background: var(--raised); border: 1px solid var(--line); border-radius: var(--r-md); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.75rem; line-height: 1.5; }
 	.decide { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--line-2); display: grid; gap: 0.4rem; }
 	.decide label { font-size: 0.875rem; font-weight: 500; }

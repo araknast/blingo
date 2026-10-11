@@ -669,16 +669,16 @@
 											</div>
 										</div>
 									{:else if n.kind === "fork"}
-										<Mark status="failed" />
+										<Mark status={n.mark} />
 										<div class="what" data-fork={n.fork}>
 											<p><a href={looseHref?.(n.fork)}>{n.title}</a></p>
 											<p class="why">{n.why}</p>
 										</div>
 									{:else if n.kind === "task"}
-										<Mark status="failed" />
+										<Mark status={n.mark} />
 										<div class="what">
 											<p><a href={taskHref?.(n.id)}>{n.title}</a></p>
-											<p class="why">{n.why}. Retry it from its task.</p>
+											<p class="why">{n.why}</p>
 										</div>
 									{:else if n.kind === "ferge"}
 										<Mark status="conflict" />

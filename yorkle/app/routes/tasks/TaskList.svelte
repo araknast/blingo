@@ -1,6 +1,6 @@
 <script lang="ts">
-	// The task list, most urgent first: what needs you (failed, awaiting approval, ready to take), then
-	// what's running, then what's waiting. Filters, a search (/), and j/k to move between tasks.
+	// The task list, most urgent first: what needs you (failed, awaiting approval), what's ready to take,
+	// then what's running, then what's waiting. Filters, a search (/), and j/k to move between tasks.
 	import Pager, { PAGE } from "../../lib/Pager.svelte";
 	import TaskIcon from "../../lib/TaskIcon.svelte";
 	import { route } from "../../lib/router.svelte";
@@ -31,17 +31,21 @@
 	const byId = $derived(new Map(data.tasks.map((t) => [t.id, t])));
 	const openCount = $derived(data.tasks.filter((t) => t.status !== "completed").length);
 
-	type Group = "needs" | "running" | "waiting" | "done";
+	// "Needs you" is what the tab's badge counts (attention.ts `needs`): failed and awaiting approval.
+	type Group = "needs" | "ready" | "running" | "waiting" | "done";
 	const groupOf = (t: Task): Group =>
 		t.status === "completed"
 			? "done"
-			: t.status === "failed" || t.status === "awaiting-approval" || (t.status === "open" && t.ready && t.kind === "notagent")
+			: t.status === "failed" || t.status === "awaiting-approval"
 				? "needs"
-				: t.status === "in-progress" || (t.status === "open" && t.ready)
-					? "running"
-					: "waiting";
+				: t.status === "open" && t.ready && t.kind === "notagent"
+					? "ready"
+					: t.status === "in-progress" || (t.status === "open" && t.ready)
+						? "running"
+						: "waiting";
 	const GROUPS: { id: Group; label: string }[] = [
 		{ id: "needs", label: "Needs you" },
+		{ id: "ready", label: "Ready to take" },
 		{ id: "running", label: "In progress" },
 		{ id: "waiting", label: "Waiting" },
 	];
@@ -102,6 +106,7 @@
 
 <svelte:window onkeydown={keys} />
 
+<h1>Tasks</h1>
 <div class="toolbar">
 	<label class="search">
 		<span class="visually-hidden">Find a task</span>
@@ -205,6 +210,7 @@
 <p class="keys muted"><kbd>/</kbd> find · <kbd>j</kbd> <kbd>k</kbd> move between tasks · <kbd>Enter</kbd> opens one</p>
 
 <style>
+	h1 { margin-bottom: 1rem; }
 	.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-bottom: 1rem; }
 	.toolbar .search input { width: 18rem; max-width: 70vw; }
 	.grow { flex: 1; }

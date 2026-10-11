@@ -652,7 +652,7 @@ export class RepoDO extends DurableObject<Env> {
 		return (
 			n("SELECT COUNT(*) AS n FROM conflict") +
 			loose +
-			n("SELECT COUNT(*) AS n FROM task WHERE status = 'failed'") +
+			n("SELECT COUNT(*) AS n FROM task WHERE status IN ('failed', 'awaiting-approval')") +
 			n("SELECT COUNT(*) AS n FROM fork WHERE status = 'failed' AND bubble IN (SELECT id FROM bubble)") +
 			n("SELECT COUNT(*) AS n FROM bubble WHERE ferge = 1 AND id IN (SELECT id FROM locked)") +
 			keyNeed +

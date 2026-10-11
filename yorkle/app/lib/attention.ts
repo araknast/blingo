@@ -6,8 +6,9 @@ import { agentLabel, allRuns, active, short } from "./util";
 export type Tab = "bubbles" | "agents" | "tasks" | "deploy" | "memory" | "settings";
 export type Need = { key: string; tab: Tab } & (
 	| { kind: "conflict"; a: string; b: string }
-	| { kind: "fork"; fork: string; title: string; why: string }
-	| { kind: "task"; id: string; title: string; why: string }
+	// `mark`: the Glyph it's drawn with.
+	| { kind: "fork"; fork: string; title: string; why: string; mark: "review" | "waiting" | "failed" }
+	| { kind: "task"; id: string; title: string; why: string; mark: "approval" | "failed" }
 	| { kind: "member"; bubble: string; fork: string; why: string }
 	// A ferge's locked bubble: its conflicting files wait to be fixed and the bubble unlocked.
 	| { kind: "ferge"; bubble: string; why: string }
@@ -21,16 +22,20 @@ const PROVIDER = { anthropic: "Anthropic", openrouter: "OpenRouter", "claude-sub
 // `memorySeen`: when this viewer last opened the Memory tab; notes agents wrote since then need a look.
 export function needs(d: RepoState, memorySeen = Infinity): Need[] {
 	const out: Need[] = d.conflicts.map(([a, b]) => ({ kind: "conflict", tab: "bubbles", key: `c:${a}|${b}`, a, b }));
-	const titleOf = new Map(d.tasks.filter((t) => t.fork).map((t) => [t.fork!, t.title]));
+	// A fork goes by its task's title, else its agent's prompt.
+	const titleOf = new Map([...d.agents.map((a): [string, string] => [a.fork, a.prompt]), ...d.tasks.filter((t) => t.fork).map((t): [string, string] => [t.fork!, t.title])]);
 	for (const l of d.loose) {
 		const why = looseWhy(l, d.settings.autoPlaceNotagents);
-		if (why) out.push({ kind: "fork", tab: "agents", key: `f:${l.fork}`, fork: l.fork, title: titleOf.get(l.fork) ?? short(l.fork), why });
+		const mark = why === "Waiting for your review" ? "review" : why === "Ready to place" ? "waiting" : "failed";
+		if (why) out.push({ kind: "fork", tab: "agents", key: `f:${l.fork}`, fork: l.fork, title: titleOf.get(l.fork) ?? short(l.fork), why, mark });
 	}
 	const runOf = new Map(d.agents.map((a) => [a.fork, a]));
 	for (const t of d.tasks) {
+		if (t.status === "awaiting-approval") out.push({ kind: "task", tab: "tasks", key: `t:${t.id}`, id: t.id, title: t.title, why: "Waiting for your approval", mark: "approval" });
 		if (t.status !== "failed") continue;
 		const run = t.fork ? runOf.get(t.fork) : undefined;
-		out.push({ kind: "task", tab: "tasks", key: `t:${t.id}`, id: t.id, title: t.title, why: run ? `Agent ${agentLabel(run.status).toLowerCase()}` : "Task failed" });
+		const what = run ? `Agent ${agentLabel(run.status).toLowerCase()}` : "Task failed";
+		out.push({ kind: "task", tab: "tasks", key: `t:${t.id}`, id: t.id, title: t.title, why: `${what}. Retry it from its task`, mark: "failed" });
 	}
 	for (const b of d.bubbles) {
 		for (const m of b.members)

@@ -23,6 +23,16 @@ test("conflicts, stuck forks, failed tasks and unapplied series need a person; w
 	expect(n.map((x) => x.key)).toEqual(["c:r-demo-f-3fa1c09e|r-demo-f-5c08aa71", "f:review", "f:ci-red", "f:handed", "t:t1", `m:${d.bubbles[0].members[1].name}`]);
 	expect(n.find((x) => x.key === "f:handed")).toMatchObject({ why: "CI failed; a person takes over" });
 
+	// A task awaiting approval needs you; a review is drawn as one, and a fork with no task goes by its agent's prompt.
+	d.tasks.push({ ...d.tasks[0], id: "t2", status: "awaiting-approval" });
+	d.agents.push({ fork: "review", prompt: "Add a health check", started: 0, status: "loose", finished: null, log: null });
+	const m = needs(d);
+	expect(m.find((x) => x.key === "t:t2")).toMatchObject({ why: "Waiting for your approval", mark: "approval" });
+	expect(m.find((x) => x.key === "f:review")).toMatchObject({ title: "Add a health check", mark: "review" });
+	expect(needsByTab(d).tasks).toBe(2);
+	d.tasks.pop();
+	d.agents.pop();
+
 	// Ready to place only when placement is manual.
 	expect(needs({ ...d, settings: { ...d.settings, autoPlaceNotagents: false } }).some((x) => x.key === "f:unpushed")).toBe(false);
 	d.loose.push(loose("ready", {}));

@@ -20,13 +20,8 @@
 	// The agent task this run is working on, if any: it can be stopped.
 	const task = $derived(id ? rd.data?.tasks.find((t) => t.kind === "agent" && t.status === "in-progress" && t.fork === id)?.id : undefined);
 
-	// Runs that need a person: forks the map lists, and failed runs whose task is still failed.
-	const needy = $derived.by(() => {
-		if (!rd.data) return new Set<string>();
-		const forks = needs(rd.data).flatMap((n) => (n.kind === "fork" ? [n.fork] : []));
-		const failed = rd.data.tasks.filter((t) => t.status === "failed" && t.fork).map((t) => t.fork!);
-		return new Set([...forks, ...failed]);
-	});
+	// Runs that need a person: the forks the tab's badge counts. A failed run's task needs you on the Tasks tab.
+	const needy = $derived(new Set(rd.data ? needs(rd.data).flatMap((n) => (n.kind === "fork" ? [n.fork] : [])) : []));
 	type Group = "needs" | "working" | "done";
 	const groupOf = (r: AgentRun): Group => (needy.has(r.fork) ? "needs" : active(r) || r.status === "loose" ? "working" : "done");
 	const GROUPS: { id: Group; label: string }[] = [

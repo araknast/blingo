@@ -355,7 +355,7 @@
 	.deploy { border: 1px solid var(--line); border-radius: var(--r-md); padding: 0.5rem 1rem 0.75rem; margin: 0 0 0.75rem; min-width: 0; }
 	.deploy legend { font-weight: 600; font-size: 0.9375rem; padding: 0 0.35rem; }
 	.cred-head { font-size: 0.875rem; font-weight: 500; margin: 0.25rem 0 0.35rem; }
-	.cred { display: grid; grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr)) auto; gap: 0.4rem; margin-bottom: 0.4rem; }
+	.cred { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 0.4rem; margin-bottom: 0.4rem; }
 	.cred input { min-width: 0; }
 	.deploy-actions { flex-wrap: wrap; margin-top: 0.5rem; }
 	.danger { color: var(--conflict); }

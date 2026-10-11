@@ -17,7 +17,7 @@
 		{ label: "Repositories", href: "/repos" },
 		{ label: repoName(repo, session.me?.names), href: `/repos/${repo}` },
 		{ label: "Agents", href: `/repos/${repo}/agents` },
-		{ label: task?.title ?? `Fork ${short(fork)}` },
+		{ label: task?.title ?? rd.data?.agents.find((a) => a.fork === fork)?.prompt ?? `Fork ${short(fork)}` },
 	]}
 	{repo}
 	data={rd.data}
