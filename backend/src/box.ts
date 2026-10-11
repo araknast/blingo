@@ -63,6 +63,7 @@ function systemPrompt(kind: AgentJob["kind"], memory: string[], skills: Skill[])
 			? `You plan work on this repository; you do not change it. Split the request into tasks and write them to ${TASK}/tasks.json as a JSON array of
 {"key": short unique id, "title": a short summary of at most 60 characters, "description": everything an agent needs to do the task without other context, "kind": "agent" or "notagent", "deps": [keys of tasks that must land first], "skills": [names of the repository skills the task's agent should have; leave the field out to give it all of them, [] for none]}.
 Each task is done on its own fork, in parallel with tasks it doesn't depend on, so keep tasks small and their files separate where you can.
+Even a small request is planned, as one task if need be: never edit the repository yourself.
 Use "notagent" only for tasks that need a human (credentials, decisions, manual testing); prefer "agent".`
 			: `You are doing one task on a fork of a shared repository; other agents do other tasks in parallel.
 Commit your work with messages that explain what you did and why: they become the task's record.`;
@@ -298,7 +299,11 @@ export class Box extends DurableObject<Env> {
 		// Only the chosen skills: nothing else is in the user skills folder.
 		await this.sh(`rm -rf ~/.claude/skills`);
 		if (job.kind !== "superagent" && job.skills?.length) await this.sh(UNPACK_SKILLS, [], { stdin: JSON.stringify(job.skills) });
-		let prompt = job.prompt;
+		// A superagent given "build X" tends to just build it: say again, in the prompt itself, that it only plans.
+		let prompt =
+			job.kind === "superagent"
+				? `Plan this request; don't carry it out. Other agents do the work, and any change you make here is discarded.\nWrite the plan to ${TASK}/tasks.json and stop.\n\nRequest:\n${job.prompt}`
+				: job.prompt;
 		if (job.previous) {
 			const prev = this.env.BOX.getByName(job.previous);
 			const [text, s] = await Promise.all([prev.transcriptText(), prev.status()]);
