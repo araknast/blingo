@@ -23,7 +23,7 @@
 	--lilac: #b9a3f0;
 	--amber: #f2c38b;
 
-	--working: #c98a1b;
+	--working: #a8700f; /* ≥3:1 on white, for pill outlines and marks */
 	--merged: #2f8f83;
 	--pending: #6b7a89;
 	--conflict: #b8482e;

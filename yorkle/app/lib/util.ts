@@ -53,7 +53,7 @@ export function poll(fn: () => unknown, ms: number) {
 }
 
 // How to open the map's menu on this device.
-export const menuGesture = matchMedia("(pointer: coarse)").matches ? "Press and hold" : "Right-click";
+export const menuGesture = globalThis.matchMedia?.("(pointer: coarse)").matches ? "Press and hold" : "Right-click";
 
 export const firstLine =(s: string) => s.split("\n", 1)[0];
 

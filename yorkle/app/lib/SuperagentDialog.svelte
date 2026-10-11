@@ -48,12 +48,12 @@
 		</div>
 		<div class="field">
 			{#if fixedBase}
-				<p class="from">Reads bubble <span class="mono">{short(fixedBase)}</span></p>
+				<p class="from">Reads bubble <span>{bubbles.find((b) => b.id === fixedBase)?.name || short(fixedBase)}</span></p>
 			{:else}
 				<label for="super-base">Start from</label>
 				<select id="super-base" bind:value={base}>
 					<option value="">Any bubble</option>
-					{#each bubbles as b (b.id)}<option value={b.id}>Bubble {short(b.id)}</option>{/each}
+					{#each bubbles as b (b.id)}<option value={b.id}>{b.name || short(b.id)}</option>{/each}
 				</select>
 			{/if}
 			<p class="hint">The superagent reads this code and splits the work into tasks, for agents or for you. Each task starts once the tasks it depends on have landed.</p>
@@ -65,5 +65,5 @@
 
 <style>
 	.from { font-size: 0.875rem; color: var(--ink-2); }
-	.from .mono { color: var(--ink); }
+	.from span { color: var(--ink); }
 </style>

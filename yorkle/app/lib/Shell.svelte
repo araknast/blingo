@@ -13,10 +13,11 @@
 		children,
 		repo,
 		openTasks,
+		needsYou,
 		activeAgents,
 		runningDeploys,
 		full = false,
-	}: { crumbs: Crumb[]; actions?: Snippet; children: Snippet; repo?: string; openTasks?: number; activeAgents?: number; runningDeploys?: number; full?: boolean } = $props();
+	}: { crumbs: Crumb[]; actions?: Snippet; children: Snippet; repo?: string; openTasks?: number; needsYou?: number; activeAgents?: number; runningDeploys?: number; full?: boolean } = $props();
 
 	// The repository's views, as tabs in the sidebar. The map also covers its bubbles and loose forks.
 	const tabs = $derived.by(() => {
@@ -25,7 +26,7 @@
 		const p = route.path.replace(/\/+$/, "");
 		const under = (s: string) => p === `${base}/${s}` || p.startsWith(`${base}/${s}/`);
 		return [
-			{ label: "Map", href: base, active: p === base || under("b") },
+			{ label: "Map", href: base, active: p === base || under("b"), count: needsYou, alert: true },
 			{ label: "Tasks", href: `${base}/tasks`, active: under("tasks"), count: openTasks },
 			{ label: "Agents", href: `${base}/agents`, active: under("agents") || under("forks"), count: activeAgents },
 			{ label: "Deploy", href: `${base}/deploy`, active: under("deploy"), count: runningDeploys },
@@ -64,7 +65,7 @@
 					<span class="repo-name" title={repo}>{repoName(repo, session.me?.names)}</span>
 					<ul aria-label="Repository">
 						{#each tabs as t (t.label)}
-							<li><a href={t.href} aria-current={t.active ? "page" : undefined}>{t.label}{#if t.count}<span class="n">{t.count}</span>{/if}</a></li>
+							<li><a href={t.href} aria-current={t.active ? "page" : undefined}>{t.label}{#if t.count}<span class="n" class:alert={"alert" in t}>{t.count}<span class="visually-hidden">{"alert" in t ? " need you" : ""}</span></span>{/if}</a></li>
 						{/each}
 					</ul>
 				</li>
@@ -147,7 +148,8 @@
 	.repo-nav { margin-top: 0.75rem; }
 	.repo-name { display: block; padding: 0.3rem 0.6rem; font-size: 0.75rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: rgb(255 255 255 / 0.55); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 	.repo-nav a { display: flex !important; justify-content: space-between; align-items: center; padding-left: 1rem !important; }
-	.repo-nav .n { font-size: 0.75rem; padding: 0 0.4rem; border-radius: 999px; background: rgb(255 255 255 / 0.12); }
+	.repo-nav .n { font-size: 0.75rem; padding: 0 0.4rem; border-radius: 999px; background: rgb(255 255 255 / 0.12); font-variant-numeric: tabular-nums; }
+	.repo-nav .n.alert { background: var(--conflict); color: #fff; font-weight: 600; }
 	.me { margin-top: auto; display: grid; gap: 0.4rem; }
 	.who { display: flex; align-items: center; gap: 0.6rem; padding: 0.5rem 0.6rem; font-size: 0.9375rem; color: #fff; }
 	.avatar {

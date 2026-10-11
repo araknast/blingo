@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { needs } from "../lib/attention";
 	import BubbleMap from "../lib/BubbleMap.svelte";
 	import ContextMenu, { type MenuItem } from "../lib/ContextMenu.svelte";
 	import Dialog from "../lib/Dialog.svelte";
@@ -21,9 +22,14 @@
 	const refresh = repoData.refresh;
 	const bubbleHref = (id: string) => `/repos/${repo}/b/${id}`;
 	const bubbleName = (id: string) => data?.bubbles.find((b) => b.id === id)?.name || short(id);
+	let map = $state<ReturnType<typeof BubbleMap>>();
 
 	// ---- Right-click menu: on a bubble, its actions; on the background, the general ones ----
 	let menu = $state<{ x: number; y: number; bubble: string | null } | null>(null);
+	const moreMenu = (e: MouseEvent) => {
+		const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+		menu = { x: r.right - 220, y: r.bottom + 4, bubble: null };
+	};
 	// Set when a dialog was opened from a bubble's menu; the dialog then starts from that bubble.
 	let fixedBase = $state<string | null>(null);
 
@@ -126,6 +132,13 @@
 	let fergePair = $state<[string, string] | null>(null);
 	let fergeOpen = $state(false);
 	const askFerge = (a: string, b: string) => ((fergePair = [a, b]), (fergeOpen = true));
+	// The files both bubbles changed: what the ferge's locked bubble will hold.
+	const fergeFiles = $derived.by(() => {
+		if (!fergePair || !data) return [];
+		const files = (id: string) => new Set(data!.bubbles.find((b) => b.id === id)?.members.flatMap((m) => m.files) ?? []);
+		const b = files(fergePair[1]);
+		return [...files(fergePair[0])].filter((f) => b.has(f)).sort();
+	});
 	async function ferge() {
 		if (!fergePair) return;
 		busy = true;
@@ -133,6 +146,7 @@
 			const r = await api<{ locked: string; files: string[] }>("POST", `/repos/${repo}/ferge`, { a: fergePair[0], b: fergePair[1] });
 			fergeOpen = false;
 			await refresh();
+			map?.focusOn([r.locked]);
 			toast(`Ferged. ${bubbleName(r.locked)} holds ${plural(r.files.length, "conflicting file")}.`);
 		} catch (e) {
 			toastError(e);
@@ -146,10 +160,17 @@
 	crumbs={[{ label: "Repositories", href: "/repos" }, { label: repoName(repo, session.me?.names) }]}
 	{repo}
 	openTasks={data?.tasks.filter((t) => t.status !== "completed").length}
+	needsYou={data ? needs(data).length : undefined}
 	activeAgents={data?.agents.filter((a) => a.status === "running").length}
 	runningDeploys={data?.deploys.filter((d) => d.status === "running").length}
 	full
 >
+	{#snippet actions()}
+		{#if data}
+			<button class="primary" onclick={() => openAgent(null)}>Start an agent</button>
+			<button aria-haspopup="menu" onclick={moreMenu}>More</button>
+		{/if}
+	{/snippet}
 	{#if repoData.missing}
 		<div class="missing">
 			<h1>This repository isn't available</h1>
@@ -158,13 +179,23 @@
 	{:else}
 		<section class="stage" aria-label="Bubble map">
 			<BubbleMap
+				bind:this={map}
 				{data}
+				stale={repoData.stale}
+				taskHref={(id) => `/repos/${repo}/tasks/${id}`}
 				hrefFor={bubbleHref}
 				agentHref={(fork) => `/repos/${repo}/agents/${fork}`}
 				looseHref={(fork) => `/repos/${repo}/forks/${fork}`}
 				onconflict={askFerge}
 				oncontext={(at) => (menu = at)}
-			/>
+			>
+				{#snippet empty()}
+					<div class="row">
+						<button class="primary" onclick={() => openAgent(null)}>Start an agent</button>
+						<button onclick={() => openPush(null)}>Push a fork</button>
+					</div>
+				{/snippet}
+			</BubbleMap>
 		</section>
 	{/if}
 </Shell>
@@ -247,6 +278,13 @@
 			<strong>{bubbleName(fergePair[0])}</strong> and <strong>{bubbleName(fergePair[1])}</strong> merge, without the files they conflict on.
 			A new locked bubble holds those files with conflict markers. Fix them in a fork of that bubble, then unlock it to merge the fix back.
 		</p>
+		{#if fergeFiles.length}
+			<p class="files-head">{plural(fergeFiles.length, "file")} they both changed</p>
+			<ul class="files">
+				{#each fergeFiles.slice(0, 8) as f}<li><code>{f}</code></li>{/each}
+				{#if fergeFiles.length > 8}<li class="muted">and {fergeFiles.length - 8} more</li>{/if}
+			</ul>
+		{/if}
 		<div class="row">
 			<button class="primary" onclick={ferge} disabled={busy}>Ferge bubbles</button>
 			<button onclick={() => (fergeOpen = false)}>Cancel</button>
@@ -261,6 +299,9 @@
 	.from { font-size: 0.875rem; color: var(--ink-2); }
 	.from span { color: var(--ink); }
 	.row { display: flex; gap: 0.5rem; }
+	.files-head { font-size: 0.875rem; font-weight: 600; margin-bottom: 0.35rem; }
+	.files { list-style: none; margin: 0 0 1.25rem; padding: 0.5rem 0.75rem; display: grid; gap: 0.15rem; background: var(--fog); border-radius: var(--r-sm); }
+	.files code { font-size: 0.8125rem; overflow-wrap: anywhere; }
 	.missing { padding: 2rem clamp(1rem, 3vw, 2.5rem); }
 	.missing p { margin-top: 0.75rem; color: var(--ink-2); }
 	@media (max-width: 900px) {
