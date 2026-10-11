@@ -69,10 +69,6 @@
 
 	// ---- Right-click menu: on a bubble, its actions; on the background, the general ones ----
 	let menu = $state<{ x: number; y: number; bubble: string | null } | null>(null);
-	const moreMenu = (e: MouseEvent) => {
-		const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-		menu = { x: r.right - 220, y: r.bottom + 4, bubble: null };
-	};
 	// Set when a dialog was opened from a bubble's menu; the dialog then starts from that bubble.
 	let fixedBase = $state<string | null>(null);
 
@@ -192,12 +188,6 @@
 	data={data}
 	full
 >
-	{#snippet actions()}
-		{#if data}
-			<button class="primary" onclick={() => openAgent(null)}>Start an agent</button>
-			<button aria-haspopup="menu" onclick={moreMenu}>More</button>
-		{/if}
-	{/snippet}
 	{#if repoData.missing}
 		<div class="missing">
 			<h1>This repository isn't available</h1>
@@ -218,12 +208,6 @@
 				onconflict={askFerge}
 				oncontext={(at) => (menu = at)}
 			>
-				{#snippet empty()}
-					<div class="row">
-						<button class="primary" onclick={() => openAgent(null)}>Start an agent</button>
-						<button onclick={() => openPush(null)}>Push a fork</button>
-					</div>
-				{/snippet}
 			</BubbleMap>
 			{#if drawer}
 				<aside class="drawer" bind:this={drawerEl} aria-label="Details">

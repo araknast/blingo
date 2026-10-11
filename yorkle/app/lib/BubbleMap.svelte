@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { forceCollide, forceLink, forceManyBody, forceSimulation, forceX, forceY, type SimulationNodeDatum } from "d3-force";
-	import { onDestroy, untrack, type Snippet } from "svelte";
+	import { onDestroy, untrack } from "svelte";
 	import { fade } from "svelte/transition";
 	import { docked, needs, type Docked, type Need } from "./attention";
 	import Glyph from "./Glyph.svelte";
@@ -20,7 +20,6 @@
 		onconflict,
 		oncontext,
 		stale = false,
-		empty,
 		demo = false,
 	}: {
 		data: RepoState | null;
@@ -33,7 +32,6 @@
 		onconflict?: (a: string, b: string) => void;
 		oncontext?: (at: { x: number; y: number; bubble: string | null }) => void;
 		stale?: boolean;
-		empty?: Snippet;
 		demo?: boolean;
 	} = $props();
 
@@ -597,8 +595,7 @@
 	{:else if data && !data.bubbles.length && !demo}
 		<div class="empty">
 			<p class="empty-title">No bubbles yet</p>
-			<p>Start an agent or push a fork. Its changes land here as the first bubble, and each fork after that joins a bubble by the files it changes.</p>
-			{@render empty?.()}
+			<p>Create a task or plan with a superagent on the <a href={pageHref?.("tasks")}>Tasks</a> tab. Its changes land here as the first bubble, and each fork after that joins a bubble by the files it changes.</p>
 		</div>
 	{/if}
 
@@ -858,7 +855,7 @@
 	.loading { position: absolute; inset: 0; display: grid; place-items: center; color: var(--ink-2); }
 	.empty { position: absolute; left: 1rem; top: 4.5rem; max-width: 28rem; padding: 1.25rem; background: var(--overlay); border: 1px solid var(--line); border-radius: var(--r-md); }
 	.empty-title { font-size: 1.25rem; font-weight: 700; margin-bottom: 0.35rem; }
-	.empty p:not(.empty-title) { color: var(--ink-2); margin-bottom: 1rem; }
+	.empty p:not(.empty-title) { color: var(--ink-2); }
 	.stale {
 		position: absolute;
 		left: 50%;
