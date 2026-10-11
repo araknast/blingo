@@ -57,7 +57,7 @@
 				events = full.events;
 				cursor = full.next;
 			} else {
-				if (t.events.length) events = [...events, ...t.events]; // reassigning resets the elapsed timer
+				if (t.events.length) events = [...events, ...t.events];
 				cursor = t.next;
 			}
 			status = t.status;
@@ -79,14 +79,11 @@
 	let tick = $state(0);
 	const timer = setInterval(() => tick++, reduced ? 1000 : 100);
 	onDestroy(() => clearInterval(timer));
-	let lastChange = $state(Date.now());
-	$effect(() => {
-		events.length;
-		lastChange = Date.now();
-	});
+	// Time since the run started (transcript lines carry no timestamps), so a reload keeps it.
+	const opened = Date.now();
 	const elapsed = $derived.by(() => {
 		tick;
-		return fmtElapsed(Date.now() - lastChange);
+		return fmtElapsed(Date.now() - (run?.started ?? opened));
 	});
 	const live = $derived((run?.status ?? status) === "running");
 
