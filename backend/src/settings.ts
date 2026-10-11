@@ -53,6 +53,16 @@ export function readSettings(stored: Partial<Settings> & { provider?: string; re
 	return { ...DEFAULTS, ...s, provider, ci: { ...DEFAULTS.ci, ...s.ci }, models: { ...DEFAULTS.models, ...s.models } };
 }
 
+// Why `key` can't be the API key for `provider`, if it can't. Anthropic answers a subscription
+// request made with anything but a `claude setup-token` token with "401 Invalid bearer token" on
+// every agent's first call, so a wrong paste is refused here instead.
+export function keyError(provider: Provider, key: string): string | null {
+	if (provider !== "claude-subscription" || key.startsWith("sk-ant-oat")) return null;
+	return key.startsWith("sk-ant-api")
+		? "that's an Anthropic API key: a Claude subscription needs the token `claude setup-token` prints (sk-ant-oat…)"
+		: "a Claude subscription token starts with sk-ant-oat: paste what `claude setup-token` prints";
+}
+
 // Applies a settings update from the API to `current`; returns the new settings or what's wrong.
 export function updateSettings(current: Settings, body: unknown): Settings | { error: string } {
 	const b = (body ?? {}) as Record<string, unknown>;

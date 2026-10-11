@@ -4,7 +4,7 @@ import { getAgentByName } from "agents";
 import { COMMIT_FILES_SH, MERGES, PATCH_SH, readSeries } from "./git-scripts";
 import { conflictKey, fergeCandidate, nearestNeighbour, placeFork, renameConflicts, type Basis, type Bubble } from "./bubbles";
 import { fergeName, friendlyName, nameText, type Name } from "./names";
-import { NO_KEY, deployHeaders, deployKey, deployValues, gate, readSettings, updateSettings, type Provider, type Role, type Settings } from "./settings";
+import { NO_KEY, deployHeaders, deployKey, deployValues, gate, keyError, readSettings, updateSettings, type Provider, type Role, type Settings } from "./settings";
 import { resolveSkills, type Skill } from "./skills";
 import { explanation, fixPrompt, ready, renameOwed, shortTitle, type Owed, type PlanItem, type TaskState } from "./tasks";
 
@@ -812,8 +812,12 @@ export class RepoDO extends DurableObject<Env> {
 	async setSettings(body: unknown) {
 		const next = updateSettings(this.settings(), body);
 		if ("error" in next) return next;
-		const key = (body as { apiKey?: unknown } | null)?.apiKey;
-		if (key !== undefined && (typeof key !== "string" || key.length > 500)) return { error: "apiKey must be a string" };
+		const raw = (body as { apiKey?: unknown } | null)?.apiKey;
+		if (raw !== undefined && (typeof raw !== "string" || raw.length > 500)) return { error: "apiKey must be a string" };
+		// Keys have no whitespace; a paste from a wrapped terminal line can.
+		const key = typeof raw === "string" ? raw.replace(/\s+/g, "") : undefined;
+		const bad = key && keyError(next.provider, key);
+		if (bad) return { error: bad };
 		const rkey = (body as { reviewerKey?: unknown } | null)?.reviewerKey;
 		if (rkey !== undefined && (typeof rkey !== "string" || rkey.length > 500)) return { error: "reviewerKey must be a string" };
 		const hasRKey = typeof rkey === "string" ? !!rkey.trim() : !!this.ctx.storage.kv.get<string>("reviewerKey");
@@ -833,7 +837,7 @@ export class RepoDO extends DurableObject<Env> {
 		}
 		this.ctx.storage.kv.put("deployAuth", values);
 		if (typeof key === "string") {
-			if (key.trim()) (this.ctx.storage.kv.put("apiKey", key.trim()), this.ctx.storage.kv.put("keyProvider", next.provider));
+			if (key) (this.ctx.storage.kv.put("apiKey", key), this.ctx.storage.kv.put("keyProvider", next.provider));
 			else (this.ctx.storage.kv.delete("apiKey"), this.ctx.storage.kv.delete("keyProvider"));
 		}
 		await this.kick(); // a new key starts waiting tasks; autoFerge starts on pairs already in conflict

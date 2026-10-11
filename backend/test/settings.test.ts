@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { DEFAULTS, NO_KEY, ciHostAllowed, deployHeaders, deployKey, deployValues, egress, gate, readSettings, updateSettings, type Settings } from "../src/settings";
+import { DEFAULTS, NO_KEY, ciHostAllowed, deployHeaders, deployKey, deployValues, egress, gate, keyError, readSettings, updateSettings, type Settings } from "../src/settings";
 
 const on = (o: Partial<Settings> = {}): Settings => ({ ...DEFAULTS, ...o, ci: { ...DEFAULTS.ci, enabled: true, ...o.ci } });
 
@@ -102,4 +102,11 @@ test("readSettings: repositories on the dropped Anthropic API provider become cl
 	expect(readSettings({ provider: "anthropic", reviewerProvider: "anthropic" } as never)).toEqual(DEFAULTS);
 	expect(readSettings({ provider: "openrouter" }).provider).toBe("openrouter");
 	expect(readSettings({}).provider).toBe("claude-subscription");
+});
+
+test("keyError: a Claude subscription takes only a setup-token token", () => {
+	expect(keyError("claude-subscription", "sk-ant-oat01-abc")).toBeNull();
+	expect(keyError("claude-subscription", "sk-ant-api03-abc")).toMatch(/API key/);
+	expect(keyError("claude-subscription", "abc")).toMatch(/sk-ant-oat/);
+	expect(keyError("openrouter", "sk-fake-not-real")).toBeNull();
 });
