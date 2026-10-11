@@ -54,7 +54,7 @@ test("the repository's setup, a failed deployment and new notes from agents need
 	d.settings.provider = "openrouter";
 	expect(pages(d)).toEqual(["k:provider"]);
 	expect(needs(d).find((n) => n.key === "k:provider")).toMatchObject({ tab: "settings" });
-	d.settings.provider = "anthropic";
+	d.settings.keyProvider = "openrouter";
 	const run = (id: string, name: string, status: "running" | "succeeded" | "failed", started: number) => ({ id, name, bubble: "b", head: "h", status, started, finished: null, log: null, by: "me" });
 	d.deploys = [run("1", "prod", "failed", 1), run("2", "prod", "succeeded", 2), run("3", "staging", "failed", 3)];
 	expect(pages(d)).toEqual(["d:3"]); // prod ran again and passed

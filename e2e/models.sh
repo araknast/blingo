@@ -6,7 +6,7 @@
 S=${WORK:-$(mktemp -d)}; mkdir -p "$S" && cd "$S" || exit 1; echo "work dir $S"
 fail() { echo "FAIL $*"; [ -n "${R:-}" ] && api -X DELETE $U/repos/$R >/dev/null; exit 1; }
 ok() { echo "ok   $*"; }
-KEY=sk-ant-api03-blingo-e2e-not-a-real-key
+KEY=sk-ant-oat01-blingo-e2e-not-a-real-token # the default provider: a Claude subscription
 api -X POST --json '{"description":"base"}' $U/notagents > x0.json; R=$(j x0.json repo); A=$(j x0.json fork); echo "repo $R"
 push x0.json r0 'echo a > a.txt' >/dev/null || fail "base push"
 for i in $(seq 1 36); do api $U/repos/$R | grep -q '"status":"rep"' && break; sleep 5; done
@@ -32,7 +32,7 @@ ev() { python3 -c "import json;e=json.load(open('$1'))['events'];print($2)"; }
 
 run haiku
 [ "$(ev haiku.json "[x.get('model') for x in e if x.get('type')=='system' and x.get('subtype')=='init']")" = "['claude-haiku-5-5']" ] || fail "model in transcript: $(ev haiku.json "e[:1]")"
-[ "$(ev haiku.json "[x.get('api_error_status') for x in e if x.get('type')=='result']")" = "[401]" ] || fail "expected Anthropic to reject the repo's (invalid) key: $(ev haiku.json "[x.get('result') for x in e if x.get('type')=='result']")"
+[ "$(ev haiku.json "[x.get('api_error_status') for x in e if x.get('type')=='result']")" = "[401]" ] || fail "expected Anthropic to reject the repo's (invalid) token: $(ev haiku.json "[x.get('result') for x in e if x.get('type')=='result']")"
 ok "transcript stored; the repo's model and key were used ($(ev haiku.json "[x.get('result') for x in e if x.get('type')=='result'][0][:80]"))"
 
 run sonnet claude-sonnet-5-5
@@ -51,13 +51,6 @@ res=$(ev router.json "[(x.get('api_error_status'), x.get('result')) for x in e i
 # 401 = OpenRouter rejected the fake key; Outbound blocking a request to the wrong host would be a 403.
 [ "$(ev router.json "[x.get('api_error_status') for x in e if x.get('type')=='result']")" = "[401]" ] || fail "expected OpenRouter to reject the fake key: $res"
 ok "OpenRouter provider: requests went to OpenRouter with the repo's key ($res)"
-
-api -X PUT --json "{\"apiKey\":\"sk-ant-oat01-blingo-e2e-not-a-real-token\",\"provider\":\"claude-subscription\",\"models\":{\"agent\":\"claude-haiku-5-5\"}}" $U/repos/$R/settings | grep -q '"provider":"claude-subscription"' || fail "subscription provider not stored"
-run sub
-res=$(ev sub.json "[(x.get('api_error_status'), x.get('result')) for x in e if x.get('type')=='result']")
-# 401 = api.anthropic.com rejected the fake token (sent as a bearer by Outbound); 403 would be Outbound refusing the host.
-[ "$(ev sub.json "[x.get('api_error_status') for x in e if x.get('type')=='result']")" = "[401]" ] || fail "expected Anthropic to reject the fake subscription token: $res"
-ok "Claude subscription provider: requests went to Anthropic with the repo's token ($res)"
 
 echo "== cleanup: $(api -X DELETE $U/repos/$R)"
 echo "PASS"

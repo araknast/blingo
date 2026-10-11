@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { DEFAULTS, NO_KEY, ciHostAllowed, deployHeaders, deployKey, deployValues, egress, gate, updateSettings, type Settings } from "../src/settings";
+import { DEFAULTS, NO_KEY, ciHostAllowed, deployHeaders, deployKey, deployValues, egress, gate, readSettings, updateSettings, type Settings } from "../src/settings";
 
 const on = (o: Partial<Settings> = {}): Settings => ({ ...DEFAULTS, ...o, ci: { ...DEFAULTS.ci, enabled: true, ...o.ci } });
 
@@ -25,7 +25,7 @@ test("CI egress: listed hosts and their subdomains only", () => {
 
 test("egress: agents reach the internet, keys only go to their own provider", () => {
 	const u = (s: string) => new URL(s);
-	const agent = { agent: true, provider: "anthropic" as const };
+	const agent = { agent: true, provider: "claude-subscription" as const };
 	expect(egress(u("https://x.artifacts.cloudflare.net/r.git"), {})).toBe("pass");
 	expect(egress(u("https://registry.npmjs.org/jq"), agent)).toBe("pass");
 	expect(egress(u("http://deb.debian.org/debian"), agent)).toBe("pass");
@@ -92,9 +92,14 @@ test("a deployment's headers go only to their host (and its subdomains)", () => 
 
 test("claude-subscription provider: accepted, and its key only goes to api.anthropic.com", () => {
 	expect(updateSettings(DEFAULTS, { provider: "claude-subscription" })).toMatchObject({ provider: "claude-subscription" });
-	expect(updateSettings(DEFAULTS, { reviewerProvider: "openrouter" })).toMatchObject({ reviewerProvider: "openrouter" });
-	expect(updateSettings(DEFAULTS, { reviewerProvider: "claude-subscription" })).toHaveProperty("error");
+	expect(updateSettings(DEFAULTS, { provider: "anthropic" })).toHaveProperty("error");
 	const sub = { agent: true, provider: "claude-subscription" as const };
 	expect(egress(new URL("https://api.anthropic.com/v1/messages"), sub)).toBe("key");
 	expect(egress(new URL("https://openrouter.ai/api/v1/messages"), sub)).toHaveProperty("deny");
+});
+
+test("readSettings: repositories on the dropped Anthropic API provider become claude-subscription", () => {
+	expect(readSettings({ provider: "anthropic", reviewerProvider: "anthropic" } as never)).toEqual(DEFAULTS);
+	expect(readSettings({ provider: "openrouter" }).provider).toBe("openrouter");
+	expect(readSettings({}).provider).toBe("claude-subscription");
 });

@@ -203,16 +203,16 @@ notagent's, for a person to push the fix (`POST …/token`). A notagent's failed
 
 **Models, keys and transcripts.** A repository can set its own API key (`PUT …/settings {apiKey}`;
 stored apart from the settings and never returned: the API only says `hasKey`), its `provider`
-(`anthropic` or `openrouter`), and a model per role (`models.agent` / `superagent` / `ferge`; empty =
+(`claude-subscription`, the default, or `openrouter`), and a model per role (`models.agent` / `superagent` / `ferge`; empty =
 the Worker's `MODEL`). An agent's Box binds `Outbound` with its repository (props `repo`). Outbound asks
-`RepoDO.credentials` and adds that key (there is no fallback: without a key no agent, superagent,
-CI fixer or review starts, and queued tasks wait for one): as
-`x-api-key` for `api.anthropic.com`, or as a bearer token for `openrouter.ai`, which Claude Code
-reaches through `ANTHROPIC_BASE_URL`. A request to the other provider is refused. A third provider,
-`claude-subscription`, takes a `claude setup-token` token: the sandbox gets `CLAUDE_CODE_OAUTH_TOKEN=added-by-outbound`
-and Outbound sets `authorization: Bearer` plus the `oauth-2025-04-20` beta for `api.anthropic.com`. The Reviewer calls the
-SDK, which a subscription token can't, so it uses its own key (`PUT …/settings {reviewerKey, reviewerProvider}`, stored
-apart, API says `hasReviewerKey`; `RepoDO.reviewerCredentials`), else the repository's key when that is an API key;
+`RepoDO.credentials` and adds that key as a bearer token (there is no fallback: without a key no agent, superagent,
+CI fixer or review starts, and queued tasks wait for one). A request to the other provider is refused.
+`claude-subscription` takes a `claude setup-token` token: the sandbox gets `CLAUDE_CODE_OAUTH_TOKEN=added-by-outbound`
+and Outbound adds the `oauth-2025-04-20` beta for `api.anthropic.com`. `openrouter` is reached through
+`ANTHROPIC_BASE_URL=https://openrouter.ai/api`. Repositories saved with the dropped `anthropic` provider read as
+`claude-subscription` (`readSettings`), and their key's `keyProvider` shows as a mismatch. The Reviewer calls the
+SDK on OpenRouter, which a subscription token can't, so it uses its own OpenRouter key (`PUT …/settings {reviewerKey}`, stored
+apart, API says `hasReviewerKey`; `RepoDO.reviewerKey`), else the repository's key when that is an OpenRouter key;
 automatic review with a subscription and no reviewer key is refused. It uses the agent model.
 The repository list reads `GET /repos/:r/summary` (counts only), not the full state. Claude Code runs with `--output-format stream-json`: each run's events
 go to `$TASK/transcript.jsonl` and are stored in the Box's SQLite when it ends (lines over 256 KB become

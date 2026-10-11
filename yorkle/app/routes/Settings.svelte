@@ -19,7 +19,8 @@
 	let { repo }: { repo: string } = $props();
 	// svelte-ignore state_referenced_locally (the page is keyed by repo in App)
 	const rd = repoState(repo, 15000);
-	const PROVIDER = { anthropic: "Anthropic", openrouter: "OpenRouter", "claude-subscription": "Claude subscription" } as const;
+	// "anthropic": only a key saved before that provider was dropped.
+	const PROVIDER = { anthropic: "Anthropic API", openrouter: "OpenRouter", "claude-subscription": "Claude subscription" } as const;
 
 	// The form's copy, taken once the settings arrive (polls don't overwrite edits in progress), and the
 	// saved values it started from, to tell what's changed.
@@ -146,9 +147,8 @@
 					<div class="field">
 						<label for="provider">Provider</label>
 						<select id="provider" bind:value={form.provider}>
-							<option value="anthropic">Anthropic API</option>
-							<option value="openrouter">OpenRouter</option>
 							<option value="claude-subscription">Claude subscription</option>
+							<option value="openrouter">OpenRouter</option>
 						</select>
 					</div>
 					<div class="field">
@@ -168,7 +168,7 @@
 							{/if}
 						</div>
 						{#if keyMismatch}
-							<p class="callout warn"><Mark status="failed" /><span>The saved key is for {PROVIDER[keyFor!]}. Paste {form.provider === "claude-subscription" ? "a Claude subscription token" : form.provider === "openrouter" ? "an OpenRouter key" : "an Anthropic API key"}, or agents won't start.</span></p>
+							<p class="callout warn"><Mark status="failed" /><span>The saved key is for {PROVIDER[keyFor!]}. Paste {form.provider === "claude-subscription" ? "a Claude subscription token" : "an OpenRouter key"}, or agents won't start.</span></p>
 						{:else if dropKey}
 							<p class="callout warn"><Mark status="failed" /><span>When you save, the key is removed and no new agent starts until there's another.</span></p>
 						{/if}
@@ -223,12 +223,8 @@
 					</div>
 					{#if form.review === "auto" || form.review === "both"}
 						<div class="field">
-							<label for="reviewer-key">Reviewer API key{form.provider === "claude-subscription" ? "" : " (optional)"}</label>
+							<label for="reviewer-key">Reviewer OpenRouter key{form.provider === "claude-subscription" ? "" : " (optional)"}</label>
 							<div class="row">
-								<select class="provider" bind:value={form.reviewerProvider} aria-label="Reviewer's provider">
-									<option value="anthropic">Anthropic API</option>
-									<option value="openrouter">OpenRouter</option>
-								</select>
 								<input
 									id="reviewer-key"
 									type="password"
@@ -242,7 +238,7 @@
 									{:else}<button type="button" onclick={() => ((dropReviewerKey = true), (reviewerKey = ""))}>Remove</button>{/if}
 								{/if}
 							</div>
-							<p class="hint" id="reviewer-hint">The reviewer calls the API directly. Stored for this repository only and never shown again.{#if form.provider === "claude-subscription"} A subscription token can't review, so automatic review needs this key.{/if}</p>
+							<p class="hint" id="reviewer-hint">The reviewer calls OpenRouter directly. Stored for this repository only and never shown again.{#if form.provider === "claude-subscription"} A subscription token can't review, so automatic review needs this key.{/if}</p>
 						</div>
 					{/if}
 				</section>
@@ -345,7 +341,6 @@
 	.lede { margin: -0.25rem 0 1rem; max-width: 65ch; }
 	.row { display: flex; gap: 0.5rem; }
 	.row input { flex: 1; min-width: 0; }
-	.row .provider { flex: 0 0 10rem; }
 	.short { width: 6rem; }
 	.models { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 0 0.75rem; }
 	.models .field { margin-bottom: 0.5rem; }
@@ -378,7 +373,6 @@
 	.intro { margin-bottom: 1rem; color: var(--ink-2); }
 	@media (max-width: 600px) {
 		.row { flex-wrap: wrap; }
-		.row .provider { flex: 1 0 100%; }
 		.cred { grid-template-columns: 1fr 1fr; }
 	}
 </style>

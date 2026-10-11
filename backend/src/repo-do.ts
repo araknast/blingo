@@ -4,7 +4,7 @@ import { getAgentByName } from "agents";
 import { COMMIT_FILES_SH, MERGES, PATCH_SH, readSeries } from "./git-scripts";
 import { conflictKey, fergeCandidate, nearestNeighbour, placeFork, renameConflicts, type Basis, type Bubble } from "./bubbles";
 import { fergeName, friendlyName, nameText, type Name } from "./names";
-import { DEFAULTS, NO_KEY, deployHeaders, deployKey, deployValues, gate, updateSettings, type Provider, type ReviewerProvider, type Role, type Settings } from "./settings";
+import { NO_KEY, deployHeaders, deployKey, deployValues, gate, readSettings, updateSettings, type Provider, type Role, type Settings } from "./settings";
 import { resolveSkills, type Skill } from "./skills";
 import { explanation, fixPrompt, ready, renameOwed, shortTitle, type Owed, type PlanItem, type TaskState } from "./tasks";
 
@@ -794,8 +794,7 @@ export class RepoDO extends DurableObject<Env> {
 	// ---- loose forks and CI ----
 
 	settings(): Settings {
-		const stored = this.ctx.storage.kv.get<Partial<Settings>>("settings") ?? {};
-		return { ...DEFAULTS, ...stored, ci: { ...DEFAULTS.ci, ...stored.ci }, models: { ...DEFAULTS.models, ...stored.models } };
+		return readSettings(this.ctx.storage.kv.get<Partial<Settings>>("settings") ?? {});
 	}
 
 	// The settings as the API shows them: the API key only as whether one is set.
@@ -819,7 +818,7 @@ export class RepoDO extends DurableObject<Env> {
 		if (rkey !== undefined && (typeof rkey !== "string" || rkey.length > 500)) return { error: "reviewerKey must be a string" };
 		const hasRKey = typeof rkey === "string" ? !!rkey.trim() : !!this.ctx.storage.kv.get<string>("reviewerKey");
 		if (next.provider === "claude-subscription" && (next.review === "auto" || next.review === "both") && !hasRKey) {
-			return { error: "automatic review can't use a Claude subscription token: set a reviewer API key, or use manual review" };
+			return { error: "automatic review can't use a Claude subscription token: set an OpenRouter reviewer key, or use manual review" };
 		}
 		this.ctx.storage.kv.put("settings", next);
 		if (typeof rkey === "string") rkey.trim() ? this.ctx.storage.kv.put("reviewerKey", rkey.trim()) : this.ctx.storage.kv.delete("reviewerKey");
@@ -897,19 +896,19 @@ export class RepoDO extends DurableObject<Env> {
 		return key ? { provider: this.settings().provider, key } : null;
 	}
 
-	// The Reviewer's key: its own if set (a subscription token can't call the SDK), else the
-	// repository's key when that is an API key. Never sent to a sandbox.
-	reviewerCredentials(): { provider: ReviewerProvider; key: string } | null {
+	// The Reviewer's OpenRouter key: its own if set (a subscription token can't call the SDK), else the
+	// repository's when that is an OpenRouter key. Never sent to a sandbox.
+	reviewerKey(): string | null {
 		const own = this.ctx.storage.kv.get<string>("reviewerKey");
-		if (own) return { provider: this.settings().reviewerProvider, key: own };
+		if (own) return own;
 		const c = this.credentials();
-		return c && c.provider !== "claude-subscription" ? { provider: c.provider, key: c.key } : null;
+		return c?.provider === "openrouter" ? c.key : null;
 	}
 
 	// How to run an agent of `role` here: its model (`model` if one was chosen for it), and whose API it talks to.
 	agentConfig(role: Role, model?: string | null): { model: string; provider: Provider } {
 		const s = this.settings();
-		return { model: model || s.models[role] || this.env.MODEL, provider: this.credentials()?.provider ?? "anthropic" };
+		return { model: model || s.models[role] || this.env.MODEL, provider: this.credentials()?.provider ?? "claude-subscription" };
 	}
 
 	private loose(fork: string): Loose | undefined {

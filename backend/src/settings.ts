@@ -12,10 +12,9 @@ export type Settings = {
 	// Pushes an agent (and its CI fixers) gets before its fork becomes a notagent's.
 	maxAgentPushes: number;
 	// Whose API the repository's API key is for, and the model each kind of agent uses ("" = the
-	// Worker's MODEL). The key itself is stored apart and never returned.
+	// Worker's MODEL). The key itself is stored apart and never returned. The Reviewer always uses
+	// OpenRouter (its key is stored apart too).
 	provider: Provider;
-	// The Reviewer calls the API directly, so it has its own provider (its key is stored apart).
-	reviewerProvider: ReviewerProvider;
 	models: { agent: string; superagent: string; ferge: string };
 	// A ferge also files an agent task (model `models.ferge`) to resolve its conflict markers.
 	fergeAgents: boolean;
@@ -30,8 +29,7 @@ export type Settings = {
 // RepoDO, and never returned), so no credential enters the sandbox.
 export type Deploy = { name: string; command: string; hosts: string[]; auth: { host: string; header: string }[] };
 // "claude-subscription": a `claude setup-token` token for Claude Code (api.anthropic.com, bearer auth).
-export type Provider = "anthropic" | "openrouter" | "claude-subscription";
-export type ReviewerProvider = "anthropic" | "openrouter";
+export type Provider = "openrouter" | "claude-subscription";
 export type Role = keyof Settings["models"];
 
 export const DEFAULTS: Settings = {
@@ -39,8 +37,7 @@ export const DEFAULTS: Settings = {
 	ci: { enabled: false, command: "", hosts: ["registry.npmjs.org"] },
 	review: "none",
 	maxAgentPushes: 3,
-	provider: "anthropic",
-	reviewerProvider: "anthropic",
+	provider: "claude-subscription",
 	models: { agent: "", superagent: "", ferge: "" },
 	fergeAgents: false,
 	autoFerge: false,
@@ -48,17 +45,21 @@ export const DEFAULTS: Settings = {
 	deploys: [],
 };
 
+// The stored settings over the defaults. Repositories from before the Anthropic API provider was
+// dropped become claude-subscription; their key's keyProvider no longer matches, which asks for a new key.
+export function readSettings(stored: Partial<Settings> & { provider?: string; reviewerProvider?: string }): Settings {
+	const { reviewerProvider: _, ...s } = stored;
+	const provider = s.provider === "openrouter" ? "openrouter" : "claude-subscription";
+	return { ...DEFAULTS, ...s, provider, ci: { ...DEFAULTS.ci, ...s.ci }, models: { ...DEFAULTS.models, ...s.models } };
+}
+
 // Applies a settings update from the API to `current`; returns the new settings or what's wrong.
 export function updateSettings(current: Settings, body: unknown): Settings | { error: string } {
 	const b = (body ?? {}) as Record<string, unknown>;
 	const next: Settings = { ...current, ci: { ...current.ci }, models: { ...current.models } };
 	if (b.provider !== undefined) {
-		if (b.provider !== "anthropic" && b.provider !== "openrouter" && b.provider !== "claude-subscription") return { error: "provider must be anthropic, openrouter or claude-subscription" };
+		if (b.provider !== "openrouter" && b.provider !== "claude-subscription") return { error: "provider must be openrouter or claude-subscription" };
 		next.provider = b.provider;
-	}
-	if (b.reviewerProvider !== undefined) {
-		if (b.reviewerProvider !== "anthropic" && b.reviewerProvider !== "openrouter") return { error: "reviewerProvider must be anthropic or openrouter" };
-		next.reviewerProvider = b.reviewerProvider;
 	}
 	if (b.models !== undefined) {
 		const m = b.models as Record<string, unknown>;
@@ -159,7 +160,7 @@ export const ciHostAllowed = (hosts: string[], hostname: string) => hosts.some((
 // A model id as the provider names it ("" = the default).
 export const isModelId = (m: unknown): m is string => typeof m === "string" && /^[\w./:-]{0,100}$/.test(m);
 
-export const MODEL_HOSTS: Record<Provider, string> = { anthropic: "api.anthropic.com", openrouter: "openrouter.ai", "claude-subscription": "api.anthropic.com" };
+export const MODEL_HOSTS: Record<Provider, string> = { openrouter: "openrouter.ai", "claude-subscription": "api.anthropic.com" };
 export const NO_KEY = "this repository has no API key: set one in its settings";
 
 // Where a request out of a Box may go: "pass" = straight out, "key" = to the repository's model API

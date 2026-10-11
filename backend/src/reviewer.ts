@@ -41,20 +41,14 @@ export class Reviewer extends Agent<Env, State> {
 		await this.env.REPO.getByName(job.repo).reviewDone(job.fork, job.head, approve, comments);
 	}
 
-	// The repository's own key and provider (RepoDO.credentials); there is no fallback key.
+	// The repository's OpenRouter key (RepoDO.reviewerKey); there is no fallback key.
 	private async verdict(job: ReviewJob): Promise<{ approve: boolean; comments: string }> {
-		const creds = await this.env.REPO.getByName(job.repo).reviewerCredentials();
-		if (!creds) return { approve: false, comments: `Not reviewed: ${NO_KEY} (a subscription token can't review: set a reviewer key).` };
-		const openrouter = creds.provider === "openrouter";
-		const client = openrouter
-			? new Anthropic({ baseURL: "https://openrouter.ai/api", authToken: creds.key, apiKey: null })
-			: new Anthropic({ apiKey: creds.key });
+		const key = await this.env.REPO.getByName(job.repo).reviewerKey();
+		if (!key) return { approve: false, comments: `Not reviewed: ${NO_KEY} (a subscription token can't review: set an OpenRouter reviewer key).` };
+		const client = new Anthropic({ baseURL: "https://openrouter.ai/api", authToken: key, apiKey: null });
 		const r = await client.beta.messages.create({
 			model: job.model,
 			max_tokens: 16000,
-			// On Anthropic's API, a safety decline is re-run on its recommended fallback model instead of
-			// failing the review. OpenRouter routes models itself.
-			...(openrouter ? {} : { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const }),
 			output_config: { effort: "high", format: { type: "json_schema", schema: VERDICT } },
 			system: SYSTEM,
 			messages: [{ role: "user", content: `# ${job.title}\n\n${job.description}\n\n<patch-series>\n${job.series}\n</patch-series>` }],

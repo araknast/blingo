@@ -38,8 +38,8 @@ ok "reject deletes a task awaiting approval, and refuses while another depends o
 # The key's provider; partial saves
 api -X PUT --json '{"provider":"openrouter","apiKey":"sk-fake-not-real"}' $U/repos/$R/settings >/dev/null
 [ "$(q "(d['settings']['hasKey'], d['settings']['keyProvider'])")" = "(True, 'openrouter')" ] || fail "keyProvider: $(q "d['settings'].get('keyProvider')")"
-api -X PUT --json '{"provider":"anthropic"}' $U/repos/$R/settings >/dev/null
-[ "$(q "(d['settings']['provider'], d['settings']['keyProvider'])")" = "('anthropic', 'openrouter')" ] || fail "switching provider keeps the key's"
+api -X PUT --json '{"provider":"claude-subscription"}' $U/repos/$R/settings >/dev/null
+[ "$(q "(d['settings']['provider'], d['settings']['keyProvider'])")" = "('claude-subscription', 'openrouter')" ] || fail "switching provider keeps the key's"
 ok "a key records its provider, so a switch shows as a mismatch"
 api -X PUT --json '{"deploys":[{"name":"slow","command":"echo starting; sleep 600; echo never"}]}' $U/repos/$R/settings >/dev/null
 api -X PUT --json '{"autoFerge":true}' $U/repos/$R/settings >/dev/null

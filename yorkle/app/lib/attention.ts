@@ -16,7 +16,7 @@ export type Need = { key: string; tab: Tab } & (
 	| { kind: "page"; title: string; why: string }
 );
 
-const PROVIDER = { anthropic: "Anthropic", openrouter: "OpenRouter", "claude-subscription": "a Claude subscription" };
+const PROVIDER = { anthropic: "the Anthropic API", openrouter: "OpenRouter", "claude-subscription": "a Claude subscription" };
 
 // The backend counts the same things for the repository list (RepoDO.needsCount): keep the two in step.
 // `memorySeen`: when this viewer last opened the Memory tab; notes agents wrote since then need a look.

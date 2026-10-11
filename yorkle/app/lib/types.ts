@@ -50,8 +50,7 @@ export type Settings = {
 	ci: { enabled: boolean; command: string; hosts: string[] };
 	review: "none" | "auto" | "manual" | "both";
 	maxAgentPushes: number;
-	provider: "anthropic" | "openrouter" | "claude-subscription";
-	reviewerProvider: "anthropic" | "openrouter";
+	provider: "openrouter" | "claude-subscription";
 	models: { agent: string; superagent: string; ferge: string };
 	fergeAgents: boolean;
 	autoFerge: boolean;
