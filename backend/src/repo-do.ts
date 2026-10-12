@@ -562,7 +562,7 @@ export class RepoDO extends DurableObject<Env> {
 		try {
 			{
 				using rep = await this.env.ARTIFACTS.get(a);
-				await rep.fork(l, { defaultBranchOnly: false });
+				await rep.fork(l, { defaultBranchOnly: true });
 			}
 			const [ra, rb, rl] = await Promise.all([
 				authRemote(this.env, a, "write"),

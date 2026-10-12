@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { afterAll, expect, test } from "vitest";
-import { APPLY_SH, COMMIT_FILES_SH, CONFLICT, ENSURE_REP, ENV_PUSH_SH, ENV_SAVE_SH, FERGE_SH, MEMORY_HOOK_SH, MERGES, MERGE_SH, NO_CONFLICT, PATCH_SH, PUSH_SH, REP, STOP_HOOK_SH, UNBASED, readSeries } from "../src/git-scripts";
+import { APPLY_SH, COMMIT_FILES_SH, CONFLICT, ENSURE_REP, FERGE_SH, MEMORY_HOOK_SH, MERGES, MERGE_SH, NO_CONFLICT, PATCH_SH, PUSH_SH, REP, STOP_HOOK_SH, UNBASED, readSeries } from "../src/git-scripts";
 
 const T = mkdtempSync(`${tmpdir()}/blingo-git-`);
 afterAll(() => rmSync(T, { recursive: true, force: true }));
@@ -160,44 +160,4 @@ test("stop hook: blocks an agent's unsubmittable repo state (at most 3 times), a
 	expect([linked.again().code, linked.again().code, linked.again().code]).toEqual([2, 2, 0]); // then it may stop
 	expect(stop("true", "http://127.0.0.1:1/plan").err).toContain("haven't written your plan");
 	expect(stop("echo '[]' > ../task/tasks.json", "http://127.0.0.1:1/plan").code).toBe(0); // checker unreachable: let it stop
-});
-
-test("env: a run's overlay changes saved as an env commit, unchanged files never fetched, pushed", () => {
-	// The fork's env: an old tool, an untouched lib, a dir the run replaces.
-	sh(`git init -q -b env envw && cd envw && mkdir -p usr/bin usr/lib opt/gone && echo old > usr/bin/old && echo keep > usr/lib/keep && echo x > opt/gone/x && git add -A && git commit -qm env && git clone -q --bare . ../env.git && git --git-dir=../env.git config uploadpack.allowFilter true`);
-	const G = `${T}/afs.git`; // as ArtifactFS clones it: blobless
-	sh(`git clone -q --bare --filter=blob:none --branch env file://${T}/env.git ${G}`);
-	// The run's upper dirs, and the merged view (the overlays) at W.
-	const O = `${T}/ovl`;
-	const W = `${T}/root`;
-	sh(`mkdir -p ${O}/usr/u/bin ${O}/opt/u/gone ${O}/root/u/.claude ${O}/etc/u && cd ${O} && echo new > usr/u/bin/new && echo NEW > usr/u/bin/old && ln -s new usr/u/bin/link && printf '0123456789abcdefghijKLMNO' > usr/u/big && chmod +x usr/u/big && echo y > opt/u/gone/y && echo s > root/u/.claude/session && echo h > etc/u/hosts`);
-	sh(`mkdir -p ${W} && for d in usr opt root etc; do mkdir -p ${W}/$d && cp -a ${O}/$d/u/. ${W}/$d/; done`);
-	const env = { ENV_GIT: G, ENV_ROOT: W, ENV_OVL: O, ENV_CHUNK: "10", GIT_NO_LAZY_FETCH: "1" };
-	const s = run(ENV_SAVE_SH, [], { env });
-	expect(s.code, s.err).toBe(0);
-	const tree = sh(`git --git-dir=${G} ls-tree -r refs/blingo/env`);
-	const at = (p: string) => tree.split("\n").find((l) => l.endsWith(`\t${p}`))?.split(/\s+/);
-	expect(sh(`git --git-dir=${G} show refs/blingo/env:usr/bin/old`)).toBe("NEW");
-	expect(sh(`git --git-dir=${G} show refs/blingo/env:usr/bin/new`)).toBe("new");
-	expect(at("usr/bin/link")?.[0]).toBe("120000");
-	expect(at("usr/lib/keep")?.[2]).toBe(sh(`git --git-dir=${T}/env.git rev-parse env:usr/lib/keep`)); // carried, not read
-	expect(at("opt/gone/x")).toBeUndefined(); // hidden by the replaced dir
-	expect(at("opt/gone/y")).toBeDefined();
-	expect(at("usr/big")).toBeUndefined();
-	expect(["000", "001", "002"].map((n) => at(`usr/big.blingo-part-${n}`)?.[0])).toEqual(["100755", "100755", "100755"]);
-	expect(tree).not.toMatch(/root\/\.claude|etc\/hosts/);
-	expect(sh(`git --git-dir=${G} rev-parse refs/blingo/env^`)).toBe(sh(`git --git-dir=${T}/env.git rev-parse env`)); // on the last env
-	// Pushed without fetching anything; the fork's env has it all, and the chunks join back up.
-	const p = run(ENV_PUSH_SH, [`file://${T}/env.git`], { env });
-	expect(p.code, p.err).toBe(0);
-	sh(`git clone -q --branch env ${T}/env.git envc`);
-	expect(sh("cat usr/big.blingo-part-*", `${T}/envc`)).toBe("0123456789abcdefghijKLMNO");
-	expect(sh("cat usr/lib/keep usr/bin/old", `${T}/envc`)).toBe("keep\nNEW");
-});
-
-test("env: with no env git dir (the mount failed), nothing is saved or pushed", () => {
-	const env = { ENV_GIT: `${T}/missing.git` };
-	expect(run(ENV_SAVE_SH, [], { env }).code).toBe(0);
-	expect(run(ENV_PUSH_SH, [`${T}/env.git`], { env }).code).toBe(0);
-	expect(sh(`git --git-dir=${T}/env.git for-each-ref refs/blingo`)).toBe("");
 });
