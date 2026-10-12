@@ -21,7 +21,7 @@ browser ──► yorkle Worker ──(service binding)──► blingo Worker �
 | Skills rules | `backend/src/skills.ts` | Pure: `parseSkillUpload` (a picked folder → a skill, or why not), `resolveSkills` (which skills an agent loads). Unit-tested |
 | Bubble rules | `backend/src/bubbles.ts` | Pure functions: `placeFork`, `distance`, `nearestNeighbour`. Unit-tested |
 | RepoDO | `backend/src/repo-do.ts` | SQLite state for one repository: placement, each bubble's patch queue, neighbour merges; alarm = the loop that drives them |
-| Box | `backend/src/box.ts`, `backend/src/git-scripts.ts` | Container sandbox. Runs Claude Code for an agent, or holds a bubble's rep clone and runs its git jobs (the git scripts are tested against local repos). `Outbound` limits its egress |
+| Box | `backend/src/box.ts`, `backend/src/git-scripts.ts` | Container sandbox. Runs Claude Code for an agent over its fork's environment (the `env` branch, mounted with ArtifactFS), or holds a bubble's rep clone and runs its git jobs (the git scripts are tested against local repos). `Outbound` limits its egress |
 | Artifacts | binding `ARTIFACTS` | Hosts the base repo, every fork, and every bubble representative as real git remotes |
 
 ## Names
@@ -34,6 +34,10 @@ browser ──► yorkle Worker ──(service binding)──► blingo Worker �
   A bubble keeps its name when it absorbs another.
 - Fork `r-xxxxxxxx-f-yyyyyyyy` = an Artifacts repo forked from the base or a bubble representative.
 - Bubble id = the name of its **representative** fork (the fork that started it). The rep's repo holds the bubble's code, and only the bubble's own Box (`bubble-<id>`) ever writes it.
+- Branches: `main` is the code; everything (placement, patch series, CI heads, the code browser) reads it.
+  `env` is the **environment**: what agents installed in the container, as a tree rooted at `/`
+  (`usr/bin/jq`, `lib/apk/db/installed`, …). Forks copy every branch, so a fork of a bubble starts with
+  its rep's toolchains (see Agent).
 
 ## RepoDO tables
 
@@ -218,9 +222,23 @@ The repository list reads `GET /repos/:r/summary` (counts only), not the full st
 go to `$TASK/transcript.jsonl` and are stored in the Box's SQLite when it ends (lines over 256 KB become
 stubs). `GET /agents/:id/transcript` serves them, live from the container while it runs.
 
-**Agent.** `RepoDO.schedule` forks and calls `Box.startAgent`: clone (recording the commit it
+**Agent.** `RepoDO.schedule` forks and calls `Box.startAgent`: clone `main` (recording the commit it
 starts from), `claude --print …`, commit, push to its own fork, all detached in the container. The
-Box alarm checks every 30 s. When it's done, the same container takes the patch series (`PATCH_SH`)
+Box alarm checks every 30 s.
+
+**Environment** (`ENV_*_SH` in `git-scripts.ts`). Before an agent, fixer or CI job starts, its Box
+mounts the fork's `env` branch at `/mnt/env` with [ArtifactFS](https://github.com/cloudflare/artifact-fs)
+(`ENV_MOUNT_SH`): a blobless clone into `/afs/env.git`, with each file's content fetched when it's first
+read, so a big toolchain costs nothing until it's used. The job runs in its own mount namespace
+(`BG_SH`), where `bin etc home lib opt root sbin srv usr var` each become an overlay: the image, the
+env over it, the job's writes in `/ovl/<dir>/u` (`ENV_OVERLAY_SH`). The ArtifactFS daemon stays outside
+that namespace: its own git, under `/usr`, would otherwise wait on the mount it serves. After an
+agent's run, `ENV_SAVE_SH` turns the upper dirs into a new `env` commit on the old one (files and
+symlinks added, whiteouts and what a replaced dir hid removed; Claude Code's state, caches and the
+container's `/etc/hosts`-style mounts left out). The alarm pushes it after `main` (`ENV_PUSH_SH`; never a
+thin pack, which would read unfetched blobs). Files over Artifacts' 32 MB limit are stored as
+`<path>.blingo-part-NNN` and joined at mount. A fork with no `env` starts one; a failed mount, save or
+push only means later agents reinstall. Superagents, bubble Boxes and the git Box clone `main` only. When it's done, the same container takes the patch series (`PATCH_SH`)
 and calls `RepoDO.submit`: with CI off that places it; with CI on the fork becomes loose and goes
 through CI. A failed first run deletes the fork. Then it reports to `RepoDO.agentDone`. A placed
 fork's repo is deleted unless it became a new bubble's rep.
@@ -276,6 +294,8 @@ any push; unlocking stays manual.
 
 ## Sandbox and secrets
 
+- The image (`backend/Dockerfile`) is Alpine (`node:24-alpine`), with Claude Code pinned and ArtifactFS
+  built from a pinned commit. A repository's CI command runs there too, so it uses `apk`, not `apt-get`.
 - Containers start with `enableInternet: false`; all HTTP(S) goes through `Outbound`. That allows
   `*.artifacts.cloudflare.net` (rules: `settings.ts` `egress`). Agent Boxes reach the internet (http
   too, for apt) and install what they need as root; their repository's model API gets the
@@ -305,3 +325,7 @@ Marked with `ponytail:` comments in the code.
 - The UI polls `GET /repos/:repo` (every 2.5 s on the map); the repository list fetches one summary per repo.
 - A commit's diff is against its first parent; line diffs are computed in the browser from both blobs.
 - No rate limit on login or signup; no password reset, invite expiry or repo sharing.
+- The environment follows forks only: a member placed into a bubble doesn't add its installs to the
+  rep's `env`, and a neighbour merge keeps the surviving rep's. `env` history only grows, toward the
+  1 GB repository limit (then it isn't pushed). Ownership, setuid bits and empty dirs aren't kept, nor
+  paths with tabs or newlines. An `env` built on an older image is still mounted after an image change.

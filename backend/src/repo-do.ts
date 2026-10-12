@@ -389,7 +389,7 @@ export class RepoDO extends DurableObject<Env> {
 			this.sql.exec("UPDATE task SET fork = ?, base_head = ? WHERE id = ?", fork, base, id);
 			this.sql.exec("INSERT INTO loose (fork, base, head, token, expires) VALUES (?, ?, ?, ?, ?)", fork, base, base, token.id, Date.parse(token.expiresAt));
 			await this.kick();
-			return { repo, task: id, fork, remote, token: token.plaintext, clone: `git clone ${authed} ${fork}`, push: `git push ${authed} HEAD:main` };
+			return { repo, task: id, fork, remote, token: token.plaintext, clone: `git clone --single-branch ${authed} ${fork}`, push: `git push ${authed} HEAD:main` };
 		} catch (e) {
 			this.sql.exec("UPDATE task SET status = 'open', fork = NULL WHERE id = ? AND status = 'in-progress'", id);
 			throw e;
@@ -547,7 +547,7 @@ export class RepoDO extends DurableObject<Env> {
 		try {
 			{
 				using rep = await this.env.ARTIFACTS.get(a);
-				await rep.fork(l, { defaultBranchOnly: true });
+				await rep.fork(l, { defaultBranchOnly: false });
 			}
 			const [ra, rb, rl] = await Promise.all([
 				authRemote(this.env, a, "write"),
@@ -1090,7 +1090,7 @@ export class RepoDO extends DurableObject<Env> {
 		const { url: authed, remote, token } = await authRemote(this.env, fork, "write", 3600);
 		this.sql.exec("UPDATE loose SET token = ?, expires = ? WHERE fork = ?", token.id, Date.parse(token.expiresAt), fork);
 		await this.kick();
-		return { repo: this.ctx.storage.kv.get<string>("repo"), fork, remote, token: token.plaintext, clone: `git clone ${authed} ${fork}`, push: `git push ${authed} HEAD:main` };
+		return { repo: this.ctx.storage.kv.get<string>("repo"), fork, remote, token: token.plaintext, clone: `git clone --single-branch ${authed} ${fork}`, push: `git push ${authed} HEAD:main` };
 	}
 
 	// Loose forks with a live token are polled for a push. Once a token expires, a fork with no push is

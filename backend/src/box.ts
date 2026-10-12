@@ -1,5 +1,5 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
-import { APPLY_SH, CONFLICT, ENSURE_REP, FERGE_SH, MEMORY_HOOK_SH, MERGES, MERGE_SH, NO_CONFLICT, PATCH_SH, PUSH_SH, REP, readSeries } from "./git-scripts";
+import { APPLY_SH, CONFLICT, ENSURE_REP, ENV_MOUNT_SH, ENV_OVERLAY_SH, ENV_PUSH_SH, ENV_SAVE_SH, FERGE_SH, MEMORY_HOOK_SH, MERGES, MERGE_SH, NO_CONFLICT, PATCH_SH, PUSH_SH, REP, readSeries } from "./git-scripts";
 import { MODEL_HOSTS, egress, type Provider } from "./settings";
 import type { Skill } from "./skills";
 import { retryNote, validatePlan } from "./tasks";
@@ -19,25 +19,30 @@ const CHECK_MS = 30_000;
 const CI_CHECK_MS = 10_000;
 
 // $1 remote, $2 prompt, $3 system prompt (memory items + how to leave notes), $4 Claude Code settings
-// (the memory hook). Runs Claude Code on a clone, its whole run as stream-json in $TASK/transcript.jsonl,
-// then commits. The Box pushes it to its own fork afterwards with a fresh token (a run can outlive the
-// clone's). The commit it started from goes in $TASK/base (empty for an
-// empty repo), for its patch series. Notes for future agents land in $TASK/memory, outside the repo.
+// (the memory hook). Runs Claude Code on a clone of main, over the fork's env (ENV_OVERLAY_SH), its
+// whole run as stream-json in $TASK/transcript.jsonl, then commits and saves the env (ENV_SAVE_SH; a
+// failed save only means the next agent reinstalls). The Box pushes both to its own fork afterwards
+// with a fresh token (a run can outlive the clone's). The commit it started from goes in $TASK/base
+// (empty for an empty repo), for its patch series. Notes for future agents land in $TASK/memory, outside the repo.
 const AGENT_SH = `set -e
-rm -rf /workspace/repo; git clone -q "$1" /workspace/repo; cd /workspace/repo
+${ENV_OVERLAY_SH}
+rm -rf /workspace/repo; git clone -q --single-branch "$1" /workspace/repo; cd /workspace/repo
 git rev-parse -q --verify HEAD >${TASK}/base || true
 claude --print --dangerously-skip-permissions --no-session-persistence --output-format stream-json --verbose --settings "$4" --model "$MODEL" --append-system-prompt "$3" -- "$2" >${TASK}/transcript.jsonl
 git add -A
-git commit -qm "$2" || true`;
+git commit -qm "$2" || true
+(${ENV_SAVE_SH}) || echo "blingo: env not saved" >&2`;
 
 // Superagent: same args, but a read-only clone and nothing is pushed; its plan is $TASK/tasks.json.
 const SUPER_SH = `set -e
-rm -rf /workspace/repo; git clone -q "$1" /workspace/repo; cd /workspace/repo
+rm -rf /workspace/repo; git clone -q --single-branch "$1" /workspace/repo; cd /workspace/repo
 claude --print --dangerously-skip-permissions --no-session-persistence --output-format stream-json --verbose --settings "$4" --model "$MODEL" --append-system-prompt "$3" -- "$2" >${TASK}/transcript.jsonl`;
 
 // CI: $1 fork remote (read), $2 the commit to check, $3 the repository's CI command. Exit = its exit.
+// It runs over the fork's env, so the agent's toolchain is there; nothing is saved.
 const CI_SH = `set -e
-rm -rf /workspace/repo; git clone -q "$1" /workspace/repo; cd /workspace/repo
+${ENV_OVERLAY_SH}
+rm -rf /workspace/repo; git clone -q --single-branch "$1" /workspace/repo; cd /workspace/repo
 git checkout -q --detach "$2"
 set +e; bash -c "$3"`;
 
@@ -54,7 +59,7 @@ for (const s of JSON.parse(fs.readFileSync(0, "utf8")))
 const NOTES = `To leave a note for every future agent on this repository, append it as one line to ${TASK}/memory.
 Only note durable, repository-wide facts (conventions, gotchas, decisions), not progress on your own task.
 
-You have internet access and run as root in a disposable Debian container: install whatever tools you need (apt-get, npm, pip, curl ...).`;
+You have internet access and run as root in a disposable Alpine Linux container: install whatever tools you need (apk add, npm, pip, curl ...). What you install is kept for the agents that build on your work.`;
 
 // ponytail: every memory item goes into every prompt; select or summarize them if the list grows long.
 function systemPrompt(kind: AgentJob["kind"], memory: string[], skills: Skill[]) {
@@ -83,7 +88,8 @@ const AGENT_SETTINGS = JSON.stringify({ hooks: { PostToolBatch: [{ hooks: [{ typ
 const MAX_LINE = 256_000;
 
 // Detach from the exec so the task outlives the request; exit code lands atomically in $TASK/exit.
-const BG_SH = `setsid bash -c "$0" agent "$@" >${TASK}/log 2>&1; echo $? >${TASK}/exit.tmp && mv ${TASK}/exit.tmp ${TASK}/exit`;
+// In its own mount namespace: the env's overlays are only the job's (see ENV_OVERLAY_SH).
+const BG_SH = `setsid unshare -m --propagation private bash -c "$0" agent "$@" >${TASK}/log 2>&1; echo $? >${TASK}/exit.tmp && mv ${TASK}/exit.tmp ${TASK}/exit`;
 
 export type Run = { exitCode: number; stdout: string; stderr: string };
 // kind "superagent": `fork` is only the run's id (no fork exists) and `remote` is read-only.
@@ -108,13 +114,13 @@ export type CiJob = { repo: string; fork: string; head: string; remote: string; 
 
 export async function headOf(env: Env, name: string) {
 	using repo = await env.ARTIFACTS.get(name);
-	return (await repo.log({ limit: 1 }))[0]?.hash ?? "";
+	return (await repo.log({ ref: "main", limit: 1 }))[0]?.hash ?? "";
 }
 
 export async function forkRepo(env: Env, from: string, repo: string) {
 	const name = `${repo}-f-${crypto.randomUUID().slice(0, 8)}`;
 	using src = await env.ARTIFACTS.get(from);
-	await src.fork(name, { defaultBranchOnly: true });
+	await src.fork(name, { defaultBranchOnly: false }); // main and env: the code and its toolchains
 	return name;
 }
 
@@ -299,6 +305,7 @@ export class Box extends DurableObject<Env> {
 		// Only the chosen skills: nothing else is in the user skills folder.
 		await this.sh(`rm -rf ~/.claude/skills`);
 		if (job.kind !== "superagent" && job.skills?.length) await this.sh(UNPACK_SKILLS, [], { stdin: JSON.stringify(job.skills) });
+		if (job.kind !== "superagent") await this.mountEnv(job.remote);
 		// A superagent given "build X" tends to just build it: say again, in the prompt itself, that it only plans.
 		let prompt =
 			job.kind === "superagent"
@@ -348,6 +355,7 @@ export class Box extends DurableObject<Env> {
 		this.ctx.storage.kv.put("ci", { ...job, remote: "" }); // read by start(); don't persist the token
 		await this.start();
 		await this.sh(`rm -rf ${TASK} && mkdir -p ${TASK}`);
+		await this.mountEnv(job.remote);
 		await this.container.exec(["bash", "-c", BG_SH, CI_SH, job.remote, job.head, job.command], {
 			cwd: "/workspace",
 			env: { ...TRUST, ...GIT_ID },
@@ -356,6 +364,12 @@ export class Box extends DurableObject<Env> {
 		});
 		this.ctx.storage.kv.put("status", "running");
 		await this.ctx.storage.setAlarm(Date.now() + CI_CHECK_MS);
+	}
+
+	// The fork's env, mounted for the job (ENV_MOUNT_SH). Without it the job still runs, from the bare image.
+	private async mountEnv(remote: string) {
+		const r = await this.sh(ENV_MOUNT_SH, [remote]);
+		if (r.exitCode !== 0) console.error(`env not mounted (${r.exitCode}): ${r.stderr.slice(-2000)}`);
 	}
 
 	// New memory items for the running agent: its memory hook passes them to the model (MEMORY_HOOK_SH).
@@ -437,7 +451,7 @@ export class Box extends DurableObject<Env> {
 			return;
 		}
 		const result = await this.saveTranscript();
-		const log = [(await this.sh(`tail -c 4000 ${TASK}/log`)).stdout.trim(), result.slice(-4000)].filter(Boolean).join("\n\n");
+		let log = [(await this.sh(`tail -c 4000 ${TASK}/log`)).stdout.trim(), result.slice(-4000)].filter(Boolean).join("\n\n");
 		if (exit.stdout.trim() !== "0") return this.finish(job, "failed", log);
 		// Claude finished but its change didn't make it in: the reason is shown with the run.
 		const unsubmitted = (reason: string) => this.finish(job, "failed", `${log}\n${reason}`, reason);
@@ -457,6 +471,8 @@ export class Box extends DurableObject<Env> {
 			const { url } = await authRemote(this.env, job.fork, "write");
 			const push = await this.sh(`cd /workspace/repo && git push -q "$1" HEAD:refs/heads/main`, [url]);
 			if (push.exitCode !== 0) return unsubmitted(`couldn't push its commit: ${push.stderr.trim().split("\n").at(-1) || `exit ${push.exitCode}`}`);
+			const env = await this.sh(ENV_PUSH_SH, [url]);
+			if (env.exitCode !== 0) log += `\nenv not pushed (agents building on this reinstall what it installed): ${env.stderr.trim().split("\n").at(-1) || `exit ${env.exitCode}`}`;
 			const base = (await this.sh(`cat ${TASK}/base 2>/dev/null || true`)).stdout.trim();
 			const p = await this.sh(PATCH_SH, ["/workspace/repo", base]);
 			if (p.exitCode === MERGES) return unsubmitted("not placed: its history has merge commits");
