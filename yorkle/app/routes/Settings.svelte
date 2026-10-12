@@ -265,9 +265,9 @@
 				<section>
 					<h2>Conflicts</h2>
 					<label class="check"><input type="checkbox" bind:checked={form.autoFerge} aria-describedby="ferge-hint" /> Ferge conflicting bubbles automatically</label>
-					<p class="hint" id="ferge-hint">When the merge loop is idle it ferges the oldest conflicting pair, one per pass: the two merge without the files they conflict on, and a new locked bubble holds those files until someone fixes and unlocks it.</p>
+					<p class="hint" id="ferge-hint">The merge loop ferges conflicting pairs alongside its neighbour merges, oldest first: the two merge without the files they conflict on, and a new locked bubble holds those files until someone fixes and unlocks it.</p>
 					<label class="check"><input type="checkbox" bind:checked={form.fergeAgents} aria-describedby="ferge-agents-hint" /> After a ferge, start an agent to resolve its conflicts</label>
-					<p class="hint" id="ferge-agents-hint">The agent works on a fork of the locked bubble with the Ferge agents model. The bubble unlocks itself once the agent's fix lands in it. While it works, the conflicts are its alone.</p>
+					<p class="hint" id="ferge-agents-hint">The agent works on a fork of the locked bubble with the Ferge agents model. The bubble unlocks itself once the agent's fix lands in it. While it works, the conflicts are its alone. With both on, conflicts don't show under "Needs you"; a ferge whose agent failed does.</p>
 				</section>
 
 				<section>

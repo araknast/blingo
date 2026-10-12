@@ -66,6 +66,20 @@ test("the repository's setup, a failed deployment and new notes from agents need
 	expect(pages(d)).toEqual(["d:3"]); // new notes are news (a grey badge), not something to act on
 });
 
+test("with auto-ferge and ferge agents, conflicts aren't a person's, but a ferge whose agent failed is", () => {
+	const d: RepoState = structuredClone(demoSteps[4]);
+	expect(needs(d).some((n) => n.kind === "conflict")).toBe(true);
+	d.settings.autoFerge = true;
+	expect(needs(d).some((n) => n.kind === "conflict")).toBe(true); // markers still need fixing by hand
+	d.settings.fergeAgents = true;
+	expect(needs(d).some((n) => n.kind === "conflict")).toBe(false);
+	d.bubbles[1].ferge = d.bubbles[1].locked = true;
+	d.tasks = [{ id: "t1", title: "x", description: "", kind: "agent", status: "in-progress", bubble: d.bubbles[1].id, fork: null, deps: [], explanation: null, superagent: null, created: 0, finished: 0, ready: true, skills: null, role: "ferge" }];
+	expect(needs(d).some((n) => n.kind === "ferge")).toBe(false);
+	d.tasks[0].status = "failed";
+	expect(needs(d).find((n) => n.kind === "ferge")).toMatchObject({ bubble: d.bubbles[1].id });
+});
+
 test("every item belongs to a tab, and an open ferge waits on the bubbles tab", () => {
 	const d: RepoState = structuredClone(demoSteps[4]);
 	d.bubbles[1].ferge = d.bubbles[1].locked = true;

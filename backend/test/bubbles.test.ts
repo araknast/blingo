@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { conflictKey, distance, fergeCandidate, nearestNeighbour, placeFork, renameConflicts, type Bubble, type Table } from "../src/bubbles";
+import { conflictKey, distance, fergeCandidate, nearestNeighbour, pickPairs, placeFork, renameConflicts, type Bubble, type Table } from "../src/bubbles";
 
 test("auto-ferge picks a conflicting pair whose bubbles are visible, unlocked and idle, older first", () => {
 	const h = (id: string, o: Partial<Bubble> = {}): Bubble => ({ id, files: new Set(), visible: true, ...o });
@@ -80,6 +80,23 @@ test("nearest neighbour: min distance, skips conflicts and invisible bubbles", (
 	expect(nearestNeighbour("a", hs, new Set([conflictKey("c", "a")]))).toBe("b");
 	expect(nearestNeighbour("a", hs, new Set([conflictKey("a", "b"), conflictKey("a", "c")]))).toBeNull();
 	expect(nearestNeighbour("a", [h("a", ["x"]), h("q", ["y"])], new Set())).toBe("q"); // distance 0 counts
+});
+
+test("parallel merges: disjoint pairs, oldest first, within the cap", () => {
+	const hs = [h("a", ["x"]), h("b", ["x"]), h("c", ["y"]), h("d", ["y"]), h("e", ["z"])];
+	// a takes its nearest (c, distance 0); b then takes d; e is left with nobody.
+	expect(pickPairs(hs, new Set(), 12)).toEqual([["a", "c"], ["b", "d"]]);
+	const ids = pickPairs(hs, new Set(), 12).flat();
+	expect(new Set(ids).size).toBe(ids.length); // no bubble twice
+	expect(pickPairs(hs, new Set(), 1)).toEqual([["a", "c"]]);
+	expect(pickPairs(hs, new Set(), 0)).toEqual([]);
+});
+
+test("parallel merges skip invisible, locked and conflicting bubbles", () => {
+	const locked = { ...h("l", []), locked: true };
+	const hs = [h("a", ["x"]), h("hid", [], false), locked, h("b", ["x"]), h("c", ["x"])];
+	expect(pickPairs(hs, new Set([conflictKey("a", "b")]), 12)).toEqual([["a", "c"]]);
+	expect(pickPairs([h("a", []), h("b", [])], new Set([conflictKey("a", "b")]), 12)).toEqual([]);
 });
 
 test("locked bubbles stay placeable but never get picked as neighbours", () => {

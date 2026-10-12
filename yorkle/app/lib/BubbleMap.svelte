@@ -2,7 +2,7 @@
 	import { forceCollide, forceLink, forceManyBody, forceSimulation, forceX, forceY, type SimulationNodeDatum } from "d3-force";
 	import { onDestroy, untrack } from "svelte";
 	import { fade } from "svelte/transition";
-	import { docked, needs, type Docked, type Need } from "./attention";
+	import { autoResolves, docked, needs, type Docked, type Need } from "./attention";
 	import Glyph from "./Glyph.svelte";
 	import Mark from "./Mark.svelte";
 	import { MAX_DOTS, dotOffset, edge, fileCount, hash, orderMembers, radius } from "./layout";
@@ -69,15 +69,19 @@
 	let flyKey = 0;
 
 	const need = $derived(data ? needs(data) : []);
+	// Conflicts the merge loop resolves itself: drawn as a plain line with nothing to click.
+	const quiet = $derived(!!data && autoResolves(data));
 	const dock = $derived(data ? docked(data, need) : []);
 	// Bubbles in a conflict or holding a series that didn't apply: drawn with a halo and drift to the top.
 	const hot = $derived(new Set(need.flatMap((n) => (n.kind === "conflict" ? [n.a, n.b] : n.kind === "member" ? [n.bubble] : []))));
 
 	const sim = forceSimulation<Node>([])
-		.force("collide", forceCollide<Node>((n) => n.r + 36).strength(1))
+		.force("collide", forceCollide<Node>((n) => n.r + 36).strength(1).iterations(3))
 		.force("charge", forceManyBody<Node>().strength(-40))
 		.force("x", forceX<Node>(0).strength(0.03))
 		.alphaDecay(0.035)
+		// Damped, so bubbles settle instead of overshooting when several arrive at once.
+		.velocityDecay(0.55)
 		.on("tick", draw);
 	onDestroy(() => sim.stop());
 
@@ -159,6 +163,7 @@
 
 	// Merge new API state into the running simulation; nodes keep their place between polls.
 	let lastDock = new Map<string, string>();
+	let linkSig = "";
 	function apply(d: RepoState) {
 		const before = new Map<string, Pt & { bubble: string | null }>();
 		for (const n of nodes.values())
@@ -170,19 +175,21 @@
 		const animate = fitted && !reduced;
 		const t0 = performance.now();
 		const newFlyers: Flyer[] = [];
+		// Bubbles coming or going, or conflicts changing, reshape the layout; a bubble growing only nudges it.
 		let changed = false;
+		let grew = false;
 		const seen = new Set<string>();
 		for (const b of d.bubbles) {
 			seen.add(b.id);
 			const r = radius(b);
 			let n = nodes.get(b.id);
 			if (!n) {
-				const at = before.get(b.id) ?? spiral(nodes.size);
+				const at = before.get(b.id) ?? beside(b.parent, r) ?? spiral(nodes.size);
 				n = { id: b.id, x: at.x, y: at.y, r, b, members: [], files: 0, film: hash(b.id) % 4 };
 				nodes.set(b.id, n);
 				changed = true;
 			}
-			if (Math.abs(n.r - r) > 0.5) changed = true;
+			if (Math.abs(n.r - r) > 0.5) grew = true;
 			const old = new Set(n.members.map((m) => m.name));
 			n.r = r;
 			n.b = b;
@@ -201,9 +208,15 @@
 
 		links = d.conflicts.filter(([a, b]) => nodes.has(a) && nodes.has(b));
 		merges = (d.merging ?? []).filter(([a, b]) => nodes.has(a) && nodes.has(b));
-		const up = new Set([...links.flat(), ...d.bubbles.filter((b) => b.members.some((m) => m.status === "failed")).map((b) => b.id)]);
+		const sig = links.map((l) => l.join("|")).join(",");
+		if (sig !== linkSig) ((linkSig = sig), (changed = true));
+		// Conflicts the merge loop resolves itself don't rise to the top; ones a person must ferge do.
+		const up = new Set([...(autoResolves(d) ? [] : links.flat()), ...d.bubbles.filter((b) => b.members.some((m) => m.status === "failed")).map((b) => b.id)]);
 		sim.nodes([...nodes.values()]);
-		sim.force("y", forceY<Node>((n) => (up.has(n.id) ? -260 : 0)).strength((n) => (up.has(n.id) ? 0.1 : 0.07)));
+		// The centring pull suits dozens of bubbles; with hundreds it would crush them together.
+		const pull = Math.min(1, Math.sqrt(40 / Math.max(nodes.size, 1)));
+		sim.force("x", forceX<Node>(0).strength(0.03 * pull));
+		sim.force("y", forceY<Node>((n) => (up.has(n.id) ? -260 : 0)).strength((n) => (up.has(n.id) ? 0.1 : 0.07) * pull));
 		sim.force(
 			"link",
 			forceLink<Node, { source: string | Node; target: string | Node }>(links.map(([a, b]) => ({ source: a, target: b })))
@@ -215,7 +228,8 @@
 			sim.stop();
 			for (let i = 0; i < 300; i++) sim.tick();
 			draw();
-		} else if (changed) sim.alpha(fitted ? 0.5 : 1).restart();
+		} else if (changed) sim.alpha(Math.max(sim.alpha(), fitted ? 0.3 : 1)).restart();
+		else if (grew) sim.alpha(Math.max(sim.alpha(), 0.05)).restart();
 		else draw();
 
 		if (newFlyers.length) {
@@ -226,6 +240,14 @@
 
 	// Where a new bubble starts: a sunflower spiral around the map's current centre, so new bubbles spread
 	// out evenly instead of piling up where the simulation would push them.
+	// Where a bubble that split off another starts: just outside that one, so it doesn't drift in from afar.
+	function beside(parent: string | null | undefined, r: number): Pt | null {
+		const p = parent ? nodes.get(parent) : undefined;
+		if (!p) return null;
+		const a = hash(parent! + nodes.size) % 360 * (Math.PI / 180), d = p.r + r + 40;
+		return { x: p.x! + Math.cos(a) * d, y: p.y! + Math.sin(a) * d };
+	}
+
 	function spiral(i: number): Pt {
 		const ns = [...nodes.values()];
 		const c = ns.length ? { x: ns.reduce((s, n) => s + n.x!, 0) / ns.length, y: ns.reduce((s, n) => s + n.y!, 0) / ns.length } : { x: 0, y: 0 };
@@ -554,13 +576,20 @@
 				</g>
 			{/each}
 
-			<!-- Conflicts above bubbles, and the same size on screen at any zoom. -->
+			<!-- Conflicts above bubbles, and the same size on screen at any zoom. When the merge loop resolves
+			     them itself (auto-ferge and ferge agents), just the line: there's nothing to click. -->
 			{#each links as [a, b] (a + "|" + b)}
 				{@const na = byId.get(a)}
 				{@const nb = byId.get(b)}
 				{#if na && nb}
 					{@const p = edge(na.x!, na.y!, na.r + 6, nb.x!, nb.y!)}
 					{@const q = edge(nb.x!, nb.y!, nb.r + 6, na.x!, na.y!)}
+					{#if quiet}
+						<g class="conflict quiet" transition:fade={{ duration: 300 }}>
+							<title>{nameOf(na)} and {nameOf(nb)} conflict; auto-ferge will resolve them</title>
+							<line class="dash" x1={p.x} y1={p.y} x2={q.x} y2={q.y} />
+						</g>
+					{:else}
 					<g
 						class="conflict"
 						class:lit={spot?.includes(a) && spot?.includes(b)}
@@ -578,6 +607,7 @@
 							<path class="bang" d="M 0 -5.5 V 1.5 M 0 4.6 V 5" />
 						</g>
 					</g>
+					{/if}
 				{/if}
 			{/each}
 
@@ -628,7 +658,7 @@
 					<p class="key-head">Bubbles</p>
 					<ul>
 						<li><svg class="mark" width="22" height="14" viewBox="0 0 22 14" aria-hidden="true"><line class="k-merging" x1="1" y1="7" x2="21" y2="7" /></svg>Merging with each other</li>
-						<li><svg class="mark" width="22" height="14" viewBox="0 0 22 14" aria-hidden="true"><line class="k-conflict" x1="1" y1="7" x2="21" y2="7" /></svg>Conflict: open it to ferge</li>
+						<li><svg class="mark" width="22" height="14" viewBox="0 0 22 14" aria-hidden="true"><line class="k-conflict" x1="1" y1="7" x2="21" y2="7" /></svg>{quiet ? "Conflict: waiting for auto-ferge" : "Conflict: open it to ferge"}</li>
 						<li><svg class="mark badge" width="14" height="14" viewBox="-7 -7 14 14" aria-hidden="true">{@render lockIcon()}</svg>Locked</li>
 						<li><svg class="mark badge ferge-badge" width="14" height="14" viewBox="-7 -7 14 14" aria-hidden="true">{@render fergeIcon()}</svg>Ferge</li>
 					</ul>
@@ -842,6 +872,7 @@
 	.needs text.sub { fill: var(--conflict); font-weight: 600; }
 
 	.conflict { cursor: pointer; outline: none; }
+	.conflict.quiet { cursor: inherit; }
 	.conflict .hit { stroke: transparent; stroke-width: 22; vector-effect: non-scaling-stroke; }
 	.conflict .dash { stroke: var(--conflict); stroke-width: 2.5; stroke-dasharray: 7 5; vector-effect: non-scaling-stroke; }
 	.conflict rect { fill: var(--conflict); stroke: var(--paper); stroke-width: 2; }

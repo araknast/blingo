@@ -6,8 +6,9 @@ export type Me = { username: string; admin: boolean; repos: string[]; names?: Re
 // pending = its patch series is queued in the bubble; failed = the series didn't apply.
 export type MemberStatus = "rep" | "pending" | "merged" | "conflict" | "failed";
 export type Member = { name: string; bubble: string; status: MemberStatus; files: string[] };
-// `ferge`: the locked bubble a ferge made, holding the conflicting files.
-export type Bubble = { id: string; name: string; visible: number | boolean; locked: boolean; ferge: boolean; members: Member[] };
+// `ferge`: the locked bubble a ferge made, holding the conflicting files. `parent`: the bubble it split off
+// from, if known.
+export type Bubble = { id: string; name: string; visible: number | boolean; locked: boolean; ferge: boolean; members: Member[]; parent?: string | null };
 // kind "notagent": a person's fork, shown as a run (util.ts notagentRuns); its page is the fork's.
 export type AgentRun = { fork: string; prompt: string; started: number; status: string; finished: number | null; log: string | null; kind?: "notagent" };
 export type TaskStatus = "awaiting-approval" | "open" | "in-progress" | "completed" | "failed";

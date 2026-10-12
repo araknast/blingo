@@ -3,7 +3,7 @@ import { authRemote, forkRepo, headOf } from "./box";
 import { getAgentByName } from "agents";
 import { COMMIT_FILES_SH, MERGES, PATCH_SH, UNBASED, readSeries } from "./git-scripts";
 import { splitParts } from "./git";
-import { conflictKey, fergeCandidate, nearestNeighbour, placeFork, renameConflicts, type Basis, type Bubble } from "./bubbles";
+import { conflictKey, fergeCandidate, pickPairs, placeFork, renameConflicts, type Basis, type Bubble } from "./bubbles";
 import { fergeName, friendlyName, nameText, type Name } from "./names";
 import { NO_KEY, deployHeaders, deployKey, deployValues, gate, readSettings, updateWithKeys, type Provider, type Role, type Settings } from "./settings";
 import { resolveSkills, type Skill } from "./skills";
@@ -14,6 +14,8 @@ const NO_LONGER_CONFLICT = "those bubbles no longer conflict";
 // A merge or ferge hides its bubbles for seconds. Longer than the alarm's own wall-clock limit means
 // the operation died (cancelled alarm, reset, deploy) without un-hiding them.
 const HIDE_LEASE_MS = 15 * 60_000;
+// Neighbour merges and ferges an alarm runs at once, each in its own bubble's Box.
+const MAX_MERGES = 12;
 // A fork's patch series is kept in SQLite in parts (rows are at most 2 MB): `fork.diff` holds the first
 // part and `fork_part` the rest. It crosses DO RPC whole (32 MiB a message), hence the cap.
 // ponytail: store series in R2 if forks get bigger than this.
@@ -73,7 +75,7 @@ export type NewTask = Omit<PlanItem, "key"> & { key?: string; bubble?: string | 
 
 // One per blingo repository: placement, the bubbles' patch queues and bubble merges. Each bubble's rep
 // is written only by that bubble's own Box (see Box.rep), which applies its queue and runs its merges.
-// ponytail: one neighbour merge at a time per repo (alarm is single-flight); disjoint pairs could run in parallel.
+// ponytail: at most MAX_MERGES neighbour merges and ferges per alarm; raise it if Box concurrency allows.
 export class RepoDO extends DurableObject<Env> {
 	private sql = this.ctx.storage.sql;
 	// Placement attempts in a row that failed with an error (checkLoose). ponytail: in memory, so a
@@ -136,6 +138,9 @@ export class RepoDO extends DurableObject<Env> {
 			this.sql.exec("UPDATE bubble SET name = ?, adj = ?, noun = ? WHERE id = ?", nameText(n), n.adj, n.noun, r.id);
 			this.ctx.storage.kv.put("namedFirst", true);
 		}
+		// The bubble a bubble split off from (a new bubble's basis, a ferge bubble's a), so the map can start
+		// it beside that one. NULL for older bubbles and ones from the base repository.
+		this.addColumn("bubble", "parent", "TEXT");
 		this.addColumn("task", "role", "TEXT");
 		this.addColumn("task", "model", "TEXT");
 		this.addColumn("task", "skills", "TEXT"); // JSON list of the skills its agent loads (NULL = all)
@@ -270,11 +275,12 @@ export class RepoDO extends DurableObject<Env> {
 		if (target === "new") {
 			const n = this.newBubbleName();
 			this.sql.exec(
-				"INSERT INTO bubble (id, visible, seq, name, adj, noun) VALUES (?, 1, (SELECT COALESCE(MAX(seq), 0) + 1 FROM bubble), ?, ?, ?)",
+				"INSERT INTO bubble (id, visible, seq, name, adj, noun, parent) VALUES (?, 1, (SELECT COALESCE(MAX(seq), 0) + 1 FROM bubble), ?, ?, ?, ?)",
 				fork,
 				nameText(n),
 				n.adj,
 				n.noun,
+				b?.bubble ? this.resolve(b.bubble) : null,
 			);
 			this.sql.exec(
 				"INSERT INTO fork (name, bubble, status, files, diff, seq) VALUES (?, ?, 'rep', ?, ?, ?)",
@@ -585,10 +591,11 @@ export class RepoDO extends DurableObject<Env> {
 			this.sql.exec("UPDATE fork SET status = 'merged', seq = ? WHERE name = ?", this.nextSeq(), b);
 			this.sql.exec("DELETE FROM conflict WHERE k = ?", conflictKey(a, b));
 			this.sql.exec(
-				"INSERT INTO bubble (id, visible, seq, ferge, name, adj, noun) VALUES (?, 1, (SELECT COALESCE(MAX(seq), 0) + 1 FROM bubble), 1, ?, '', ?)",
+				"INSERT INTO bubble (id, visible, seq, ferge, name, adj, noun, parent) VALUES (?, 1, (SELECT COALESCE(MAX(seq), 0) + 1 FROM bubble), 1, ?, '', ?, ?)",
 				l,
 				name,
 				name,
+				a,
 			);
 			this.sql.exec("INSERT INTO fork (name, bubble, status, files, seq) VALUES (?, ?, 'rep', ?, ?)", l, l, JSON.stringify(r.tree), this.nextSeq());
 			this.sql.exec("INSERT INTO locked (id) VALUES (?)", l);
@@ -674,7 +681,8 @@ export class RepoDO extends DurableObject<Env> {
 			"SELECT COUNT(*) AS n FROM deploy d WHERE status = 'failed' AND started = (SELECT MAX(started) FROM deploy WHERE name = d.name)",
 		);
 		return (
-			n("SELECT COUNT(*) AS n FROM conflict") +
+			// With auto-ferge and ferge agents, conflicts are the merge loop's; a ferge agent that failed is counted below.
+			(s.autoFerge && s.fergeAgents ? 0 : n("SELECT COUNT(*) AS n FROM conflict")) +
 			loose +
 			n("SELECT COUNT(*) AS n FROM task WHERE status IN ('failed', 'awaiting-approval')") +
 			n("SELECT COUNT(*) AS n FROM fork WHERE status = 'failed' AND bubble IN (SELECT id FROM bubble)") +
@@ -687,12 +695,15 @@ export class RepoDO extends DurableObject<Env> {
 	list() {
 		const forks = this.sql.exec<Fork>("SELECT name, bubble, status, files FROM fork").toArray();
 		const startable = this.startable();
-		const names = new Map(this.sql.exec<{ id: string; name: string }>("SELECT id, name FROM bubble").toArray().map((r) => [r.id, r.name]));
+		const rows = new Map(
+			this.sql.exec<{ id: string; name: string; parent: string | null }>("SELECT id, name, parent FROM bubble").toArray().map((r) => [r.id, r]),
+		);
 		return {
 			name: this.ctx.storage.kv.get<string>("name") ?? null,
 			bubbles: this.bubbles().map((h) => ({
 				id: h.id,
-				name: names.get(h.id) ?? "",
+				name: rows.get(h.id)?.name ?? "",
+				parent: rows.get(h.id)?.parent ?? null,
 				ferge: !!h.ferge,
 				visible: h.visible,
 				locked: !!h.locked,
@@ -810,8 +821,8 @@ export class RepoDO extends DurableObject<Env> {
 	// ---- the bubbles' queues and merges ----
 
 	// Placement, applying queues and neighbour merges run together: placement never picks a hidden
-	// bubble, a queue only grows by placement, and a neighbour merge only takes bubbles with empty
-	// queues and hides them before its first await.
+	// bubble, a queue only grows by placement, and neighbour merges and ferges only take bubbles with
+	// empty queues and hide them before their first await, each pair disjoint from the others.
 	async alarm(): Promise<void> {
 		this.recoverHidden();
 		this.reapDeploys();
@@ -1219,45 +1230,62 @@ export class RepoDO extends DurableObject<Env> {
 		return queued.length > 0;
 	}
 
-	// One neighbour merge: a visible bubble with an empty queue and its nearest such neighbour (distance
-	// 0 first). Both are hidden; the neighbour's rep is merged into this rep by this bubble's Box. On
-	// success the sets join; on conflict the pair is recorded. Returns whether a merge was attempted.
+	// Neighbour merges, up to MAX_MERGES at once: disjoint pairs of visible bubbles with empty queues, each
+	// with its nearest neighbour (distance 0 first), all hidden before the first await. With the setting
+	// autoFerge, conflicting pairs are ferged in the slots left over. Each merge runs in its own bubble's
+	// Box. Returns whether anything was attempted.
 	private async mergeStep(): Promise<boolean> {
 		const busy = this.busy();
-		const free = this.bubbles().filter((h) => !busy.has(h.id));
 		const conflicts = new Set(this.sql.exec<{ k: string }>("SELECT k FROM conflict").toArray().map((r) => r.k));
-		for (const h of free.filter((h) => h.visible)) {
-			const nb = nearestNeighbour(h.id, free, conflicts);
-			if (!nb) continue;
-			this.hide(h.id, nb); // both invisible to placement while the merge runs
-			try {
-				const [rep, src] = await Promise.all([authRemote(this.env, h.id, "write"), authRemote(this.env, nb, "read")]);
-				const r = await this.bubbleBox(h.id).mergeFrom(rep.url, src.url, "merge bubble");
-				if (r.ok) {
-					this.absorb(h.id, nb);
-					this.sql.exec("UPDATE fork SET status = 'merged', seq = ? WHERE name = ?", this.nextSeq(), nb);
-					this.putDiff(nb, r.diff);
-					await this.env.ARTIFACTS.delete(nb);
-					await this.bubbleBox(nb).stop();
-				} else {
-					this.sql.exec("INSERT OR IGNORE INTO conflict (k) VALUES (?)", conflictKey(h.id, nb));
-				}
-			} finally {
-				this.show(h.id, nb);
+		const pairs = pickPairs(
+			this.bubbles().filter((h) => !busy.has(h.id)),
+			conflicts,
+			MAX_MERGES,
+		);
+		for (const [h, nb] of pairs) this.hide(h, nb); // invisible to placement and to the ferges below
+		const ops = pairs.map(([h, nb]) => this.mergePair(h, nb));
+		const repo = this.ctx.storage.kv.get<string>("repo");
+		if (repo && this.settings().autoFerge) {
+			const left = new Set(conflicts);
+			while (ops.length < MAX_MERGES) {
+				// Re-read: each ferge hides its pair before its first await, so the next pick skips it.
+				const pair = fergeCandidate([...left], this.bubbles(), busy);
+				if (!pair) break;
+				left.delete(conflictKey(...pair));
+				ops.push(this.autoFerge(repo, pair));
 			}
-			return true;
 		}
-		return this.autoFerge(conflicts, busy);
+		const done = await Promise.allSettled(ops);
+		const failed = done.find((r) => r.status === "rejected");
+		if (failed) throw (failed as PromiseRejectedResult).reason;
+		return done.some((r) => r.status === "fulfilled" && r.value);
 	}
 
-	// With the setting autoFerge: no neighbour merge to do, so ferge one conflicting pair that can be
-	// (both visible, unlocked, nothing queued). A pair that no longer conflicts loses its conflict
-	// record, so the loop merges it normally instead of trying again. Returns whether it did either.
-	private async autoFerge(conflicts: Set<string>, busy: Set<string>): Promise<boolean> {
-		const repo = this.ctx.storage.kv.get<string>("repo");
-		const pair = repo && this.settings().autoFerge ? fergeCandidate([...conflicts], this.bubbles(), busy) : null;
-		if (!pair) return false;
-		const r = await this.ferge(repo!, ...pair);
+	// One neighbour merge, its pair already hidden: the neighbour's rep is merged into this rep by this
+	// bubble's Box. On success the sets join; on conflict the pair is recorded.
+	private async mergePair(h: string, nb: string): Promise<boolean> {
+		try {
+			const [rep, src] = await Promise.all([authRemote(this.env, h, "write"), authRemote(this.env, nb, "read")]);
+			const r = await this.bubbleBox(h).mergeFrom(rep.url, src.url, "merge bubble");
+			if (r.ok) {
+				this.absorb(h, nb);
+				this.sql.exec("UPDATE fork SET status = 'merged', seq = ? WHERE name = ?", this.nextSeq(), nb);
+				this.putDiff(nb, r.diff);
+				await this.env.ARTIFACTS.delete(nb);
+				await this.bubbleBox(nb).stop();
+			} else {
+				this.sql.exec("INSERT OR IGNORE INTO conflict (k) VALUES (?)", conflictKey(h, nb));
+			}
+		} finally {
+			this.show(h, nb);
+		}
+		return true;
+	}
+
+	// One auto-ferge. A pair that no longer conflicts loses its conflict record, so the loop merges it
+	// normally instead of trying again. Returns whether it did either.
+	private async autoFerge(repo: string, pair: [string, string]): Promise<boolean> {
+		const r = await this.ferge(repo, ...pair);
 		if (!("error" in r)) return true;
 		console.error(`auto-ferge ${pair.join(" / ")}: ${r.error}`);
 		if (r.error !== NO_LONGER_CONFLICT) return false;
@@ -1274,6 +1302,7 @@ export class RepoDO extends DurableObject<Env> {
 		this.sql.exec("UPDATE bubble SET epoch = epoch + 1 WHERE id = ?", into);
 		this.sql.exec('UPDATE renamed SET "into" = ? WHERE "into" = ?', into, from);
 		this.sql.exec('INSERT OR REPLACE INTO renamed ("from", "into") VALUES (?, ?)', from, into);
+		this.sql.exec("UPDATE bubble SET parent = NULLIF(?, id) WHERE parent = ?", into, from);
 		// Its conflicts carry over, so they stay ferge-able and aren't rediscovered by a wasted merge.
 		const keys = this.sql.exec<{ k: string }>("SELECT k FROM conflict").toArray().map((r) => r.k);
 		this.sql.exec("DELETE FROM conflict");

@@ -66,6 +66,23 @@ export function fergeCandidate(conflicts: string[], bubbles: Bubble[], busy: Set
 	return null;
 }
 
+// Neighbour merges to run at once: oldest bubble first, each with its nearest neighbour among the bubbles
+// not taken yet, at most `max` pairs. No bubble is in two pairs, so no rep is written while it's read.
+// `bubbles` are the idle ones (nothing queued), oldest first.
+export function pickPairs(bubbles: Bubble[], conflicts: Set<string>, max: number): [string, string][] {
+	const pairs: [string, string][] = [];
+	let left = bubbles;
+	for (const h of bubbles) {
+		if (pairs.length >= max) break;
+		if (!h.visible || !left.includes(h)) continue;
+		const nb = nearestNeighbour(h.id, left, conflicts);
+		if (!nb) continue;
+		pairs.push([h.id, nb]);
+		left = left.filter((x) => x.id !== h.id && x.id !== nb);
+	}
+	return pairs;
+}
+
 // Nearest visible, unlocked, non-conflicting neighbour of `id` (ties → earliest), or null.
 export function nearestNeighbour(id: string, bubbles: Bubble[], conflicts: Set<string>): string | null {
 	const self = bubbles.find((h) => h.id === id);

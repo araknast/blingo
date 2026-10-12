@@ -20,7 +20,9 @@ const PROVIDER = { anthropic: "the Anthropic API", openrouter: "OpenRouter", "cl
 
 // The backend counts the same things for the repository list (RepoDO.needsCount): keep the two in step.
 export function needs(d: RepoState): Need[] {
-	const out: Need[] = d.conflicts.map(([a, b]) => ({ kind: "conflict", tab: "bubbles", key: `c:${a}|${b}`, a, b }));
+	// With auto-ferge and ferge agents, a conflict is the merge loop's to resolve; only a ferge whose agent
+	// failed (below) comes back to a person.
+	const out: Need[] = autoResolves(d) ? [] : d.conflicts.map(([a, b]) => ({ kind: "conflict", tab: "bubbles", key: `c:${a}|${b}`, a, b }));
 	// A fork goes by its task's title, else its agent's prompt.
 	const titleOf = new Map([...d.agents.map((a): [string, string] => [a.fork, a.prompt]), ...d.tasks.filter((t) => t.fork).map((t): [string, string] => [t.fork!, t.title])]);
 	for (const l of d.loose) {
@@ -53,6 +55,9 @@ export function needs(d: RepoState): Need[] {
 		if (r.status === "failed") out.push({ kind: "page", key: `d:${r.id}`, tab: "deploy", title: `Deployment ${r.name} failed`, why: "Its last run failed. Read its log, then run it again" });
 	return out;
 }
+
+// Whether conflicts resolve themselves: auto-ferge ferges them and a ferge agent fixes the markers.
+export const autoResolves = (d: RepoState) => d.settings.autoFerge && d.settings.fergeAgents;
 
 // The task of the ferge agent at work on ferge bubble `bubble`'s conflicts, if any (repo-do.ts
 // FERGE_AGENT): not yet done, or done with its fix still queued there (it unlocks once that's applied).

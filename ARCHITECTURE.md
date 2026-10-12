@@ -39,7 +39,7 @@ browser ──► yorkle Worker ──(service binding)──► blingo Worker �
 
 | Table | Holds |
 |---|---|
-| `bubble(id, visible, seq, epoch, ferge, name, adj, noun)` | `visible = 0` while it is in a neighbour merge or ferge (hidden from placement); `epoch` goes up when its code changes other than by applying a member's series (absorbing a bubble, a ferge); `ferge = 1` for a ferge's locked bubble |
+| `bubble(id, visible, seq, epoch, ferge, name, adj, noun, parent)` | `visible = 0` while it is in a neighbour merge or ferge (hidden from placement); `epoch` goes up when its code changes other than by applying a member's series (absorbing a bubble, a ferge); `ferge = 1` for a ferge's locked bubble; `parent` = the bubble it split off from (a new bubble's basis, a ferge bubble's a; followed through absorbs; NULL for older bubbles), so the map starts it beside that one. Added in place |
 | `fork(name, bubble, status, files, diff, seq)` | a member and its change table. status `rep` / `pending` (its patch series is queued) / `merged` (applied) / `failed` (its series didn't apply) / `conflict` (a fork from before patch series that didn't merge); `files` = paths it changed (JSON); `diff` = its patch series (mbox); `seq` = when it was applied, across the repository |
 | `conflict(k)` | `"a|b"` bubble pairs whose merge failed; never retried (except by a ferge). When a bubble is absorbed, its pairs move to the bubble that absorbed it |
 | `locked(id)` | locked bubbles: placeable, but excluded from neighbour merges |
@@ -232,18 +232,22 @@ through CI. A failed first run deletes the fork. Then it reports to `RepoDO.agen
 fork's repo is deleted unless it became a new bubble's rep.
 
 **Merge loop** (`RepoDO.alarm`, running **concurrently with placement**). Each tick applies every
-bubble's queue (above) and tries one neighbour merge: a visible bubble with an empty queue and its
-nearest non-conflicting neighbour with an empty queue (distance 0 first, so bubbles that share no
-files simply merge next). Both are hidden; the neighbour's rep is cloned, fetched from that local
-copy and merged into this rep by this bubble's Box (`MERGE_SH`), then pushed. On success the
+bubble's queue (above) and runs up to 12 (`MAX_MERGES`) neighbour merges at once (`pickPairs`):
+oldest first, each visible bubble with an empty queue takes its nearest non-conflicting neighbour
+with an empty queue among the bubbles not taken yet (distance 0 first, so bubbles that share no
+files simply merge next). No bubble is in two pairs, so no rep is written while another merge reads
+it. Every pair is hidden before the first await; then each merge runs in its own bubble's Box: the
+neighbour's rep is cloned, fetched from that local copy and merged into this rep (`MERGE_SH`), then
+pushed. On success the
 neighbour is absorbed: its members move over, its rep becomes a `merged` member, its conflicts,
 ferge debts and basis follow (`renamed`), this bubble's `epoch` goes up, and the neighbour's repo
 and Box go. On conflict the pair is recorded. Both are shown again.
 
 Running alongside placement is safe: placement never picks a hidden bubble, a queue only grows by
-placement, and the neighbour merge only takes bubbles with empty queues and hides them before its
-first await, so a series always reaches the rep of the bubble it was queued in. Infra errors throw;
-the alarm retries. Only a merge conflict counts as a conflict. Forks queued before patch series
+placement, and neighbour merges only take bubbles with empty queues and hide them before their
+first await, so a series always reaches the rep of the bubble it was queued in. Merges settle
+independently (`Promise.allSettled`): one Box's infra error doesn't stop the others, and is thrown
+afterwards so the alarm retries. Only a merge conflict counts as a conflict. Forks queued before patch series
 (`pending` with no `diff`) are merged in by the bubble's Box the old way.
 
 **Hidden bubbles are leased.** Hiding records the time in `hidden(id, since)`. If the operation
@@ -268,11 +272,12 @@ becomes a **locked ferge bubble** (`ferge = 1`). Its file set is everything in i
 bubble); the API returns just the conflicting files. A fix forked from it only ever goes back into
 it (the home rule lets it change the conflicting files there), and it stays locked until someone
 unlocks it, so the fix merges back with it. A fix that no longer fits there fails. With the setting `autoFerge`, the merge loop starts
-ferges itself: when it has no neighbour merge to do, it ferges the first conflicting pair whose bubbles are
-both visible, unlocked and idle (`fergeCandidate`; the older bubble is a), one per tick; a pair that turns out
-not to conflict any more loses its conflict record and merges normally. With the setting
-`fergeAgents`, the ferge also files an agent task on the ferge bubble to resolve its markers, run with
-the `models.ferge` model (task `role` = ferge).
+ferges itself, in the slots the tick's neighbour merges leave free: each time the first conflicting pair whose
+bubbles are both visible, unlocked and idle (`fergeCandidate`; the older bubble is a), re-read after the previous
+ferge hid its pair; a pair that turns out not to conflict any more loses its conflict record and merges normally.
+With the setting `fergeAgents`, the ferge also files an agent task on the ferge bubble to resolve its markers, run
+with the `models.ferge` model (task `role` = ferge). With both settings on, conflicts aren't listed under
+"Needs you" (and the map draws them as a plain line); a ferge bubble whose agent failed is.
 
 A person can resolve the markers in yorkle's Conflicts tab (`Conflicts.svelte`; the files are the ones
 the ferge commit wrote that still hold markers). `POST /repos/:repo/ferge/:bubble/resolve {files}`
@@ -295,8 +300,8 @@ any push; unlocking stays manual.
 
 Marked with `ponytail:` comments in the code.
 
-- Neighbour merges run one at a time per repository, and a bubble whose queue never empties is
-  never neighbour-merged.
+- At most 12 neighbour merges and ferges run at once per repository, and a bubble whose queue never
+  empties is never neighbour-merged.
 - One Box per bubble while it has work (30-minute inactivity timeout).
 - A patch series is kept in SQLite, so one over 1.5 MB isn't placed. `format-patch` can't carry merge
   commits, so a notagent fork with merges in its history isn't placed.
