@@ -68,7 +68,15 @@
 		route.path;
 		drawer = false;
 	});
+	// "/" focuses the page's search box (the `.search` kbd hint), unless you're already typing somewhere.
+	function slash(e: KeyboardEvent) {
+		if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey || (e.target as HTMLElement).closest("input, textarea, select, [contenteditable]")) return;
+		const box = document.querySelector<HTMLInputElement>(".search input");
+		if (box) e.preventDefault(), box.focus();
+	}
 </script>
+
+<svelte:window onkeydown={slash} />
 
 {#snippet wordmark()}<a class="wordmark" href="/repos"><img src="/favicon.svg" alt="" width="28" height="28" />yorkle</a>{/snippet}
 
