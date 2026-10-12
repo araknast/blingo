@@ -340,6 +340,9 @@ export class Box extends DurableObject<Env> {
 			env: {
 				...TRUST,
 				...GIT_ID,
+				// Its commits are authored by the agent (its run id), as its memory items are.
+				GIT_AUTHOR_NAME: job.run ?? job.fork,
+				GIT_AUTHOR_EMAIL: `agent@${this.env.DOMAIN}`,
 				MODEL: job.model ?? this.env.MODEL,
 				...auth,
 				CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
