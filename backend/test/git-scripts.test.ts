@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { afterAll, expect, test } from "vitest";
-import { APPLY_SH, COMMIT_FILES_SH, CONFLICT, ENSURE_REP, ENV_MERGE_SH, ENV_PUSH_SH, ENV_SAVE_SH, FERGE_SH, MEMORY_HOOK_SH, MERGES, MERGE_SH, NO_CONFLICT, PATCH_SH, PUSH_SH, REP, STOP_HOOK_SH, UNBASED, readSeries } from "../src/git-scripts";
+import { APPLY_SH, COMMIT_FILES_SH, CONFLICT, ENSURE_REP, ENV_PUSH_SH, ENV_SAVE_SH, FERGE_SH, MEMORY_HOOK_SH, MERGES, MERGE_SH, NO_CONFLICT, PATCH_SH, PUSH_SH, REP, STOP_HOOK_SH, UNBASED, readSeries } from "../src/git-scripts";
 
 const T = mkdtempSync(`${tmpdir()}/blingo-git-`);
 afterAll(() => rmSync(T, { recursive: true, force: true }));
@@ -193,47 +193,6 @@ test("env: a run's overlay changes saved as an env commit, unchanged files never
 	sh(`git clone -q --branch env ${T}/env.git envc`);
 	expect(sh("cat usr/big.blingo-part-*", `${T}/envc`)).toBe("0123456789abcdefghijKLMNO");
 	expect(sh("cat usr/lib/keep usr/bin/old", `${T}/envc`)).toBe("keep\nNEW");
-});
-
-test("env merge: members' envs merge into the rep's as their code lands", () => {
-	const serve = (b: string) => sh(`git --git-dir=${b} config uploadpack.allowFilter true && git --git-dir=${b} config uploadpack.allowAnySHA1InWant true`);
-	// The rep's env: apk's db, a tool, a binary file.
-	sh(`git init -q -b env mw && cd mw && mkdir -p lib/apk/db usr/bin usr/share && printf 'P:base\\n\\n' > lib/apk/db/installed && echo jq > usr/bin/jq && printf 'x\\0base' > usr/share/x.bin && git add -A && git commit -qm env && git clone -q --bare . ../mrep.git`);
-	const R = `${T}/mrep.git`;
-	serve(R);
-	// Two members forked from it (forks copy env); each installs a package and rewrites the binary; a removes jq.
-	const member = (name: string, edit: string) => {
-		sh(`git clone -q --bare ${R} ${name}.git && git clone -q -b env ${name}.git ${name}w && cd ${name}w && ${edit} && git add -A && git commit -qm env && git push -q origin env`);
-		serve(`${T}/${name}.git`);
-		return `file://${T}/${name}.git`;
-	};
-	const a = member("ma", `printf 'P:a\\n\\n' >> lib/apk/db/installed && echo a > usr/bin/a && printf 'x\\0a' > usr/share/x.bin && git rm -q usr/bin/jq`);
-	const b = member("mb", `printf 'P:b\\n\\n' >> lib/apk/db/installed && echo b > usr/bin/b && printf 'x\\0b' > usr/share/x.bin`);
-	const env = (p: string) => sh(`git --git-dir=${R} show env:${p}`);
-	const merge = (...src: string[]) => run(ENV_MERGE_SH, [`file://${R}`, ...src]);
-	let m = merge(a);
-	expect(m.code, m.err).toBe(0);
-	expect(sh(`git --git-dir=${R} rev-parse env`)).toBe(sh(`git --git-dir=${T}/ma.git rev-parse env`)); // fast-forward
-	m = merge(b);
-	expect(m.code, m.err).toBe(0);
-	expect(env("lib/apk/db/installed")).toBe("P:base\n\nP:a\n\nP:b"); // text: both sides kept
-	expect(sh(`git --git-dir=${R} cat-file -p env:usr/share/x.bin | tr '\\0' _`)).toBe("x_b"); // binary: incoming wins
-	expect(env("usr/bin/a")).toBe("a");
-	expect(env("usr/bin/b")).toBe("b");
-	expect(() => env("usr/bin/jq")).toThrow(); // a's removal kept
-	expect(sh(`git --git-dir=${R} rev-list --parents -1 env`).split(" ")).toHaveLength(3);
-	const head = sh(`git --git-dir=${R} rev-parse env`);
-	sh(`git init -q --bare noenv.git && git clone -q ${R} noenvw && cd noenvw && git push -q ../noenv.git HEAD:refs/heads/main 2>/dev/null || git --git-dir=../noenv.git symbolic-ref HEAD refs/heads/main`);
-	m = merge(b, `file://${T}/noenv.git`); // already merged; no env at all
-	expect(m.code, m.err).toBe(0);
-	expect(sh(`git --git-dir=${R} rev-parse env`)).toBe(head);
-	// A rep without an env takes the source's.
-	sh(`git init -q --bare -b main bare.git && git --git-dir=bare.git symbolic-ref HEAD refs/heads/main`);
-	sh(`cd mw && git push -q ../bare.git env:refs/heads/main`);
-	serve(`${T}/bare.git`);
-	m = run(ENV_MERGE_SH, [`file://${T}/bare.git`, b]);
-	expect(m.code, m.err).toBe(0);
-	expect(sh(`git --git-dir=${T}/bare.git rev-parse env`)).toBe(sh(`git --git-dir=${T}/mb.git rev-parse env`));
 });
 
 test("env: with no env git dir (the mount failed), nothing is saved or pushed", () => {

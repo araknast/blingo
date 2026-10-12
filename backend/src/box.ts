@@ -1,5 +1,5 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
-import { APPLY_SH, CONFLICT, ENSURE_REP, ENV_MERGE_SH, ENV_MOUNT_SH, ENV_OVERLAY_SH, ENV_PUSH_SH, ENV_SAVE_SH, FERGE_SH, MEMORY_HOOK_SH, MERGES, STOP_HOOK_SH, MERGE_SH, NO_CONFLICT, PATCH_SH, PUSH_SH, REP, readSeries } from "./git-scripts";
+import { APPLY_SH, CONFLICT, ENSURE_REP, ENV_MOUNT_SH, ENV_OVERLAY_SH, ENV_PUSH_SH, ENV_SAVE_SH, FERGE_SH, MEMORY_HOOK_SH, MERGES, STOP_HOOK_SH, MERGE_SH, NO_CONFLICT, PATCH_SH, PUSH_SH, REP, readSeries } from "./git-scripts";
 import { MODEL_HOSTS, egress, type Provider } from "./settings";
 import type { Skill } from "./skills";
 import { checkPlan, retryNote } from "./tasks";
@@ -253,7 +253,7 @@ export class Box extends DurableObject<Env> {
 	// Runs `jobs` in order on the rep clone, after any earlier rep job here finishes. A job failing with
 	// anything but a conflict drops the clone, so the next job starts again from what was pushed.
 	private rep<T>(remote: string, jobs: (run: (script: string, args?: string[], opts?: { stdin?: string; env?: Record<string, string> }) => Promise<Run>) => Promise<T>) {
-		return this.enqueue(() => {
+		const go = async () => {
 			const run = async (script: string, args: string[] = [], opts = {}) => {
 				const r = await this.sh(ENSURE_REP + script, [remote, ...args], opts);
 				if (r.exitCode !== 0 && r.exitCode !== CONFLICT && r.exitCode !== NO_CONFLICT) {
@@ -263,24 +263,10 @@ export class Box extends DurableObject<Env> {
 				return r;
 			};
 			return jobs(run);
-		});
-	}
-
-	private enqueue<T>(go: () => Promise<T>): Promise<T> {
+		};
 		const p = this.queue.then(go, go);
 		this.queue = p.catch(() => {});
 		return p;
-	}
-
-	// Merges the envs of `sources` (forks or reps whose code just landed here) into the rep's env
-	// (ENV_MERGE_SH), in order with the rep jobs. Best effort: a failure only means later agents reinstall.
-	async mergeEnv(remote: string, sources: string[]): Promise<boolean> {
-		if (!sources.length) return true;
-		return this.enqueue(async () => {
-			const r = await this.sh(ENV_MERGE_SH, [remote, ...sources]).catch((e) => ({ exitCode: -1, stdout: "", stderr: String(e) }));
-			if (r.exitCode !== 0) console.error(`env merge failed (${r.exitCode}): ${r.stderr.slice(-2000)}`);
-			return r.exitCode === 0;
-		});
 	}
 
 	// Applies each fork's patch series in order and pushes once. A series that doesn't apply is left
