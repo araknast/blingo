@@ -12,6 +12,8 @@ notagent() { api -X POST --json "$1" $U/notagents; }
 placed() { echo "[m['status'] for b in d['bubbles'] for m in b['members'] if m['name']=='$1'] in (['rep'], ['merged'])"; }
 
 notagent '{"description":"base a.txt"}' > x0.json; R=$(j x0.json repo); A=$(j x0.json fork); echo "repo $R"
+# Off whatever the account's defaults for new repositories say (no ferge agent: it would need a key).
+api -X PUT --json '{"autoFerge":false,"fergeAgents":false}' $U/repos/$R/settings >/dev/null
 push x0.json r0 'printf "line1\nline2\nline3\n" > a.txt' >/dev/null || fail "base push"
 until_ "$(placed $A)" "base placed"
 
