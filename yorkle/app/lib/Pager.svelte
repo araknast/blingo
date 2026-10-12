@@ -12,7 +12,7 @@
 {#if page > 0 || hasNext}
 	<nav class="pager" aria-label="Pagination">
 		<button disabled={page <= 0} onclick={() => page--}>Previous</button>
-		<span class="muted">Page {page + 1}{#if last !== undefined} of {last + 1}{/if}</span>
+		<span class="muted">Page {page + 1}{last !== undefined ? ` of ${last + 1}` : ""}</span>
 		<button disabled={!hasNext} onclick={() => page++}>Next</button>
 	</nav>
 {/if}

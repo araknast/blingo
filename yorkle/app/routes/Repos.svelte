@@ -81,7 +81,6 @@
 <Shell crumbs={[]} sidebar={false}>
 	{#snippet actions()}
 		<a class="button quiet" href="/settings" title="Settings every new repository starts with">Defaults</a>
-		<button class="primary" onclick={() => (createOpen = true)} disabled={creating}>Create repository</button>
 	{/snippet}
 	<div class="page">
 		<h1>Repositories</h1>
@@ -95,6 +94,7 @@
 			<div class="tools">
 				<label class="visually-hidden" for="filter">Filter repositories</label>
 				<input id="filter" type="search" placeholder="Filter by name" bind:value={filter} />
+				<button class="primary" onclick={() => (createOpen = true)} disabled={creating}>Create repository</button>
 			</div>
 			<table>
 				<thead>
@@ -139,9 +139,10 @@
 </Dialog>
 
 <style>
-	.page { padding: 2rem clamp(1rem, 3vw, 2.5rem); max-width: 72rem; }
+	.page { padding: 2rem clamp(1rem, 3vw, 2.5rem); max-width: 72rem; margin: 0 auto; }
 	h1 { margin-bottom: 1.25rem; }
-	.tools { margin-bottom: 1rem; max-width: 20rem; }
+	.tools { display: flex; gap: 0.75rem; justify-content: space-between; margin-bottom: 1rem; }
+	.tools input { max-width: 20rem; }
 	table { width: 100%; border-collapse: collapse; background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; }
 	th { text-align: left; font-size: 0.8125rem; font-weight: 500; color: var(--ink-3); padding: 0.6rem 1rem; border-bottom: 1px solid var(--line); }
 	td { padding: 0.75rem 1rem; border-bottom: 1px solid var(--line-2); font-size: 0.9375rem; }
