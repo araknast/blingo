@@ -224,7 +224,10 @@ stubs). `GET /agents/:id/transcript` serves them, live from the container while 
 
 **Agent.** `RepoDO.schedule` forks and calls `Box.startAgent`: clone `main` (recording the commit it
 starts from), `claude --print …`, commit, push to its own fork, all detached in the container. The
-Box alarm checks every 30 s.
+Box alarm checks every 30 s. When it's done, the same container takes the patch series (`PATCH_SH`)
+and calls `RepoDO.submit`: with CI off that places it; with CI on the fork becomes loose and goes
+through CI. A failed first run deletes the fork. Then it reports to `RepoDO.agentDone`. A placed
+fork's repo is kept until its series is applied (for its env, below), unless it became a new bubble's rep.
 
 **Environment** (`ENV_*_SH` in `git-scripts.ts`). Before an agent, fixer or CI job starts, its Box
 mounts the fork's `env` branch at `/mnt/env` with [ArtifactFS](https://github.com/cloudflare/artifact-fs)
@@ -238,10 +241,16 @@ symlinks added, whiteouts and what a replaced dir hid removed; Claude Code's sta
 container's `/etc/hosts`-style mounts left out). The alarm pushes it after `main` (`ENV_PUSH_SH`; never a
 thin pack, which would read unfetched blobs). Files over Artifacts' 32 MB limit are stored as
 `<path>.blingo-part-NNN` and joined at mount. A fork with no `env` starts one; a failed mount, save or
-push only means later agents reinstall. Superagents, bubble Boxes and the git Box clone `main` only. When it's done, the same container takes the patch series (`PATCH_SH`)
-and calls `RepoDO.submit`: with CI off that places it; with CI on the fork becomes loose and goes
-through CI. A failed first run deletes the fork. Then it reports to `RepoDO.agentDone`. A placed
-fork's repo is deleted unless it became a new bubble's rep.
+push only means later agents reinstall. Superagents, bubble Boxes and the git Box clone `main` only.
+
+Envs merge wherever code does, in the bubble's Box (`Box.mergeEnv`, `ENV_MERGE_SH`, queued with its
+rep jobs): when members' series are applied (their fork repos are kept until then, and deleted after),
+when a neighbour is absorbed, and in a ferge (b's env into a's and into the locked bubble's). The
+merge is blobless: of each source, only the objects the rep lacks are fetched, by id in one request
+(no negotiation, so not the incremental fetch Artifacts fails on), and pushed. A source whose env the
+rep already has is skipped; a rep whose env is behind fast-forwards. A path both sides changed keeps
+both sides when it's text (lines; `lib/apk/db/installed` by record, so apk sees both's packages), and
+takes the incoming side's version otherwise. A merge that fails is logged and doesn't hold up the code.
 
 **Merge loop** (`RepoDO.alarm`, running **concurrently with placement**). Each tick applies every
 bubble's queue (above) and tries one neighbour merge: a visible bubble with an empty queue and its
@@ -325,7 +334,6 @@ Marked with `ponytail:` comments in the code.
 - The UI polls `GET /repos/:repo` (every 2.5 s on the map); the repository list fetches one summary per repo.
 - A commit's diff is against its first parent; line diffs are computed in the browser from both blobs.
 - No rate limit on login or signup; no password reset, invite expiry or repo sharing.
-- The environment follows forks only: a member placed into a bubble doesn't add its installs to the
-  rep's `env`, and a neighbour merge keeps the surviving rep's. `env` history only grows, toward the
-  1 GB repository limit (then it isn't pushed). Ownership, setuid bits and empty dirs aren't kept, nor
-  paths with tabs or newlines. An `env` built on an older image is still mounted after an image change.
+- `env` history only grows (storage is billed per GB). Ownership, setuid bits and empty dirs aren't
+  kept, nor paths with tabs or newlines. Env merges resolve by file, not by meaning (two versions of one
+  tool: the incoming wins). An `env` built on an older image is still mounted after an image change.

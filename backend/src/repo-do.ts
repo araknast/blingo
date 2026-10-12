@@ -274,8 +274,9 @@ export class RepoDO extends DurableObject<Env> {
 		);
 		// Placed: no longer loose, in the same step its task completes (no window where it is both).
 		this.sql.exec("DELETE FROM loose WHERE fork = ?", fork);
-		// The series carries the fork's work now; its repo is only kept as a new bubble's rep.
-		if (target !== "new") await this.env.ARTIFACTS.delete(fork).catch(() => false);
+		// The series carries the fork's code now. Its repo stays as a new bubble's rep, or until the series
+		// is applied, for its env to merge into the bubble's (applyQueues).
+		if (target === null) await this.env.ARTIFACTS.delete(fork).catch(() => false);
 		await this.kick(); // applies the series; also schedules tasks this unblocks, once their deps land
 		return { bubble: target === "new" ? fork : target };
 	}
@@ -556,6 +557,9 @@ export class RepoDO extends DurableObject<Env> {
 			]);
 			const r = await this.bubbleBox(a).ferge(ra.url, rb.url, rl.url);
 			if (!r) return { error: NO_LONGER_CONFLICT };
+			// b's env joins a's, and l's (forked from a before).
+			await this.bubbleBox(a).mergeEnv(ra.url, [rb.url]);
+			await this.bubbleBox(a).mergeEnv(rl.url, [rb.url]);
 			const names = this.sql.exec<Name & { id: string }>("SELECT id, adj, noun FROM bubble WHERE id IN (?, ?)", a, b).toArray();
 			const name = fergeName(names.find((n) => n.id === a)!, names.find((n) => n.id === b)!); // before b is absorbed
 			this.absorb(a, b);
@@ -739,14 +743,14 @@ export class RepoDO extends DurableObject<Env> {
 		return this.sql.exec<{ diff: string | null }>("SELECT diff FROM fork WHERE name = ?", fork).toArray()[0]?.diff ?? null;
 	}
 
-	// Deletes the git repos this repository still owns (base, reps, conflicting, loose and pre-patch-
-	// series forks; placed forks are already gone), stops the bubbles' and running agents' Boxes, then deletes every record.
+	// Deletes the git repos this repository still owns (base, reps, conflicting, loose and queued forks;
+	// applied forks are already gone), stops the bubbles' and running agents' Boxes, then deletes every record.
 	// Already-missing repos are skipped.
 	async destroy(repo: string): Promise<string[]> {
 		const bubbles = this.sql.exec<{ id: string }>("SELECT id FROM bubble").toArray().map((r) => r.id);
 		const names = new Set([
 			repo,
-			...this.sql.exec<{ name: string }>("SELECT name FROM fork WHERE status IN ('rep', 'conflict') OR (status = 'pending' AND diff IS NULL)").toArray().map((r) => r.name),
+			...this.sql.exec<{ name: string }>("SELECT name FROM fork WHERE status IN ('rep', 'conflict', 'pending')").toArray().map((r) => r.name),
 			...this.sql.exec<{ fork: string }>("SELECT fork FROM loose").toArray().map((r) => r.fork),
 		]);
 		const deleted: string[] = [];
@@ -1160,7 +1164,10 @@ export class RepoDO extends DurableObject<Env> {
 					const src = await authRemote(this.env, f.name, "read");
 					const r = await box.mergeFrom(url, src.url, "merge fork");
 					this.sql.exec("UPDATE fork SET status = ?, diff = ?, seq = ? WHERE name = ?", r.ok ? "merged" : "conflict", r.diff, r.ok ? this.nextSeq() : null, f.name);
-					if (r.ok) await this.env.ARTIFACTS.delete(f.name).catch(() => false);
+					if (r.ok) {
+						await box.mergeEnv(url, [src.url]);
+						await this.env.ARTIFACTS.delete(f.name).catch(() => false);
+					}
 				}
 				const series = forks.filter((f) => f.diff !== null);
 				if (!series.length) return;
@@ -1174,6 +1181,11 @@ export class RepoDO extends DurableObject<Env> {
 					// A ferge agent's resolution has landed in its bubble: the conflicts are gone, so unlock it.
 					if (ok[i] && f.role === "ferge") this.sql.exec("DELETE FROM locked WHERE id = ?", bubble);
 				});
+				// The applied forks' envs join the bubble's; then their repos go (a fork from before forks were
+				// kept until applied has none left: skipped).
+				const landed = await Promise.all(series.filter((_, i) => ok[i]).map((f) => authRemote(this.env, f.name, "read").then((r) => r.url, () => null)));
+				await box.mergeEnv(url, landed.filter((u) => u !== null));
+				await Promise.all(series.map((f) => this.env.ARTIFACTS.delete(f.name).catch(() => false)));
 			}),
 		);
 		const failed = done.find((r) => r.status === "rejected");
@@ -1196,6 +1208,7 @@ export class RepoDO extends DurableObject<Env> {
 				const [rep, src] = await Promise.all([authRemote(this.env, h.id, "write"), authRemote(this.env, nb, "read")]);
 				const r = await this.bubbleBox(h.id).mergeFrom(rep.url, src.url, "merge bubble");
 				if (r.ok) {
+					await this.bubbleBox(h.id).mergeEnv(rep.url, [src.url]);
 					this.absorb(h.id, nb);
 					this.sql.exec("UPDATE fork SET status = 'merged', diff = ?, seq = ? WHERE name = ?", r.diff, this.nextSeq(), nb);
 					await this.env.ARTIFACTS.delete(nb);

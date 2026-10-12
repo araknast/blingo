@@ -174,7 +174,7 @@ fi
 // removed. Unchanged env files are never read, so they stay unfetched. The parent lets the push send
 // only new objects (a parentless tree would be sent whole, blobs this clone never fetched included).
 // ponytail: paths with tabs or newlines are skipped; ownership, setuid bits and empty dirs aren't kept;
-// env history only grows (toward the 1 GB repo limit), squash it if that bites.
+// env history only grows (storage is billed per GB), squash it if that bites.
 export const ENV_SAVE_SH = `set -e
 export GIT_DIR=\${ENV_GIT:-${ENV_GIT}}; [ -d "$GIT_DIR" ] || exit 0
 W=\${ENV_ROOT:-/}; O=\${ENV_OVL:-/ovl}; C=\${ENV_CHUNK:-32505856}
@@ -199,6 +199,57 @@ done | git update-index --index-info
 p=$(git rev-parse -q --verify HEAD) || true
 c=$(git commit-tree \${p:+-p "$p"} -m env "$(git write-tree --missing-ok)")
 git update-ref refs/blingo/env "$c"`;
+
+// In a bubble's Box, when code merges into its rep (a member's series applied, a neighbour or ferge
+// absorbed): $1 the rep's remote (write), then the remotes (read) whose envs merge into the rep's, in
+// order. Blobless throughout: of the sources, only the objects the rep lacks are fetched, by id and in
+// one request (no "haves", so not the incremental fetch Artifacts fails on). A path both sides changed
+// keeps both sides' lines when it's text (lib/apk/db/installed then lists both's packages), else the
+// incoming side's version. No env at a source: skipped.
+export const ENV_MERGE_SH = `set -e
+t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+git clone -q --bare --filter=blob:none "$1" "$t/w"; cd "$t/w"; shift
+export GIT_INDEX_FILE=$t/index
+start=$(git rev-parse -q --verify refs/heads/env || true); e=$start; n=0
+bin() { [ "$(tr -d '\\000' <"$1" | wc -c)" != "$(wc -c <"$1")" ]; }
+# apk's db is blank-line-separated records, which a line union glues together: merge it by record
+# (base incoming ours): ours minus what the incoming side removed, then the incoming side's new ones.
+recs() { awk 'BEGIN { RS = ""; ORS = "\\n\\n" } FILENAME == ARGV[1] { b[$0] = 1; next } FILENAME == ARGV[2] { s[$0] = 1; k[++n] = $0; next }
+	{ o[$0] = 1; if (!($0 in b) || ($0 in s)) print } END { for (i = 1; i <= n; i++) if (!(k[i] in b) && !(k[i] in o)) print k[i] }' "$@"; }
+for S in "$@"; do
+	n=$((n + 1)); s=$t/s$n
+	git clone -q --bare --filter=blob:none --single-branch -b env "$S" "$s" 2>/dev/null || continue
+	git -C "$s" config uploadpack.allowFilter true
+	git remote add "s$n" "$s"; git fetch -q --filter=blob:none "s$n" +refs/heads/env:refs/src
+	src=$(git rev-parse refs/src)
+	if [ -n "$e" ] && git merge-base --is-ancestor "$src" "$e"; then continue; fi
+	git rev-list --objects --missing=print "$src" \${e:+--not "$e"} | sed -n 's/^?//p' >"$t/want"
+	[ ! -s "$t/want" ] || git -c fetch.negotiationAlgorithm=noop fetch -q --no-write-fetch-head --stdin "$S" <"$t/want"
+	if [ -z "$e" ] || git merge-base --is-ancestor "$e" "$src"; then e=$src; continue; fi
+	out=$(git merge-tree --write-tree --name-only --no-messages --allow-unrelated-histories "$e" "$src") && rc=0 || rc=$?
+	[ "$rc" -le 1 ] || exit "$rc"
+	git read-tree "$(printf '%s\\n' "$out" | head -1)"
+	b=$(git merge-base "$e" "$src" || true)
+	printf '%s\\n' "$out" | tail -n +2 | sort -u | while IFS= read -r p; do
+		[ -n "$p" ] || continue
+		set -- $(git ls-tree "$src" -- "$p")
+		if [ $# = 0 ]; then git update-index --force-remove -- "$p"; continue; fi
+		[ "$2" = blob ] || continue
+		m=$1; o=$(git rev-parse -q --verify "$e:$p" || true)
+		if [ "$m" != 120000 ] && [ -n "$o" ] && [ "$(git cat-file -t "$o")" = blob ]; then
+			git cat-file blob "$o" >"$t/o"; git cat-file blob "$3" >"$t/s"
+			git cat-file blob "$b:$p" >"$t/b" 2>/dev/null || : >"$t/b"
+			if ! bin "$t/o" && ! bin "$t/s"; then
+				if [ "$p" = lib/apk/db/installed ]; then recs "$t/b" "$t/s" "$t/o" >"$t/m"; else git merge-file --union -p "$t/o" "$t/b" "$t/s" >"$t/m" || true; fi
+				git update-index --add --cacheinfo "$m,$(git hash-object -w "$t/m"),$p"; continue
+			fi
+		fi
+		git update-index --add --cacheinfo "$m,$3,$p"
+	done
+	e=$(git commit-tree "$(git write-tree --missing-ok)" -p "$e" -p "$src" -m "env: merge")
+done
+[ "$e" != "$start" ] || exit 0
+GIT_NO_LAZY_FETCH=1 git push -q --no-thin origin "$e:refs/heads/env"`;
 
 // From the Box after the run: $1 the fork's remote (write). Only objects the fork lacks are sent; a
 // lazy fetch is refused rather than made (every object pushed was written here). Not a thin pack: that
