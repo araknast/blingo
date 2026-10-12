@@ -16,7 +16,6 @@
 		looseHref,
 		taskHref,
 		pageHref,
-		seen,
 		onconflict,
 		oncontext,
 		stale = false,
@@ -28,7 +27,6 @@
 		looseHref?: (fork: string) => string;
 		taskHref?: (id: string) => string;
 		pageHref?: (tab: string) => string;
-		seen?: number;
 		onconflict?: (a: string, b: string) => void;
 		oncontext?: (at: { x: number; y: number; bubble: string | null }) => void;
 		stale?: boolean;
@@ -70,7 +68,7 @@
 	let spot = $state<string[] | null>(null);
 	let flyKey = 0;
 
-	const need = $derived(data ? needs(data, seen) : []);
+	const need = $derived(data ? needs(data) : []);
 	const dock = $derived(data ? docked(data, need) : []);
 	// Bubbles in a conflict or holding a series that didn't apply: drawn with a halo and drift to the top.
 	const hot = $derived(new Set(need.flatMap((n) => (n.kind === "conflict" ? [n.a, n.b] : n.kind === "member" ? [n.bubble] : []))));
@@ -685,7 +683,7 @@
 											<div class="acts"><button class="small" onclick={() => focusOn([n.bubble])}>Show</button></div>
 										</div>
 									{:else if n.kind === "page"}
-										<Mark status={n.key === "n:memory" ? "review" : "failed"} />
+										<Mark status="failed" />
 										<div class="what">
 											<p><a href={pageHref?.(n.tab)}>{n.title}</a></p>
 											<p class="why">{n.why}</p>

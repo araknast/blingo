@@ -47,6 +47,7 @@
 		if ((m = match("/repos/:repo/forks/:fork", path))) return { page: "fork", params: m };
 		if ((m = match("/repos/:repo", path))) return { page: "repo", params: m };
 		if (path === "/repos") return { page: "repos", params: {} };
+		if (path === "/settings") return { page: "defaults", params: {} };
 		return { page: path, params: {} };
 	});
 </script>
@@ -58,6 +59,7 @@
 		{:else if path === "/"}<Splash />
 		{/if}
 	{:else if view.page === "repos"}<Repos />
+	{:else if view.page === "defaults"}<Settings />
 	{:else if view.page === "repo"}{#key view.params.repo}<RepoMap repo={view.params.repo} />{/key}
 	{:else if view.page === "agents"}{#key view.params.repo + "/" + view.params.id}<Agents repo={view.params.repo} id={view.params.id} />{/key}
 	{:else if view.page === "bubbles"}{#key view.params.repo}<Bubbles repo={view.params.repo} />{/key}

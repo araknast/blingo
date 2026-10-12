@@ -1,5 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
 import { checkPassword, hashPassword, randomToken, type Signup } from "./auth";
+import { readSettings, updateWithKeys, type Provider, type Settings } from "./settings";
+
+type Secrets = { apiKey?: string; keyProvider?: Provider; reviewerKey?: string };
 
 const DAY = 24 * 3600 * 1000;
 
@@ -23,6 +26,46 @@ export class UsersDO extends DurableObject<Env> {
 		if (!this.sql.exec("SELECT 1 FROM pragma_table_info('repo') WHERE name = 'title'").toArray().length) {
 			this.sql.exec("ALTER TABLE repo ADD COLUMN title TEXT NOT NULL DEFAULT ''");
 		}
+		// When each repository was created (NULL for ones from before it was recorded), added in place.
+		if (!this.sql.exec("SELECT 1 FROM pragma_table_info('repo') WHERE name = 'created'").toArray().length) {
+			this.sql.exec("ALTER TABLE repo ADD COLUMN created INTEGER");
+		}
+		// An account's defaults for its new repositories: `settings` as stored by RepoDO (no deploys), and
+		// `secrets` ({apiKey, keyProvider, reviewerKey}), kept apart and never returned.
+		this.sql.exec("CREATE TABLE IF NOT EXISTS defaults(name TEXT PRIMARY KEY, settings TEXT NOT NULL, secrets TEXT NOT NULL)");
+	}
+
+	private defaultsRow(user: string): { settings: Settings; secrets: Secrets } {
+		const r = this.one<{ settings: string; secrets: string }>("SELECT settings, secrets FROM defaults WHERE name = ?", user);
+		return { settings: readSettings(r ? JSON.parse(r.settings) : {}), secrets: r ? JSON.parse(r.secrets) : {} };
+	}
+
+	// `user`'s defaults as the API shows them, shaped like RepoDO.publicSettings.
+	defaults(user: string) {
+		const { settings, secrets } = this.defaultsRow(user);
+		return { ...settings, hasKey: !!secrets.apiKey, keyProvider: secrets.apiKey ? (secrets.keyProvider ?? null) : null, hasReviewerKey: !!secrets.reviewerKey };
+	}
+
+	// Validated like a repository's settings (updateWithKeys); deployments stay per repository.
+	setDefaults(user: string, body: unknown) {
+		const cur = this.defaultsRow(user);
+		const { deploys: _, ...rest } = (body ?? {}) as Record<string, unknown>;
+		const u = updateWithKeys(cur.settings, rest, !!cur.secrets.reviewerKey);
+		if ("error" in u) return u;
+		const secrets = { ...cur.secrets };
+		if (u.key) Object.assign(secrets, { apiKey: u.key, keyProvider: u.next.provider });
+		else if (u.key === "") (delete secrets.apiKey, delete secrets.keyProvider);
+		if (u.reviewerKey) secrets.reviewerKey = u.reviewerKey;
+		else if (u.reviewerKey === "") delete secrets.reviewerKey;
+		this.sql.exec("INSERT OR REPLACE INTO defaults (name, settings, secrets) VALUES (?, ?, ?)", user, JSON.stringify({ ...u.next, deploys: [] }), JSON.stringify(secrets));
+		return this.defaults(user);
+	}
+
+	// The body RepoDO.setSettings takes to give a new repository `user`'s defaults, or null if none are set.
+	defaultsForNewRepo(user: string): Record<string, unknown> | null {
+		if (!this.one("SELECT 1 FROM defaults WHERE name = ?", user)) return null;
+		const { settings, secrets } = this.defaultsRow(user);
+		return { ...settings, apiKey: secrets.apiKey, reviewerKey: secrets.reviewerKey };
 	}
 
 	private one<T extends Record<string, SqlStorageValue>>(q: string, ...args: SqlStorageValue[]): T | undefined {
@@ -90,7 +133,13 @@ export class UsersDO extends DurableObject<Env> {
 	}
 
 	own(repo: string, owner: string, title = "") {
-		this.sql.exec("INSERT INTO repo (name, owner, title) VALUES (?, ?, ?)", repo, owner, title);
+		this.sql.exec("INSERT INTO repo (name, owner, title, created) VALUES (?, ?, ?, ?)", repo, owner, title, Date.now());
+	}
+
+	// When `owner`'s repositories were created (id → ms; ones from before it was recorded are left out).
+	createdOf(owner: string): Record<string, number> {
+		const rows = this.sql.exec<{ name: string; created: number }>("SELECT name, created FROM repo WHERE owner = ? AND created IS NOT NULL", owner).toArray();
+		return Object.fromEntries(rows.map((r) => [r.name, r.created]));
 	}
 
 	ownerOf(repo: string): string | null {

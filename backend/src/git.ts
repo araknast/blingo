@@ -37,3 +37,17 @@ export async function diffTrees(readTree: ReadTree, oldHash: string | null, newH
 	}
 	return out;
 }
+
+// `text` in parts of at most `size` UTF-16 units, never splitting a surrogate pair (SQLite keeps text as
+// UTF-8, where half a pair is lost). Joined, they're `text` again; "" is one empty part.
+export function splitParts(text: string, size: number): string[] {
+	const out: string[] = [];
+	let i = 0;
+	do {
+		let end = Math.min(i + size, text.length);
+		if (end < text.length && /[\ud800-\udbff]/.test(text[end - 1])) end--;
+		out.push(text.slice(i, end));
+		i = end;
+	} while (i < text.length);
+	return out;
+}

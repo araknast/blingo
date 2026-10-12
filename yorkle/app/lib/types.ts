@@ -1,7 +1,7 @@
 // Shapes returned by the blingo API (see backend/src/index.ts and RepoDO.list).
 
 // `names`: repository id → display name (repositories from before names have none).
-export type Me = { username: string; admin: boolean; repos: string[]; names?: Record<string, string> };
+export type Me = { username: string; admin: boolean; repos: string[]; names?: Record<string, string>; created?: Record<string, number> };
 
 // pending = its patch series is queued in the bubble; failed = the series didn't apply.
 export type MemberStatus = "rep" | "pending" | "merged" | "conflict" | "failed";

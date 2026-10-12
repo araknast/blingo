@@ -45,6 +45,7 @@
 	});
 
 	const nameOf = (r: string) => repoName(r, session.me?.names);
+	const dateFmt = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" });
 	const repos = $derived(
 		(session.me?.repos ?? [])
 			.filter((r) => `${nameOf(r)} ${r}`.toLowerCase().includes(filter.trim().toLowerCase()))
@@ -77,8 +78,9 @@
 	}
 </script>
 
-<Shell crumbs={[{ label: "Repositories" }]}>
+<Shell crumbs={[]} sidebar={false}>
 	{#snippet actions()}
+		<a class="button quiet" href="/settings" title="Settings every new repository starts with">Defaults</a>
 		<button class="primary" onclick={() => (createOpen = true)} disabled={creating}>Create repository</button>
 	{/snippet}
 	<div class="page">
@@ -96,11 +98,12 @@
 			</div>
 			<table>
 				<thead>
-					<tr><th>Name</th><th>Bubbles</th><th>Agents working</th><th>Conflicts</th></tr>
+					<tr><th>Name</th><th>Bubbles</th><th>Agents working</th><th>Conflicts</th><th>Created</th></tr>
 				</thead>
 				<tbody>
 					{#each visible as r (r)}
 						{@const s = summaries[r]}
+						{@const made = session.me?.created?.[r]}
 						<tr>
 							<td><a class="name" href="/repos/{r}">{nameOf(r)}</a>{#if s && s !== "error" && s.needs}<a class="needs" href="/repos/{r}" title="{s.needs} {s.needs === 1 ? 'needs' : 'need'} you" aria-label="{s.needs} {s.needs === 1 ? 'needs' : 'need'} you">{s.needs}</a>{/if}{#if nameOf(r) !== r}<span class="muted id mono">{r}</span>{/if}</td>
 							{#if s === "error"}
@@ -112,9 +115,10 @@
 								<td>{#if s.working}<Mark status="running" /> {s.working}{:else}<span class="muted">None</span>{/if}</td>
 								<td>{#if s.conflicts}<Mark status="conflict" /> {s.conflicts}{:else}<span class="muted">None</span>{/if}</td>
 							{/if}
+							<td class="created">{#if made}<time datetime={new Date(made).toISOString()} title={new Date(made).toLocaleString()}>{dateFmt.format(made)}</time>{:else}<span class="muted">—</span>{/if}</td>
 						</tr>
 					{:else}
-						<tr><td colspan="4" class="muted">No repository matches “{filter}”.</td></tr>
+						<tr><td colspan="5" class="muted">No repository matches “{filter}”.</td></tr>
 					{/each}
 				</tbody>
 			</table>
@@ -147,10 +151,11 @@
 	.id { margin-left: 0.6rem; font-size: 0.75rem; }
 	.name:hover { text-decoration: underline; }
 	.forks { margin-left: 0.6rem; font-size: 0.8125rem; }
+	.created { white-space: nowrap; color: var(--ink-2); font-variant-numeric: tabular-nums; }
 	.empty { max-width: 32rem; padding: 2rem; background: var(--paper); border: 1px dashed var(--line); border-radius: var(--r-md); }
 	.empty p { margin: 0.5rem 0 1.25rem; color: var(--ink-2); }
 	@media (max-width: 640px) {
-		th:nth-child(3), td:nth-child(3) { display: none; }
+		th:nth-child(3), td:nth-child(3), th:nth-child(5), td.created { display: none; }
 		.forks { display: none; }
 	}
 	.needs { display: inline-block; margin-left: 0.6rem; min-width: 1.4rem; text-align: center; padding: 0 0.4rem; border-radius: 999px; background: var(--conflict); color: #fff; font-size: 0.75rem; font-weight: 600; line-height: 1.5; text-decoration: none; vertical-align: 0.1em; font-variant-numeric: tabular-nums; }

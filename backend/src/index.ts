@@ -45,6 +45,12 @@ async function createRepo(env: Env, auth: Auth, name: string | null = null) {
 	await env.ARTIFACTS.create(repo, { setDefaultBranch: "main" });
 	await users(env).own(repo, auth.user, title);
 	await env.REPO.getByName(repo).setName(title);
+	// The account's defaults for new repositories, if it has any. They were valid when saved.
+	const defaults = await users(env).defaultsForNewRepo(auth.user);
+	if (defaults) {
+		const r = await env.REPO.getByName(repo).setSettings(defaults);
+		if ("error" in r) console.error(`defaults not applied to ${repo}: ${r.error}`);
+	}
 	return repo;
 }
 
@@ -127,7 +133,14 @@ async function handle(request: Request, env: Env): Promise<Response> {
 
 	if (request.method === "GET" && a === "me" && !b) {
 		const u = users(env);
-		return Response.json({ username: auth.user, admin: auth.admin, repos: await u.reposOf(auth.user), names: await u.titlesOf(auth.user) });
+		return Response.json({ username: auth.user, admin: auth.admin, repos: await u.reposOf(auth.user), names: await u.titlesOf(auth.user), created: await u.createdOf(auth.user) });
+	}
+	// The account's defaults for its new repositories (RepoDO.setSettings's shape, without deployments).
+	if (a === "me" && b === "defaults" && !c) {
+		if (request.method === "GET") return Response.json(await users(env).defaults(auth.user));
+		if (request.method !== "PUT") return Response.json({ error: "not found" }, { status: 404 });
+		const r = await users(env).setDefaults(auth.user, await request.json());
+		return Response.json(r, { status: "error" in r ? 400 : 200 });
 	}
 	if (request.method === "POST" && a === "logout" && !b) {
 		await users(env).logout(request.headers.get("authorization")!.slice("Bearer ".length));
@@ -209,6 +222,8 @@ async function handle(request: Request, env: Env): Promise<Response> {
 		using repo = await env.ARTIFACTS.get(from);
 		const readTree = (h: string) => repo.readTree(h);
 		const q = url.searchParams;
+		// A read-only clone URL for a person's own git, good for an hour.
+		if (d === "clone" && !e) return Response.json({ url: (await authRemote(env, from, "read", 3600)).url });
 		if (d === "tree" && !e) {
 			const commit = (await repo.log({ ref: q.get("ref") || "main", limit: 1 }))[0];
 			if (!commit) return Response.json({ commit: null, entries: [] }); // nothing pushed yet

@@ -2,7 +2,7 @@
 	// The repository's bubbles as a list, to manage them: what needs you first (a conflict to ferge, a ferge
 	// to fix and unlock, changes that didn't apply), then the rest by name. The Overview shows the same
 	// bubbles as a map.
-	import { needs } from "../lib/attention";
+	import { fergeAgent, needs } from "../lib/attention";
 	import { bubbleName, ferge, fergeFiles, setLock } from "../lib/bubbleActions";
 	import { ask } from "../lib/confirm.svelte";
 	import { fileCount } from "../lib/layout";
@@ -112,9 +112,8 @@
 								{#each partners(b.id) as p (p)}
 									<button class="primary" disabled={busy} onclick={() => fergeWith(b.id, p)}>Ferge with {bubbleName(data, p)}…</button>
 								{/each}
-								{#if b.ferge && b.locked}<a class="button" href="/repos/{repo}/b/{b.id}/conflicts">Fix conflicts</a>{/if}
+								{#if b.ferge && b.locked && !fergeAgent(data, b.id)}<a class="button" href="/repos/{repo}/b/{b.id}/conflicts">Fix conflicts</a>{/if}
 								<button disabled={busy || !b.visible} onclick={() => lock(b, !b.locked)}>{b.locked ? "Unlock" : "Lock"}</button>
-								<a class="button quiet" href="/repos/{repo}/b/{b.id}">Browse code</a>
 								{#if data.settings.deploys.length}
 									<button class="quiet" disabled={!b.visible || b.locked} onclick={() => navigate(`/repos/${repo}/deploy?bubble=${encodeURIComponent(b.id)}`)}>Deploy…</button>
 								{/if}

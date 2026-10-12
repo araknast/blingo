@@ -13,7 +13,7 @@
 	import { api } from "../../lib/session.svelte";
 	import { toast, toastError } from "../../lib/toast.svelte";
 	import type { RepoState, Task } from "../../lib/types";
-	import { agentLabel, ago, duration, short } from "../../lib/util";
+	import { agentLabel, ago, duration, runId, runKind, short } from "../../lib/util";
 
 	let {
 		task: t,
@@ -65,10 +65,6 @@
 	let pushed = $state<{ fork: string; clone: string; push: string } | null>(null);
 	let takeOpen = $state(false);
 
-	async function stop() {
-		if (await ask({ title: "Stop this agent?", body: "Its work so far is discarded. Its transcript is kept, so a retry can pick up from it.", confirm: "Stop agent", danger: true }))
-			act("stop", "Agent stopped");
-	}
 	async function reject() {
 		if (!(await ask({ title: "Reject this task?", body: `"${t.title}" is deleted and never starts.`, confirm: "Reject task", danger: true }))) return;
 		if (await act("reject", "Task rejected")) ongone?.();
@@ -158,13 +154,15 @@
 			<button class="primary wide" onclick={() => act("take", "")}>Take this task</button>
 		{:else if t.status === "failed"}
 			<button class="primary wide" onclick={() => act("retry", "Task reopened. A new agent starts on it")}>Retry</button>
-		{:else if t.status === "in-progress" && t.kind === "agent"}
-			<button class="wide danger" onclick={stop}>Stop agent</button>
 		{/if}
 
 		<dl>
 			<dt>Assignee</dt>
-			<dd>{t.kind === "agent" ? "An agent" : "A notagent: someone takes it and pushes"}</dd>
+			<dd>
+				{#if t.kind === "agent" && t.fork}
+					<a class="badge assignee" href={links.run(t.fork)}>{runKind({ fork: t.fork })} <span class="mono">{runId(t.fork)}</span></a>
+				{:else}{t.kind === "agent" ? "An agent" : "A notagent: someone takes it and pushes"}{/if}
+			</dd>
 
 			<dt>Depends on</dt>
 			<dd>
@@ -236,6 +234,8 @@
 	dd ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.35rem; }
 	dd li { display: flex; gap: 0.45rem; align-items: flex-start; }
 	dd li :global(.icon) { margin-top: 0.2rem; }
+	.assignee { font-size: 0.8125rem; padding: 0.1rem 0.6rem; text-decoration: none; color: var(--ink); }
+	.assignee:hover { border-color: var(--ink-3); }
 	q { font-style: italic; }
 	@container (max-width: 46rem) { .cols { grid-template-columns: 1fr; } }
 	.edit { display: grid; gap: 0.4rem; margin-bottom: 1rem; }

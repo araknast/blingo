@@ -16,9 +16,14 @@
 	type DeployForm = { name: string; command: string; hostsText: string; auth: { host: string; header: string; value: string; hasValue: boolean }[] };
 	type Form = Omit<Settings, "ci" | "deploys"> & { ci: Settings["ci"] & { hostsText: string }; deploys: DeployForm[] };
 
-	let { repo }: { repo: string } = $props();
+	// No `repo`: the account's defaults for new repositories (GET/PUT /me/defaults), without deployments.
+	let { repo }: { repo?: string } = $props();
 	// svelte-ignore state_referenced_locally (the page is keyed by repo in App)
-	const rd = repoState(repo, 15000);
+	const rd = repo ? repoState(repo, 15000) : null;
+	let defaults = $state<Settings | null>(null);
+	const reload = async () => (rd ? await rd.refresh() : (defaults = await api<Settings>("GET", "/me/defaults")));
+	if (!rd) reload().catch(toastError);
+	const where = $derived(repo ? "Stored for this repository only" : "Copied into each repository you create");
 	// "anthropic": only a key saved before that provider was dropped.
 	const PROVIDER = { anthropic: "Anthropic API", openrouter: "OpenRouter", "claude-subscription": "Claude subscription" } as const;
 
@@ -32,7 +37,7 @@
 		deploys: s.deploys.map((d) => ({ name: d.name, command: d.command, hostsText: d.hosts.join(", "), auth: d.auth.map((a) => ({ ...a, value: "" })) })),
 	});
 	$effect(() => {
-		const s = rd.data?.settings;
+		const s = rd ? rd.data?.settings : defaults;
 		if (s && !form) ((form = toForm(s)), (saved = JSON.stringify(form)));
 	});
 	let apiKey = $state("");
@@ -65,10 +70,10 @@
 			else if (dropReviewerKey) body.reviewerKey = "";
 			// The key is checked against the provider it's saved for, so a new key sends the provider too.
 			if (body.apiKey && !("provider" in body)) body.provider = form.provider;
-			await api("PUT", `/repos/${repo}/settings`, body);
+			await api("PUT", repo ? `/repos/${repo}/settings` : "/me/defaults", body);
 			apiKey = reviewerKey = "";
 			dropKey = dropReviewerKey = false;
-			await rd.refresh();
+			await reload();
 			form = null; // take the saved values (after the refresh, or the stale ones come back)
 			toast("Settings saved");
 			return true;
@@ -121,7 +126,7 @@
 			await api("DELETE", `/repos/${repo}`);
 			await loadMe();
 			leave.guard = null;
-			toast(`Deleted ${repoName(repo, session.me?.names)}`);
+			toast(`Deleted ${repoName(repo!, session.me?.names)}`);
 			navigate("/repos");
 		} catch (err) {
 			toastError(err);
@@ -132,12 +137,20 @@
 </script>
 
 <Shell
-	crumbs={[{ label: "Repositories", href: "/repos" }, { label: repoName(repo, session.me?.names), href: `/repos/${repo}` }, { label: "Settings" }]}
+	crumbs={repo
+		? [{ label: "Repositories", href: "/repos" }, { label: repoName(repo, session.me?.names), href: `/repos/${repo}` }, { label: "Settings" }]
+		: [{ label: "Repositories", href: "/repos" }, { label: "Defaults" }]}
 	{repo}
-	data={rd.data}
+	sidebar={!!repo}
+	data={rd?.data}
 >
 	<div class="page">
-		<h1>Settings</h1>
+		{#if repo}
+			<h1>Settings</h1>
+		{:else}
+			<h1>Defaults for new repositories</h1>
+			<p class="hint lede">Every repository you create starts with these settings and keys. Changing them doesn't change existing repositories.</p>
+		{/if}
 		{#if !form}
 			<p class="muted">Loading…</p>
 		{:else}
@@ -172,7 +185,7 @@
 						{:else if dropKey}
 							<p class="callout warn"><Mark status="failed" /><span>When you save, the key is removed and no new agent starts until there's another.</span></p>
 						{/if}
-						<p class="hint" id="api-key-hint">Stored for this repository only, never shown again, and never given to a sandbox.{#if form.provider === "claude-subscription"} Run <span class="mono">claude setup-token</span> locally and paste the result. Agents bill to your subscription and share its usage limits, so many at once may be rate limited.{/if}</p>
+						<p class="hint" id="api-key-hint">{where}, never shown again, and never given to a sandbox.{#if form.provider === "claude-subscription"} Run <span class="mono">claude setup-token</span> locally and paste the result. Agents bill to your subscription and share its usage limits, so many at once may be rate limited.{/if}</p>
 					</div>
 					<datalist id="models">
 						<option value="claude-opus-5-5"></option>
@@ -238,7 +251,7 @@
 									{:else}<button type="button" onclick={() => ((dropReviewerKey = true), (reviewerKey = ""))}>Remove</button>{/if}
 								{/if}
 							</div>
-							<p class="hint" id="reviewer-hint">The reviewer calls OpenRouter directly. Stored for this repository only and never shown again.{#if form.provider === "claude-subscription"} A subscription token can't review, so automatic review needs this key.{/if}</p>
+							<p class="hint" id="reviewer-hint">The reviewer calls OpenRouter directly. {where} and never shown again.{#if form.provider === "claude-subscription"} A subscription token can't review, so automatic review needs this key.{/if}</p>
 						</div>
 					{/if}
 				</section>
@@ -254,7 +267,7 @@
 					<label class="check"><input type="checkbox" bind:checked={form.autoFerge} aria-describedby="ferge-hint" /> Ferge conflicting bubbles automatically</label>
 					<p class="hint" id="ferge-hint">When the merge loop is idle it ferges the oldest conflicting pair, one per pass: the two merge without the files they conflict on, and a new locked bubble holds those files until someone fixes and unlocks it.</p>
 					<label class="check"><input type="checkbox" bind:checked={form.fergeAgents} aria-describedby="ferge-agents-hint" /> After a ferge, start an agent to resolve its conflicts</label>
-					<p class="hint" id="ferge-agents-hint">The agent works on a fork of the locked bubble with the Ferge agents model. You still unlock it.</p>
+					<p class="hint" id="ferge-agents-hint">The agent works on a fork of the locked bubble with the Ferge agents model. The bubble unlocks itself once the agent's fix lands in it. While it works, the conflicts are its alone.</p>
 				</section>
 
 				<section>
@@ -263,6 +276,7 @@
 					<p class="hint" id="approval-hint">Every new task, including a superagent's plan and ferge agents', waits on the Tasks tab until you approve it, edit it, or reject it.</p>
 				</section>
 
+				{#if repo}
 				<section>
 					<h2>Deployments</h2>
 					<p class="hint lede">Run by hand from the Deploy tab, on a bubble's code, in a fresh sandbox that can reach only the git server and the hosts listed. A header's value is added to requests to its host outside the sandbox, so the command never sees it.</p>
@@ -302,6 +316,7 @@
 					{/each}
 					<button type="button" onclick={addDeploy}>Add a deployment</button>
 				</section>
+				{/if}
 
 				<div class="savebar" class:dirty>
 					<span class="state" role="status">{dirty ? "You have unsaved changes" : "All changes saved"}</span>
@@ -311,17 +326,19 @@
 			</form>
 		{/if}
 
+		{#if repo}
 		<section class="danger-zone">
 			<h2>Delete repository</h2>
 			<p class="hint">Deletes every bubble, fork and record in it. It can't be undone.</p>
 			<button class="danger" onclick={() => (deleteOpen = true)}>Delete repository</button>
 		</section>
+		{/if}
 	</div>
 </Shell>
 
 <Dialog bind:open={deleteOpen} title="Delete this repository?">
 	<form onsubmit={destroy}>
-		<p class="intro">This deletes every bubble, fork and agent record in <strong>{repoName(repo, session.me?.names)}</strong>. It can't be undone.</p>
+		<p class="intro">This deletes every bubble, fork and agent record in <strong>{repoName(repo!, session.me?.names)}</strong>. It can't be undone.</p>
 		<div class="field">
 			<label for="confirm">Type <span class="mono">{repo}</span> to confirm</label>
 			<input id="confirm" autocomplete="off" bind:value={confirmName} />

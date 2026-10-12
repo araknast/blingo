@@ -119,6 +119,26 @@ export function updateSettings(current: Settings, body: unknown): Settings | { e
 	return next;
 }
 
+// updateSettings plus the secrets sent with it: `key` (the API key) and `reviewerKey`, undefined when not
+// sent and "" to remove one. `hadReviewerKey`: whether one is kept already.
+export function updateWithKeys(current: Settings, body: unknown, hadReviewerKey: boolean): { next: Settings; key?: string; reviewerKey?: string } | { error: string } {
+	const next = updateSettings(current, body);
+	if ("error" in next) return next;
+	const raw = (body as { apiKey?: unknown } | null)?.apiKey;
+	if (raw !== undefined && (typeof raw !== "string" || raw.length > 500)) return { error: "apiKey must be a string" };
+	// Keys have no whitespace; a paste from a wrapped terminal line can.
+	const key = typeof raw === "string" ? raw.replace(/\s+/g, "") : undefined;
+	const bad = key && keyError(next.provider, key);
+	if (bad) return { error: bad };
+	const rkey = (body as { reviewerKey?: unknown } | null)?.reviewerKey;
+	if (rkey !== undefined && (typeof rkey !== "string" || rkey.length > 500)) return { error: "reviewerKey must be a string" };
+	const reviewerKey = typeof rkey === "string" ? rkey.trim() : undefined;
+	if (next.provider === "claude-subscription" && (next.review === "auto" || next.review === "both") && !(reviewerKey ?? hadReviewerKey)) {
+		return { error: "automatic review can't use a Claude subscription token: set an OpenRouter reviewer key, or use manual review" };
+	}
+	return { next, key, reviewerKey };
+}
+
 const HOST = /^[a-z0-9.-]+\.[a-z]{2,}$/i;
 function validateDeploys(raw: unknown): Deploy[] | string {
 	if (!Array.isArray(raw) || raw.length > 10) return "deploys must be a list of at most 10 deployments";

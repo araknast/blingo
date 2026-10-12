@@ -8,7 +8,6 @@
 	import BubbleView from "../lib/BubbleView.svelte";
 	import ForkDetail from "../lib/ForkDetail.svelte";
 	import Shell from "../lib/Shell.svelte";
-	import { memorySeen } from "../lib/seen";
 	import AgentView from "./agents/AgentView.svelte";
 	import TaskView, { type TaskLinks } from "./tasks/TaskView.svelte";
 	import SuperagentDialog from "../lib/SuperagentDialog.svelte";
@@ -27,8 +26,6 @@
 	const refresh = repoData.refresh;
 	const bubbleName = (id: string) => data?.bubbles.find((b) => b.id === id)?.name || short(id);
 	let map = $state<ReturnType<typeof BubbleMap>>();
-	// svelte-ignore state_referenced_locally
-	const seen = memorySeen(repo);
 
 	// ---- Drawer: a run, a fork or a task opens beside the map (?d=run:<fork>, fork:<fork>, task:<id>) ----
 	const drawer = $derived.by(() => {
@@ -201,7 +198,6 @@
 				stale={repoData.stale}
 				taskHref={(id) => open("task", id)}
 				pageHref={(tab) => `/repos/${repo}/${tab}`}
-				{seen}
 				hrefFor={(id, rest = "") => bubbleBase(id) + (rest ? `/${rest}` : "")}
 				agentHref={(fork) => open("run", fork)}
 				looseHref={(fork) => open("fork", fork)}
@@ -220,7 +216,7 @@
 					<div class="drawer-body">
 						{#key route.search}
 							{#if drawer.kind === "run"}
-								<AgentView {repo} id={drawer.id} run={drawerRun} task={data?.tasks.find((t) => t.kind === "agent" && t.status === "in-progress" && t.fork === drawer.id)?.id} kind={runKind({ fork: drawer.id })} {data} forkHref={(f) => open("fork", f)} />
+								<AgentView {repo} id={drawer.id} run={drawerRun} task={data?.tasks.find((t) => t.kind === "agent" && t.status === "in-progress" && t.fork === drawer.id)?.id} kind={runKind(drawerRun ?? { fork: drawer.id })} {data} forkHref={(f) => open("fork", f)} taskHref={(t) => open("task", t)} bubbleHref={(b) => open("bubble", b)} />
 							{:else if drawer.kind === "bubble"}
 								<BubbleView {repo} bubble={drawer.id} rest={bubbleRest.rest} at={bubbleRest.at} base={bubbleBase(drawer.id)} {data} {refresh} />
 							{:else if drawer.kind === "fork"}

@@ -12,15 +12,14 @@ export type Need = { key: string; tab: Tab } & (
 	| { kind: "member"; bubble: string; fork: string; why: string }
 	// A ferge's locked bubble: its conflicting files wait to be fixed and the bubble unlocked.
 	| { kind: "ferge"; bubble: string; why: string }
-	// Something on a tab with no item of its own to link to (a setting, a deployment, memory).
+	// Something on a tab with no item of its own to link to (a setting, a deployment).
 	| { kind: "page"; title: string; why: string }
 );
 
 const PROVIDER = { anthropic: "the Anthropic API", openrouter: "OpenRouter", "claude-subscription": "a Claude subscription" };
 
 // The backend counts the same things for the repository list (RepoDO.needsCount): keep the two in step.
-// `memorySeen`: when this viewer last opened the Memory tab; notes agents wrote since then need a look.
-export function needs(d: RepoState, memorySeen = Infinity): Need[] {
+export function needs(d: RepoState): Need[] {
 	const out: Need[] = d.conflicts.map(([a, b]) => ({ kind: "conflict", tab: "bubbles", key: `c:${a}|${b}`, a, b }));
 	// A fork goes by its task's title, else its agent's prompt.
 	const titleOf = new Map([...d.agents.map((a): [string, string] => [a.fork, a.prompt]), ...d.tasks.filter((t) => t.fork).map((t): [string, string] => [t.fork!, t.title])]);
@@ -40,7 +39,8 @@ export function needs(d: RepoState, memorySeen = Infinity): Need[] {
 	for (const b of d.bubbles) {
 		for (const m of b.members)
 			if (m.status === "failed") out.push({ kind: "member", tab: "bubbles", key: `m:${m.name}`, bubble: b.id, fork: m.name, why: "Its changes didn't apply" });
-		if (b.ferge && b.locked) out.push({ kind: "ferge", tab: "bubbles", key: `g:${b.id}`, bubble: b.id, why: "Fix its conflicting files in a fork, then unlock it" });
+		// While its ferge agent is at work the conflicts are the agent's; a person's once it failed or was stopped.
+		if (b.ferge && b.locked && !fergeAgent(d, b.id)) out.push({ kind: "ferge", tab: "bubbles", key: `g:${b.id}`, bubble: b.id, why: "Fix its conflicting files in a fork, then unlock it" });
 	}
 	// No key isn't a problem: a repository runs on notagents alone. A key for another provider is: agents fail.
 	const s = d.settings;
@@ -51,15 +51,17 @@ export function needs(d: RepoState, memorySeen = Infinity): Need[] {
 	for (const r of d.deploys) if ((last.get(r.name)?.started ?? -1) < r.started) last.set(r.name, r);
 	for (const r of last.values())
 		if (r.status === "failed") out.push({ kind: "page", key: `d:${r.id}`, tab: "deploy", title: `Deployment ${r.name} failed`, why: "Its last run failed. Read its log, then run it again" });
-	const fresh = d.memory.filter((m) => isRun(m.author) && m.created > memorySeen).length;
-	if (fresh) out.push({ kind: "page", key: "n:memory", tab: "memory", title: `${fresh === 1 ? "A new note" : `${fresh} new notes`} from agents`, why: "Every agent reads them. Check they're right" });
 	return out;
 }
 
+// The task of the ferge agent at work on ferge bubble `bubble`'s conflicts, if any (RepoDO.fergeAgent).
+export const fergeAgent = (d: RepoState, bubble: string) =>
+	d.tasks.find((t) => t.role === "ferge" && t.bubble === bubble && (t.status === "open" || t.status === "in-progress" || t.status === "awaiting-approval"));
+
 // How many items each tab has.
-export function needsByTab(d: RepoState, memorySeen = Infinity): Partial<Record<Tab, number>> {
+export function needsByTab(d: RepoState): Partial<Record<Tab, number>> {
 	const by: Partial<Record<Tab, number>> = {};
-	for (const n of needs(d, memorySeen)) by[n.tab] = (by[n.tab] ?? 0) + 1;
+	for (const n of needs(d)) by[n.tab] = (by[n.tab] ?? 0) + 1;
 	return by;
 }
 

@@ -65,13 +65,11 @@
 			<h1>This repository isn't available</h1>
 			<p class="muted">It doesn't exist, or it belongs to someone else. <a href="/repos">Go to your repositories</a>.</p>
 		{:else if id}
-			<AgentView {repo} {id} {run} {task} kind={runKind({ fork: id })} data={rd.data} />
+			<AgentView {repo} {id} {run} {task} kind={runKind(run ?? { fork: id })} data={rd.data} />
 		{:else}
 			<h1>Agents</h1>
 			{#if !rd.data}
 				<p class="muted">Loading…</p>
-			{:else if !runs.length}
-				<p class="muted">No agent has run here yet, and nobody has taken a task. Start one from the map or the Tasks tab.</p>
 			{:else}
 				<div class="toolbar">
 					<label class="search">
@@ -79,57 +77,76 @@
 						<input type="search" bind:value={query} placeholder="Find by prompt or id" />
 						<kbd aria-hidden="true">/</kbd>
 					</label>
-					<div class="chips" role="group" aria-label="Show">
-						<button aria-pressed={filter === "all"} onclick={() => (filter = "all")}>All <span class="n">{runs.length}</span></button>
-						{#each GROUPS as g (g.id)}
-							<button aria-pressed={filter === g.id} onclick={() => (filter = g.id)}>{g.label} <span class="n">{counts[g.id]}</span></button>
-						{/each}
-					</div>
 				</div>
-				{#if !listed.length}
-					<p class="muted">Nothing matches. <button class="link" onclick={() => ((filter = "all"), (query = ""))}>Show every run</button></p>
-				{:else}
-					<ul class="runs">
-						{#each shown as r, i (r.fork)}
-							{@const g = groupOf(r)}
-							{#if filter === "all" && (i === 0 || groupOf(shown[i - 1]) !== g)}
-								<li class="group-head" class:alert={g === "needs"}>{GROUPS.find((x) => x.id === g)?.label} <span class="n">{counts[g]}</span></li>
-							{/if}
-							<li>
-								<a href={href(r)} class:needs={g === "needs"}>
-									<span class="status"><Mark status={runMark(r, rd.data)} />{runLabel(r, rd.data)}</span>
-									<span class="prompt" title={r.prompt}>{r.prompt.split("\n")[0]}</span>
-									<span class="meta">{runKind(r)} <span class="mono">{runId(r.fork)}</span> · {r.finished ? `took ${duration(r.finished - r.started)}` : `started ${ago(r.started)}`}</span>
-								</a>
-							</li>
-						{/each}
-					</ul>
-					<Pager bind:page total={listed.length} />
-				{/if}
+				<section class="box" aria-label="Runs">
+					<header class="box-head">
+						<div class="chips" role="group" aria-label="Show">
+							<button aria-pressed={filter === "all"} onclick={() => (filter = "all")}>All</button>
+							{#each GROUPS as g (g.id)}
+								<button aria-pressed={filter === g.id} onclick={() => (filter = g.id)}>{g.label} <span class="n">{counts[g.id]}</span></button>
+							{/each}
+						</div>
+					</header>
+					{#if !runs.length}
+						<div class="empty">
+							<h2>No runs yet</h2>
+							<p class="muted">No agent has run here, and nobody has taken a task. Start one from the map or the Tasks tab.</p>
+						</div>
+					{:else if !listed.length}
+						<div class="empty">
+							{#if query}<h2>No run matches "{query}"</h2><p class="muted">Search looks at prompts and run ids.</p>
+							{:else}<h2>Nothing here</h2><p class="muted"><button class="link" onclick={() => (filter = "all")}>Show every run</button></p>{/if}
+						</div>
+					{:else}
+						<ul class="runs">
+							{#each shown as r, i (r.fork)}
+								{@const g = groupOf(r)}
+								{#if filter === "all" && (i === 0 || groupOf(shown[i - 1]) !== g)}
+									<li class="group-head" class:alert={g === "needs"}>{GROUPS.find((x) => x.id === g)?.label} <span class="n">{counts[g]}</span></li>
+								{/if}
+								<li class="run" class:needs={g === "needs"}>
+									<Mark status={runMark(r, rd.data)} />
+									<div class="body">
+										<a class="title" href={href(r)} title={r.prompt}>{r.prompt.split("\n")[0] || `${runKind(r)} run`}</a>
+										<span class="badge">{runKind(r)}</span>
+										<p class="meta"><span class="mono">#{runId(r.fork)}</span> · <span class="state">{runLabel(r, rd.data)}</span> · {r.finished ? `took ${duration(r.finished - r.started)}` : `started ${ago(r.started)}`}</p>
+									</div>
+								</li>
+							{/each}
+						</ul>
+					{/if}
+				</section>
+				<Pager bind:page total={listed.length} />
 			{/if}
 		{/if}
 	</div>
 </Shell>
 
 <style>
-	.page { padding: 1.5rem clamp(1rem, 3vw, 2.5rem) 3rem; max-width: 64rem; }
-	h1 { margin-bottom: 1rem; }
-	.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem 1rem; margin-bottom: 1rem; }
-	.toolbar .search input { width: 16rem; max-width: 70vw; }
-	.runs { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--raised); overflow: hidden; }
-	.runs li + li { border-top: 1px solid var(--line-2); }
-	.group-head { padding: 0.45rem 1rem; font-size: 0.75rem; font-weight: 600; color: var(--ink-2); background: var(--paper); }
+	/* The list is laid out like the Tasks list (TaskList): a box with the filters in its head. */
+	.page { padding: 1.5rem clamp(1rem, 3vw, 2.5rem) 3rem; max-width: 80rem; }
+	h1 { font-weight: 600; margin-bottom: 1rem; }
+	.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-bottom: 1rem; }
+	.toolbar .search input { width: 18rem; max-width: 70vw; }
+	.box { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--raised); overflow: hidden; }
+	.box-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; padding: 0.6rem 1rem; background: var(--paper); border-bottom: 1px solid var(--line); font-size: 0.875rem; }
+	.runs { list-style: none; margin: 0; padding: 0; }
+	.group-head { padding: 0.45rem 1rem; font-size: 0.75rem; font-weight: 600; color: var(--ink-2); background: var(--paper); border-top: 1px solid var(--line-2); }
+	.group-head:first-child { border-top: 0; }
 	.group-head.alert { color: var(--conflict); }
-	.group-head .n { font-weight: 500; color: var(--ink-3); }
-	.runs a { display: grid; grid-template-columns: 11rem 1fr auto; gap: 1rem; align-items: center; padding: 0.75rem 1rem; color: inherit; text-decoration: none; }
-	.runs a:hover, .runs a:focus-visible { background: var(--paper); }
-	.runs a:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
-	.status { display: inline-flex; align-items: center; gap: 0.45rem; font-size: 0.8125rem; font-weight: 500; }
-	.needs .status { color: var(--conflict); }
-	.prompt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-	.meta { font-size: 0.8125rem; color: var(--ink-3); white-space: nowrap; }
+	.group-head .n { font-weight: 500; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+	.run { display: flex; gap: 0.75rem; align-items: flex-start; padding: 0.75rem 1rem; border-top: 1px solid var(--line-2); }
+	.group-head + .run, .runs > .run:first-child { border-top: 0; }
+	.run > :global(svg) { flex: none; margin-top: 0.2rem; }
+	.body { min-width: 0; flex: 1; }
+	.title { font-weight: 600; color: var(--ink); text-decoration: none; overflow-wrap: anywhere; margin-right: 0.4rem; }
+	.title:hover { text-decoration: underline; }
+	.title:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 2px; }
+	.meta { font-size: 0.8125rem; color: var(--ink-3); margin-top: 0.2rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.meta .mono { font-size: 0.75rem; }
+	.needs .state { color: var(--conflict); font-weight: 500; }
+	.empty { padding: 3rem 1rem; text-align: center; }
+	.empty h2 { font-size: 1.0625rem; margin-bottom: 0.4rem; }
+	.empty p { max-width: 32rem; margin: 0 auto; }
 	.link { background: none; border: 0; padding: 0; color: var(--focus); text-decoration: underline; }
-	@media (max-width: 700px) {
-		.runs a { grid-template-columns: 1fr; gap: 0.25rem; }
-	}
 </style>

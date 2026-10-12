@@ -2,9 +2,10 @@ import { DurableObject } from "cloudflare:workers";
 import { authRemote, forkRepo, headOf } from "./box";
 import { getAgentByName } from "agents";
 import { COMMIT_FILES_SH, MERGES, PATCH_SH, readSeries } from "./git-scripts";
+import { splitParts } from "./git";
 import { conflictKey, fergeCandidate, nearestNeighbour, placeFork, renameConflicts, type Basis, type Bubble } from "./bubbles";
 import { fergeName, friendlyName, nameText, type Name } from "./names";
-import { NO_KEY, deployHeaders, deployKey, deployValues, gate, keyError, readSettings, updateSettings, type Provider, type Role, type Settings } from "./settings";
+import { NO_KEY, deployHeaders, deployKey, deployValues, gate, readSettings, updateWithKeys, type Provider, type Role, type Settings } from "./settings";
 import { resolveSkills, type Skill } from "./skills";
 import { explanation, fixPrompt, ready, renameOwed, shortTitle, type Owed, type PlanItem, type TaskState } from "./tasks";
 
@@ -13,8 +14,13 @@ const NO_LONGER_CONFLICT = "those bubbles no longer conflict";
 // A merge or ferge hides its bubbles for seconds. Longer than the alarm's own wall-clock limit means
 // the operation died (cancelled alarm, reset, deploy) without un-hiding them.
 const HIDE_LEASE_MS = 15 * 60_000;
-// ponytail: a fork's patch series is kept in SQLite (2 MB rows); store series in R2 if forks get bigger.
-const MAX_SERIES = 1_500_000;
+// A fork's patch series is kept in SQLite in parts (rows are at most 2 MB): `fork.diff` holds the first
+// part and `fork_part` the rest. It crosses DO RPC whole (32 MiB a message), hence the cap.
+// ponytail: store series in R2 if forks get bigger than this.
+const MAX_SERIES = 25_000_000;
+const PART = 500_000; // UTF-16 units: at most 1.5 MB of UTF-8
+// SQL: ferge bubble `b` has a ferge agent at work on its conflicts (yorkle's attention.ts fergeAgent).
+const FERGE_AGENT = "EXISTS (SELECT 1 FROM task t WHERE t.role = 'ferge' AND t.bubble = b.id AND t.status IN ('open', 'in-progress', 'awaiting-approval'))";
 
 // status: rep = the fork that started the bubble; pending = its patch series is queued; merged = applied
 // (or merged in, for forks from before patch series); failed = its series didn't apply; conflict = a
@@ -74,6 +80,7 @@ export class RepoDO extends DurableObject<Env> {
 		this.sql.exec(`
 			CREATE TABLE IF NOT EXISTS bubble(id TEXT PRIMARY KEY, visible INTEGER NOT NULL DEFAULT 1, seq INTEGER NOT NULL);
 			CREATE TABLE IF NOT EXISTS fork(name TEXT PRIMARY KEY, bubble TEXT NOT NULL, status TEXT NOT NULL, files TEXT NOT NULL, diff TEXT);
+			CREATE TABLE IF NOT EXISTS fork_part(fork TEXT NOT NULL, i INTEGER NOT NULL, text TEXT NOT NULL, PRIMARY KEY (fork, i)); -- a long diff's later parts
 			CREATE TABLE IF NOT EXISTS conflict(k TEXT PRIMARY KEY);
 			CREATE TABLE IF NOT EXISTS locked(id TEXT PRIMARY KEY);
 			CREATE TABLE IF NOT EXISTS hidden(id TEXT PRIMARY KEY, since INTEGER NOT NULL); -- lease for bubble.visible = 0
@@ -260,11 +267,13 @@ export class RepoDO extends DurableObject<Env> {
 				fork,
 				fork,
 				JSON.stringify([...new Set([...files, ...basisFiles])]),
-				mbox,
+				"",
 				this.nextSeq(),
 			);
+			this.putDiff(fork, mbox);
 		} else if (target) {
-			this.sql.exec("INSERT INTO fork (name, bubble, status, files, diff) VALUES (?, ?, 'pending', ?, ?)", fork, target, JSON.stringify(files), mbox);
+			this.sql.exec("INSERT INTO fork (name, bubble, status, files, diff) VALUES (?, ?, 'pending', ?, '')", fork, target, JSON.stringify(files));
+			this.putDiff(fork, mbox);
 		}
 		this.sql.exec(
 			"UPDATE task SET status = 'completed', explanation = ?, finished = ? WHERE fork = ? AND status = 'in-progress'",
@@ -599,11 +608,12 @@ export class RepoDO extends DurableObject<Env> {
 
 	// A person resolves a locked ferge bubble's conflicts in the UI: their files go in as a notagent task
 	// on that bubble (its fork, a commit there, then placement, which takes a ferge fork home). Unlocking
-	// is still theirs to do once it's placed.
+	// is still theirs to do once it's placed. Not while a ferge agent is at work on them.
 	async resolveFerge(bubble: string, files: Record<string, string>, author: string): Promise<{ task: string; fork: string; placing: boolean } | { error: string }> {
-		const b = this.sql.exec<{ ferge: number; name: string }>("SELECT ferge, name FROM bubble WHERE id = ?", bubble).toArray()[0];
+		const b = this.sql.exec<{ id: string; ferge: number; name: string; agent: number }>(`SELECT id, ferge, name, ${FERGE_AGENT} AS agent FROM bubble b WHERE id = ?`, bubble).toArray()[0];
 		if (!b?.ferge) return { error: "that isn't a ferge bubble" };
 		if (!this.sql.exec("SELECT 1 FROM locked WHERE id = ?", bubble).toArray().length) return { error: "that ferge bubble is already unlocked" };
+		if (b.agent) return { error: "an agent is resolving that ferge bubble's conflicts" };
 		const repo = this.ctx.storage.kv.get<string>("repo")!;
 		const added = await this.addTasks(repo, [{ title: shortTitle(`Resolve the conflicts in ${b.name}`), description: `Resolved by ${author} in the conflict resolver:\n${Object.keys(files).map((f) => `- ${f}`).join("\n")}`, kind: "notagent", deps: [], bubble }]);
 		if ("error" in added) return added;
@@ -658,7 +668,7 @@ export class RepoDO extends DurableObject<Env> {
 			loose +
 			n("SELECT COUNT(*) AS n FROM task WHERE status IN ('failed', 'awaiting-approval')") +
 			n("SELECT COUNT(*) AS n FROM fork WHERE status = 'failed' AND bubble IN (SELECT id FROM bubble)") +
-			n("SELECT COUNT(*) AS n FROM bubble WHERE ferge = 1 AND id IN (SELECT id FROM locked)") +
+			n(`SELECT COUNT(*) AS n FROM bubble b WHERE ferge = 1 AND id IN (SELECT id FROM locked) AND NOT ${FERGE_AGENT}`) +
 			keyNeed +
 			deploys
 		);
@@ -739,8 +749,20 @@ export class RepoDO extends DurableObject<Env> {
 		return f ? (f.status === "merged" || f.status === "pending" || f.status === "failed" ? f.bubble : fork) : null;
 	}
 
+	// A fork's whole diff (its patch series, or what merging it in changed); null for a fork from before
+	// patch series that isn't merged yet.
 	diff(fork: string): string | null {
-		return this.sql.exec<{ diff: string | null }>("SELECT diff FROM fork WHERE name = ?", fork).toArray()[0]?.diff ?? null;
+		const first = this.sql.exec<{ diff: string | null }>("SELECT diff FROM fork WHERE name = ?", fork).toArray()[0]?.diff ?? null;
+		if (first === null) return null;
+		return first + this.sql.exec<{ text: string }>("SELECT text FROM fork_part WHERE fork = ? ORDER BY i", fork).toArray().map((r) => r.text).join("");
+	}
+
+	// Stores `text` as fork `fork`'s diff (its row must exist): the first part in the row, the rest in fork_part.
+	private putDiff(fork: string, text: string) {
+		const [first, ...rest] = splitParts(text, PART);
+		this.sql.exec("UPDATE fork SET diff = ? WHERE name = ?", first, fork);
+		this.sql.exec("DELETE FROM fork_part WHERE fork = ?", fork);
+		rest.forEach((t, i) => this.sql.exec("INSERT INTO fork_part (fork, i, text) VALUES (?, ?, ?)", fork, i + 1, t));
 	}
 
 	// Deletes the git repos this repository still owns (base, reps, conflicting, loose and queued forks;
@@ -769,7 +791,7 @@ export class RepoDO extends DurableObject<Env> {
 		await Promise.allSettled([...runs, ...ci, ...deploying].map((n) => this.env.BOX.getByName(n).stop()));
 		await this.ctx.storage.deleteAlarm();
 		this.sql.exec(
-			"DELETE FROM bubble; DELETE FROM fork; DELETE FROM conflict; DELETE FROM locked; DELETE FROM hidden; DELETE FROM loose; DELETE FROM agent_run; DELETE FROM task; DELETE FROM task_dep; DELETE FROM memory; DELETE FROM skill; DELETE FROM skill_file; DELETE FROM deploy; DELETE FROM owed; DELETE FROM basis; DELETE FROM renamed; DELETE FROM merging;",
+			"DELETE FROM bubble; DELETE FROM fork; DELETE FROM fork_part; DELETE FROM conflict; DELETE FROM locked; DELETE FROM hidden; DELETE FROM loose; DELETE FROM agent_run; DELETE FROM task; DELETE FROM task_dep; DELETE FROM memory; DELETE FROM skill; DELETE FROM skill_file; DELETE FROM deploy; DELETE FROM owed; DELETE FROM basis; DELETE FROM renamed; DELETE FROM merging;",
 		);
 		for (const k of ["repo", "seq", "name", "namedFirst", "settings", "apiKey", "keyProvider", "reviewerKey", "deployAuth"]) this.ctx.storage.kv.delete(k);
 		return deleted;
@@ -814,22 +836,11 @@ export class RepoDO extends DurableObject<Env> {
 
 	// `apiKey` (a string; "" removes it) is kept apart from the other settings and never returned.
 	async setSettings(body: unknown) {
-		const next = updateSettings(this.settings(), body);
-		if ("error" in next) return next;
-		const raw = (body as { apiKey?: unknown } | null)?.apiKey;
-		if (raw !== undefined && (typeof raw !== "string" || raw.length > 500)) return { error: "apiKey must be a string" };
-		// Keys have no whitespace; a paste from a wrapped terminal line can.
-		const key = typeof raw === "string" ? raw.replace(/\s+/g, "") : undefined;
-		const bad = key && keyError(next.provider, key);
-		if (bad) return { error: bad };
-		const rkey = (body as { reviewerKey?: unknown } | null)?.reviewerKey;
-		if (rkey !== undefined && (typeof rkey !== "string" || rkey.length > 500)) return { error: "reviewerKey must be a string" };
-		const hasRKey = typeof rkey === "string" ? !!rkey.trim() : !!this.ctx.storage.kv.get<string>("reviewerKey");
-		if (next.provider === "claude-subscription" && (next.review === "auto" || next.review === "both") && !hasRKey) {
-			return { error: "automatic review can't use a Claude subscription token: set an OpenRouter reviewer key, or use manual review" };
-		}
+		const u = updateWithKeys(this.settings(), body, !!this.ctx.storage.kv.get<string>("reviewerKey"));
+		if ("error" in u) return u;
+		const { next, key, reviewerKey: rkey } = u;
 		this.ctx.storage.kv.put("settings", next);
-		if (typeof rkey === "string") rkey.trim() ? this.ctx.storage.kv.put("reviewerKey", rkey.trim()) : this.ctx.storage.kv.delete("reviewerKey");
+		if (typeof rkey === "string") rkey ? this.ctx.storage.kv.put("reviewerKey", rkey) : this.ctx.storage.kv.delete("reviewerKey");
 		// Deployment credentials: the values sent now, else the ones kept, for the headers still listed.
 		const sent = deployValues(body);
 		const kept = this.ctx.storage.kv.get<Record<string, string>>("deployAuth") ?? {};
@@ -1164,14 +1175,15 @@ export class RepoDO extends DurableObject<Env> {
 					const src = await authRemote(this.env, f.name, "read");
 					const r = await box.mergeFrom(url, src.url, "merge fork");
 					if (r.ok) await box.mergeEnv(url, [src.url]); // before it counts as merged: a task waiting on it gets its env
-					this.sql.exec("UPDATE fork SET status = ?, diff = ?, seq = ? WHERE name = ?", r.ok ? "merged" : "conflict", r.diff, r.ok ? this.nextSeq() : null, f.name);
+					this.sql.exec("UPDATE fork SET status = ?, seq = ? WHERE name = ?", r.ok ? "merged" : "conflict", r.ok ? this.nextSeq() : null, f.name);
+					this.putDiff(f.name, r.diff);
 					if (r.ok) await this.env.ARTIFACTS.delete(f.name).catch(() => false);
 				}
 				const series = forks.filter((f) => f.diff !== null);
 				if (!series.length) return;
 				const ok = await box.apply(
 					url,
-					series.map((f) => ({ fork: f.name, mbox: f.diff!, committer: { name: f.name, email: `${f.kind === "notagent" ? "notagent" : "agent"}@${domain}` } })),
+					series.map((f) => ({ fork: f.name, mbox: this.diff(f.name)!, committer: { name: f.name, email: `${f.kind === "notagent" ? "notagent" : "agent"}@${domain}` } })),
 				);
 				// The applied forks' envs join the bubble's before they count as merged, so a task waiting on
 				// them gets their envs (a fork from before forks were kept until applied has none: skipped).
@@ -1209,7 +1221,8 @@ export class RepoDO extends DurableObject<Env> {
 				if (r.ok) {
 					await this.bubbleBox(h.id).mergeEnv(rep.url, [src.url]);
 					this.absorb(h.id, nb);
-					this.sql.exec("UPDATE fork SET status = 'merged', diff = ?, seq = ? WHERE name = ?", r.diff, this.nextSeq(), nb);
+					this.sql.exec("UPDATE fork SET status = 'merged', seq = ? WHERE name = ?", this.nextSeq(), nb);
+					this.putDiff(nb, r.diff);
 					await this.env.ARTIFACTS.delete(nb);
 					await this.bubbleBox(nb).stop();
 				} else {

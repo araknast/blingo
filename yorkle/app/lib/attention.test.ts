@@ -47,7 +47,7 @@ test("conflicts, stuck forks, failed tasks and unapplied series need a person; w
 
 test("the repository's setup, a failed deployment and new notes from agents need a person too", () => {
 	const d: RepoState = structuredClone(demoSteps[0]);
-	const pages = (x: RepoState, seen?: number) => needs(x, seen).filter((n) => n.kind === "page").map((n) => n.key);
+	const pages = (x: RepoState) => needs(x).filter((n) => n.kind === "page").map((n) => n.key);
 	expect(pages(d)).toEqual([]); // no key: notagents still work
 	d.settings.hasKey = true;
 	d.settings.keyProvider = "anthropic";
@@ -63,8 +63,7 @@ test("the repository's setup, a failed deployment and new notes from agents need
 		{ id: "m2", text: "b", author: "r-demo-f-1234", created: 10 },
 		{ id: "m3", text: "c", author: "r-demo-s-1234", created: 3 },
 	];
-	expect(needs(d, 5).find((n) => n.key === "n:memory")).toMatchObject({ title: "A new note from agents" });
-	expect(pages(d, 20)).toEqual(["d:3"]);
+	expect(pages(d)).toEqual(["d:3"]); // new notes are news (a grey badge), not something to act on
 });
 
 test("every item belongs to a tab, and an open ferge waits on the bubbles tab", () => {
@@ -76,4 +75,9 @@ test("every item belongs to a tab, and an open ferge waits on the bubbles tab", 
 	expect(needs(d).find((n) => n.kind === "ferge")).toMatchObject({ tab: "bubbles", bubble: d.bubbles[1].id });
 	// The conflict, the failed member and the ferge; the review; the task.
 	expect(needsByTab(d)).toEqual({ bubbles: 3, agents: 1, tasks: 1 });
+	// While a ferge agent works on it the locked bubble isn't a person's; once it failed, it is again.
+	d.tasks.push({ ...d.tasks[0], id: "t2", status: "in-progress", role: "ferge", bubble: d.bubbles[1].id });
+	expect(needs(d).find((n) => n.kind === "ferge")).toBeUndefined();
+	d.tasks[1].status = "failed";
+	expect(needs(d).find((n) => n.kind === "ferge")).toBeDefined();
 });

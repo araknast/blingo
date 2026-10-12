@@ -6,9 +6,11 @@
 	import { commit, file, log } from "../../lib/git";
 	import { api } from "../../lib/session.svelte";
 	import { toast, toastError } from "../../lib/toast.svelte";
+	import type { Task } from "../../lib/types";
 	import { plural } from "../../lib/util";
 
-	let { repo, bubble, locked, onchange }: { repo: string; bubble: string; locked: boolean; onchange?: () => void } = $props();
+	// `agent`: the task of a ferge agent at work on these conflicts; while there is one, they're its alone.
+	let { repo, bubble, locked, agent, onchange }: { repo: string; bubble: string; locked: boolean; agent?: Task; onchange?: () => void } = $props();
 
 	const FERGE_COMMIT = "ferge: conflicting files with conflict markers";
 	type Conflicted = { path: string; parts: Part[]; choices: (Choice | undefined)[] };
@@ -73,7 +75,13 @@
 	}
 </script>
 
-{#if error}
+{#if agent && locked}
+	<div class="panel note">
+		<p>An agent is resolving these conflicts. The bubble unlocks itself once its fix lands here.</p>
+		<p class="muted">If the agent fails or is stopped, you can resolve them here.</p>
+		<a class="button" href={agent.fork ? `/repos/${repo}/agents/${agent.fork}` : `/repos/${repo}/tasks/${agent.id}`}>{agent.fork ? "Watch the agent" : "Open its task"}</a>
+	</div>
+{:else if error}
 	<div class="panel note">{error}</div>
 {:else if !files}
 	<div class="panel loading" aria-busy="true"><div class="bar"></div><div class="bar"></div><div class="bar short"></div></div>

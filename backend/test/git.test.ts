@@ -1,5 +1,14 @@
 import { expect, test } from "vitest";
-import { diffTrees, resolvePath, type TreeEntry } from "../src/git";
+import { diffTrees, resolvePath, splitParts, type TreeEntry } from "../src/git";
+
+test("splitParts keeps surrogate pairs whole and joins back", () => {
+	expect(splitParts("", 3)).toEqual([""]);
+	expect(splitParts("abcdefg", 3)).toEqual(["abc", "def", "g"]);
+	const s = "ab😀cd😀";
+	const parts = splitParts(s, 3);
+	expect(parts).toEqual(["ab", "😀c", "d😀"]);
+	expect(parts.join("")).toBe(s);
+});
 
 const store: Record<string, TreeEntry[]> = {
 	root1: [{ name: "a.txt", type: "blob", hash: "a1" }, { name: "keep", type: "tree", hash: "k" }, { name: "src", type: "tree", hash: "src1" }],

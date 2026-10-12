@@ -3,6 +3,7 @@
 	// in the Overview's drawer. `base` is where its links go: a path, or the drawer's URL with `&p=`.
 	import { route } from "./router.svelte";
 	import type { RepoState } from "./types";
+	import { fergeAgent } from "./attention";
 	import { plural, short } from "./util";
 	import Source from "../routes/bubble/Source.svelte";
 	import Commits from "../routes/bubble/Commits.svelte";
@@ -75,7 +76,7 @@
 			{:else if tab === "commits"}
 				<Commits {repo} {bubble} {base} />
 			{:else if tab === "conflicts"}
-				{#if b}<Conflicts {repo} {bubble} locked={b.locked} onchange={refresh} />{/if}
+				{#if b}<Conflicts {repo} {bubble} locked={b.locked} agent={data ? fergeAgent(data, bubble) : undefined} onchange={refresh} />{/if}
 			{:else}
 				<Forks {repo} members={b?.members ?? []} />
 			{/if}

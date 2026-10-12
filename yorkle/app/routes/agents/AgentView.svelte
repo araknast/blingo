@@ -9,7 +9,7 @@
 	import { api } from "../../lib/session.svelte";
 	import { toast, toastError } from "../../lib/toast.svelte";
 	import type { AgentRun, RepoState } from "../../lib/types";
-	import { ago, compact, duration, poll, runId, runLabel, runMark } from "../../lib/util";
+	import { ago, compact, duration, poll, runId, runLabel, runMark, short } from "../../lib/util";
 	import { elapsed as fmtElapsed } from "../../lib/elapsed";
 
 	let {
@@ -20,10 +20,24 @@
 		kind,
 		data,
 		forkHref = (fork: string) => `/repos/${repo}/forks/${fork}`,
-	}: { repo: string; id: string; run?: AgentRun; task?: string; kind: string; data?: RepoState | null; forkHref?: (fork: string) => string } = $props();
+		taskHref = (task: string) => `/repos/${repo}/tasks/${task}`,
+		bubbleHref = (bubble: string) => `/repos/${repo}/b/${bubble}`,
+	}: {
+		repo: string;
+		id: string;
+		run?: AgentRun;
+		task?: string;
+		kind: string;
+		data?: RepoState | null;
+		forkHref?: (fork: string) => string;
+		taskHref?: (task: string) => string;
+		bubbleHref?: (bubble: string) => string;
+	} = $props();
 
-	// Its fork, while it waits outside a bubble (for CI, a review, or a person).
+	// Its fork, while it waits outside a bubble (for CI, a review, or a person); the bubble it joined; its task.
 	const loose = $derived(data?.loose.find((l) => l.fork === id));
+	const bubble = $derived(data?.bubbles.find((b) => b.members.some((m) => m.name === id)));
+	const ownTask = $derived(data?.tasks.find((t) => t.fork === id));
 
 	let stopping = $state(false);
 	async function stopAgent() {
@@ -46,6 +60,7 @@
 	let reason = $state<string>(); // why the run failed after the agent finished: its change wasn't submitted
 	let usage = $state<{ input: number; output: number; cacheRead: number; cacheWrite: number }>(); // tokens so far
 	let loaded = $state(false);
+	let error = $state(""); // the transcript couldn't be fetched
 	let cursor = 0;
 	let stop = () => {};
 	stop = poll(async () => {
@@ -64,8 +79,10 @@
 			reason = t.reason;
 			usage = t.usage;
 			loaded = true;
+			error = "";
 			if (status !== "running") stop();
-		} catch {
+		} catch (e) {
+			error = String((e as Error).message ?? e);
 			loaded = true;
 		}
 	}, 1500);
@@ -74,7 +91,6 @@
 	// Live feedback while running: what it's doing now, and for how long. The spinner holds still when
 	// motion is reduced.
 	const glyphs = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
-	const verbs = ["Thinking", "Pondering", "Reasoning", "Tinkering", "Cooking", "Weaving", "Mulling"];
 	const reduced = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 	let tick = $state(0);
 	const timer = setInterval(() => tick++, reduced ? 1000 : 100);
@@ -86,6 +102,8 @@
 		return run && fmtElapsed(Date.now() - run.started);
 	});
 	const live = $derived((run?.status ?? status) === "running");
+	// The repository's state has arrived and no run of this id is in it, nor a transcript.
+	const missing = $derived(!!data && !run && loaded && !events.length && status !== "running");
 
 	// One scrollable box; follow new output unless the reader has scrolled up.
 	let box = $state<HTMLElement>();
@@ -151,7 +169,7 @@
 	// What it's doing: the tool call still waiting for its result, else the model.
 	const doing = $derived.by(() => {
 		const open = items.findLast((it) => it.kind === "tool" && it.tool.result === undefined);
-		return open?.kind === "tool" ? `Running ${open.tool.name}` : verbs[Math.floor(tick / (reduced ? 4 : 40)) % verbs.length];
+		return open?.kind === "tool" ? `Running ${open.tool.name}` : "Working";
 	});
 	const failedTools = $derived(items.flatMap((it) => (it.kind === "tool" ? [it.tool] : it.kind === "tools" ? it.tools : [])).filter((t) => t.error).length);
 	function jumpToFailure() {
@@ -191,22 +209,27 @@
 	};
 </script>
 
+<div class="av">
+{#if missing}
+	<div class="empty">
+		<h2>No such run</h2>
+		<p class="muted">Nothing has run here as <span class="mono">{runId(id)}</span>. It may belong to a deleted repository.</p>
+	</div>
+{:else if !data && !loaded}
+	<p class="muted">Loading…</p>
+{:else}
 <header class="head">
-	<p class="kind">{[kind, runId(id), init?.model].filter(Boolean).join(" · ")}</p>
-	<h1 tabindex="-1">{run?.prompt.split("\n")[0] ?? id}</h1>
-	<p class="status" role="status">
-		{#if run}<Mark status={runMark(run, data)} />{/if}
-		<span>{[
-			run ? runLabel(run, data) : status === "running" ? "Working" : "",
-			run && (run.finished ? `took ${duration(run.finished - run.started)}` : `started ${ago(run.started)}`),
-			usage && `${compact(usage.input + usage.cacheRead + usage.cacheWrite)} tokens in · ${compact(usage.output)} out`,
-			result?.num_turns && `${result.num_turns} ${result.num_turns === 1 ? "turn" : "turns"}`,
-		]
-			.filter(Boolean)
-			.join(" · ")}</span>
+	<h1 tabindex="-1">{run?.prompt.split("\n")[0] ?? `${kind} run`} <span class="id mono">#{runId(id)}</span></h1>
+	<p class="sub" role="status">
+		<span class="pill">{#if run}<Mark status={runMark(run, data)} /> {runLabel(run, data)}{:else}{live ? "Working" : "Ended"}{/if}</span>
+		<span class="badge">{kind}</span>
+		{#if run}<span class="muted">{run.finished ? `took ${duration(run.finished - run.started)}` : `started ${ago(run.started)}`}</span>{/if}
 	</p>
-	{#if live && task}<button class="stop danger" onclick={stopAgent} disabled={stopping}>{stopping ? "Stopping…" : "Stop agent"}</button>{/if}
 </header>
+
+{#if error}
+	<p class="callout lead"><Mark status="failed" /><span><strong>Its transcript couldn't be loaded:</strong> {error}</span></p>
+{/if}
 
 {#if loose && (loose.reviewManual === "pending" || loose.kind === "notagent")}
 	<p class="callout lead"><Mark status={loose.reviewManual === "pending" ? "review" : "failed"} /><span>{loose.reviewManual === "pending" ? "Its fork is waiting for your review." : (loose.reason ?? "A person has taken over its fork.")} <a href={forkHref(id)}>Open its fork</a></span></p>
@@ -258,11 +281,15 @@
 	<p class="thinking"><span class="glyph" aria-hidden="true">{reduced ? "·" : glyphs[tick % glyphs.length]}</span> {doing}…{#if elapsed} <span class="muted">({elapsed})</span>{/if}</p>
 {/snippet}
 
+<div class="cols">
+<article>
+<section class="card">
+<h2 class="card-head">Transcript{#if failedTools}<span class="err">{failedTools} failed tool {failedTools === 1 ? "call" : "calls"}</span>{/if}</h2>
 {#if !loaded}
-	<p class="muted">Loading…</p>
+	<p class="muted pad">Loading…</p>
 {:else if !events.length}
-	<p class="muted">{status === "running" ? "The agent is starting. Its transcript shows up here as it works." : "No transcript was kept for this run."}</p>
-	{#if live}{@render spin()}{/if}
+	<p class="muted pad">{status === "running" ? "The agent is starting. Its transcript shows up here as it works." : error ? "No transcript to show." : "No transcript was kept for this run."}</p>
+	{#if live}<div class="pad">{@render spin()}</div>{/if}
 {:else}
 	<div class="box" bind:this={box} {onscroll}>
 	<ol class="events">
@@ -281,7 +308,7 @@
 					</details>
 				</li>
 			{:else if it.e.type === "system"}
-				<li><details class="quiet"><summary><span class="mark">✎</span> Memory update <span class="muted">({it.e.hook_event})</span></summary><pre>{hookContext(it.e.output)}</pre></details></li>
+				<li><details class="quiet"><summary><span class="mark">✎</span> Memory update</summary><pre>{hookContext(it.e.output)}</pre></details></li>
 			{:else if it.e.type === "result"}
 				<li class="result callout" class:ok={!it.e.is_error}>
 					<strong>{it.e.is_error ? "Ended with an error" : "Finished"}</strong>
@@ -300,22 +327,73 @@
 	</div>
 	{#if live && !pinned}<button class="latest" onclick={() => ((pinned = true), box?.scrollTo({ top: box.scrollHeight, behavior: "smooth" }))}>Jump to latest</button>{/if}
 {/if}
+</section>
 {#if run?.log}
-	<details class="log"><summary>Sandbox log</summary><pre>{run.log}</pre></details>
+	<section class="card"><details class="log"><summary>Sandbox log</summary><pre>{run.log}</pre></details></section>
 {/if}
-<p class="back"><a href="/repos/{repo}/agents">All agents</a></p>
+</article>
+
+<aside>
+	{#if live && task}<button class="wide danger" onclick={stopAgent} disabled={stopping}>{stopping ? "Stopping…" : "Stop agent"}</button>{/if}
+	<dl>
+		<dt>Model</dt>
+		<dd>{#if init?.model}<span class="mono">{init.model}</span>{:else}<span class="muted">Not known yet</span>{/if}</dd>
+		{#if run}
+			<dt>Started</dt>
+			<dd>{ago(run.started)}{#if run.finished}, took {duration(run.finished - run.started)}{/if}</dd>
+		{/if}
+		{#if usage}
+			<dt>Tokens</dt>
+			<dd>{compact(usage.input + usage.cacheRead + usage.cacheWrite)} in, {compact(usage.output)} out</dd>
+		{/if}
+		{#if result?.num_turns}
+			<dt>Turns</dt>
+			<dd>{result.num_turns}</dd>
+		{/if}
+		{#if ownTask}
+			<dt>Task</dt>
+			<dd><a href={taskHref(ownTask.id)}>{ownTask.title}</a></dd>
+		{/if}
+		{#if bubble}
+			<dt>Landed in</dt>
+			<dd><a href={bubbleHref(bubble.id)}>{bubble.name || short(bubble.id)}</a></dd>
+		{:else if loose}
+			<dt>Fork</dt>
+			<dd><a class="mono" href={forkHref(id)}>{short(id)}</a> <span class="muted">waiting to be placed</span></dd>
+		{/if}
+	</dl>
+</aside>
+</div>
+{/if}
+</div>
 
 <style>
+	/* Laid out like a task's page (TaskView): title and status pill, then the transcript beside its facts. */
+	.av { container-type: inline-size; }
 	.head { margin-bottom: 1.25rem; }
-	.stop { margin-top: 0.25rem; }
-	.kind { font-size: 0.8125rem; color: var(--ink-3); overflow-wrap: anywhere; }
-	.status { display: flex; align-items: center; gap: 0.45rem; color: var(--ink-2); font-size: 0.9375rem; }
+	.head h1 { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.01em; overflow-wrap: anywhere; text-wrap: balance; }
+	.id { font-size: 1.125rem; font-weight: 400; color: var(--ink-3); }
+	.sub { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; margin-top: 0.5rem; font-size: 0.875rem; }
+	.pill { display: inline-flex; gap: 0.4rem; align-items: center; padding: 0.2rem 0.7rem 0.2rem 0.45rem; border-radius: 999px; border: 1px solid var(--line); font-weight: 500; }
 	.lead { margin-bottom: 1rem; }
 	.link { background: none; border: 0; padding: 0; color: var(--focus); text-decoration: underline; font: inherit; }
-	.danger { color: var(--conflict); }
-	.latest { position: sticky; bottom: 1rem; margin: -2.75rem auto 0; display: flex; box-shadow: 0 4px 14px rgb(15 24 33 / 0.18); }
-	.head h1 { margin: 0.2rem 0 0.4rem; overflow-wrap: anywhere; }
-	.box { max-height: calc(100vh - 15rem); min-height: 10rem; overflow: auto; border: 1px solid var(--line); border-radius: var(--r-md); padding: 0.75rem; background: var(--paper); }
+	.cols { display: grid; grid-template-columns: minmax(0, 1fr) 15rem; gap: 1.5rem; align-items: start; }
+	@container (max-width: 46rem) { .cols { grid-template-columns: 1fr; } }
+	article { display: grid; gap: 1rem; min-width: 0; }
+	.card { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--raised); overflow: hidden; }
+	.card-head { font-size: 0.875rem; font-weight: 600; padding: 0.6rem 1rem; background: var(--paper); border-bottom: 1px solid var(--line); display: flex; gap: 0.75rem; align-items: baseline; }
+	.card-head .err { font-weight: 500; }
+	aside { display: grid; gap: 0.6rem; font-size: 0.875rem; align-content: start; }
+	.wide { width: 100%; justify-content: center; }
+	button.danger { color: var(--conflict); }
+	dl { margin: 0; display: grid; gap: 0.25rem; }
+	dt { font-size: 0.8125rem; font-weight: 600; color: var(--ink-2); margin-top: 0.75rem; }
+	dt:first-child { margin-top: 0; }
+	dd { margin: 0; overflow-wrap: anywhere; }
+	.empty { padding: 3rem 1rem; text-align: center; }
+	.empty h2 { font-size: 1.0625rem; margin-bottom: 0.4rem; }
+	.latest { position: sticky; bottom: 1rem; margin: -2.75rem auto 0.5rem; display: flex; box-shadow: 0 4px 14px rgb(15 24 33 / 0.18); }
+	.box { max-height: calc(100vh - 16rem); min-height: 10rem; overflow: auto; padding: 0.75rem; }
 	.events { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.35rem; }
 	.events li { min-width: 0; }
 	.nested { padding: 0.4rem 0.5rem 0.5rem 1.4rem; }
@@ -363,6 +441,7 @@
 	.result :global(.md) { padding: 0.4rem 0; }
 	.thinking { margin-top: 0.75rem; font-size: 0.875rem; color: var(--ink-2); }
 	.glyph { display: inline-block; width: 1em; font-family: var(--mono); color: var(--ink); }
-	.log { margin-top: 1.5rem; }
-	.back { margin-top: 1.5rem; }
+	.log { padding: 0.35rem 0.4rem; }
+	.log summary { font-family: var(--font); font-size: 0.875rem; font-weight: 600; color: var(--ink); }
+	.log pre { margin: 0.4rem 0.6rem 0.6rem; background: var(--fog); border-radius: var(--r-sm); }
 </style>

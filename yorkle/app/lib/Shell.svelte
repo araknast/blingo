@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { Snippet } from "svelte";
 	import Dialog from "./Dialog.svelte";
-	import { needsByTab, type Tab } from "./attention";
+	import { isRun, needsByTab, type Tab } from "./attention";
 	import { route } from "./router.svelte";
 	import { memorySeen } from "./seen";
 	import type { RepoState } from "./types";
@@ -17,17 +17,19 @@
 		repo,
 		data,
 		full = false,
-	}: { crumbs: Crumb[]; actions?: Snippet; children: Snippet; repo?: string; data?: RepoState | null; full?: boolean } = $props();
+		sidebar = true,
+	}: { crumbs: Crumb[]; actions?: Snippet; children: Snippet; repo?: string; data?: RepoState | null; full?: boolean; sidebar?: boolean } = $props();
 
 	// Under the Overview, each tab with what needs you there (red) and what's going on (grey).
 	const counts = $derived.by(() => {
 		if (!data || !repo) return { need: {} as Partial<Record<Tab, number>>, info: {} as Record<string, number> };
 		return {
-			need: needsByTab(data, memorySeen(repo)),
+			need: needsByTab(data),
 			info: {
 				tasks: data.tasks.filter((t) => t.status !== "completed").length,
 				agents: data.agents.filter((a) => a.status === "running").length,
 				deploy: data.deploys.filter((d) => d.status === "running").length,
+				memory: data.memory.filter((m) => isRun(m.author) && m.created > memorySeen(repo)).length,
 			} as Record<string, number>,
 		};
 	});
@@ -68,11 +70,13 @@
 	});
 </script>
 
-<div class="shell" class:full>
+{#snippet wordmark()}<a class="wordmark" href="/repos"><img src="/favicon.svg" alt="" width="28" height="28" />yorkle</a>{/snippet}
+
+<div class="shell" class:full class:bare={!sidebar}>
+	{#if sidebar}
 	<nav class="side" class:open={drawer} aria-label="Main">
-		<a class="wordmark" href="/repos">yorkle</a>
+		{@render wordmark()}
 		<ul>
-			<li><a href="/repos" aria-current={route.path === "/repos" ? "page" : undefined}>Repositories</a></li>
 			{#if repo}
 				<li class="repo-nav">
 					<!-- The repository's name is its Overview; its tabs hang under it. -->
@@ -102,10 +106,12 @@
 			<button class="side-button" onclick={logout}>Log out</button>
 		</div>
 	</nav>
+	{/if}
 	{#if drawer}<button class="scrim" aria-label="Close menu" onclick={() => (drawer = false)}></button>{/if}
 
 	<div class="main">
 		<header class="top">
+			{#if !sidebar}{@render wordmark()}{:else}
 			<button class="quiet menu" aria-label="Open menu" aria-expanded={drawer} onclick={() => (drawer = true)}>
 				<svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M2 4h14M2 9h14M2 14h14" stroke="currentColor" stroke-width="1.6" /></svg>
 			</button>
@@ -116,7 +122,16 @@
 					</li>
 				{/each}
 			</ol>
-			{#if actions}<div class="actions">{@render actions()}</div>{/if}
+			{/if}
+			{#if actions || !sidebar}
+				<div class="actions">
+					{#if actions}{@render actions()}{/if}
+					{#if !sidebar}
+						{#if session.me?.admin}<button class="quiet" onclick={newInvite}>Invite someone</button>{/if}
+						<button class="quiet" onclick={logout} title="Signed in as {session.me?.username}">Log out</button>
+					{/if}
+				</div>
+			{/if}
 		</header>
 		<main>{@render children()}</main>
 	</div>
@@ -145,6 +160,9 @@
 		z-index: 20;
 	}
 	.wordmark {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
 		font-weight: 700;
 		font-size: 1.5rem;
 		letter-spacing: -0.04em;
@@ -152,6 +170,10 @@
 		text-decoration: none;
 		padding: 0 0.6rem 1.25rem;
 	}
+	.bare { grid-template-columns: 1fr; }
+	.top .wordmark { color: var(--ink); padding: 0; }
+	.bare .top { flex-wrap: wrap; }
+	.bare .actions { flex-wrap: wrap; justify-content: flex-end; }
 	.side ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
 	.side ul a {
 		display: block;
