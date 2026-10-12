@@ -118,6 +118,36 @@ h=$(sha1sum "$f" | cut -c1-40)
 echo "$h" > "$seen"
 node -e 'process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PostToolBatch", additionalContext: "Repository memory was updated. It now holds:\\n" + require("fs").readFileSync(process.argv[1], "utf8") } }))' "$f"`;
 
+// Claude Code Stop hook: $1 the task dir, $2 the repo, $3 the plan-check URL (a superagent; "" for an
+// agent). Catches what would fail the run after the agent exits, while it can still fix it: exit 2
+// sends stderr back to the model. At most 3 times, and a failing check lets it stop.
+export const STOP_HOOK_SH = `t="$1"; n=$(cat "$t/.stop-n" 2>/dev/null || echo 0)
+[ "$n" -lt 3 ] || exit 0
+if [ -n "$3" ]; then
+	if [ -f "$t/tasks.json" ]; then
+		p=$(node -e 'fetch(process.argv[1], { method: "POST", body: require("fs").readFileSync(process.argv[2]), signal: AbortSignal.timeout(30000) })
+			.then((r) => (r.ok ? r.text() : "")).then((s) => process.stdout.write(s))' "$3" "$t/tasks.json" 2>/dev/null) || p=""
+	else p="you haven't written your plan to $t/tasks.json"; fi
+else
+	cd "$2" 2>/dev/null && g=$(git rev-parse --git-dir 2>/dev/null) || exit 0
+	base=$(cat "$t/base" 2>/dev/null)
+	if [ -e "$g/MERGE_HEAD" ] || [ -e "$g/CHERRY_PICK_HEAD" ] || [ -e "$g/REVERT_HEAD" ] || [ -d "$g/rebase-merge" ] || [ -d "$g/rebase-apply" ]; then
+		p="a git merge, rebase, cherry-pick or revert is still in progress in $2: finish or abort it"
+	elif [ -n "$base" ] && ! git merge-base --is-ancestor "$base" HEAD 2>/dev/null; then
+		p="HEAD no longer contains the commit you started from ($base): your work must be commits on top of it"
+	elif [ -n "$(git rev-list --merges \${base:+$base..}HEAD 2>/dev/null)" ]; then
+		p="your history has merge commits, which can't be submitted: make it linear (git rebase \${base:-the root})"
+	else
+		nested=$( { git ls-files -o --exclude-standard | grep '/$' # untracked repos are listed as dir/
+			git diff --raw "\${base:-$(git hash-object -t tree /dev/null)}" 2>/dev/null | awk '$1 == ":000000" && $2 == "160000" { print $NF }'; } | tr '\\n' ' ')
+		[ -z "$nested" ] || p="these are git repositories inside $2, which can't be submitted: $nested- delete them or their .git, or add them to .gitignore"
+	fi
+fi
+[ -n "$p" ] || exit 0
+echo $((n + 1)) >"$t/.stop-n"
+echo "Before you stop: $p." >&2
+exit 2`;
+
 // ---- a repository's environment: the `env` branch ----
 // `env` holds what agents installed in the container (a tree rooted at /, e.g. usr/bin/jq), so a fork
 // carries its basis's toolchains. The project is `main`; nothing else reads `env`. Files over the

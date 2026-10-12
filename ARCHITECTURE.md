@@ -144,8 +144,14 @@ L's merge.
 **Superagent** (`POST /superagents {repo, bubble?, prompt, model?}`, `SUPER_SH`). Runs Claude Code in its
 own Box on a **read-only** clone. Its system prompt asks for a JSON plan
 `[{key, title, description, kind, deps}]` in `/workspace/task/tasks.json`. The Box alarm checks it with
-`validatePlan` (keys unique, deps known, no cycle, ≤ 30 tasks) and calls `addTasks`. Nothing is
-placed.
+`validatePlan` (keys unique, deps known, no cycle, ≤ 30 tasks; skill names the repo lacks are dropped)
+and calls `addTasks`. Nothing is placed.
+
+**Stop hook.** Whatever fails a run after Claude exits is checked before it may stop, so the agent can
+still fix it: Claude Code's `Stop` hook (`STOP_HOOK_SH`) exits 2 with the problem, at most 3 times. A
+superagent's plan goes to Outbound (`POST http://blingo.invalid/plan`, the same `checkPlan`); an
+agent's clone must have no merge commits, no merge/rebase in progress, its base commit as an
+ancestor, and no nested git repos. If the check itself can't run, the agent may stop.
 
 **Skills.** `POST /repos/:r/skills {files: [{path, data(base64)}]}` takes a skills folder picked in yorkle's
 Skills tab (`webkitdirectory`); `parseSkillUpload` needs a `SKILL.md` with `name` and `description` frontmatter

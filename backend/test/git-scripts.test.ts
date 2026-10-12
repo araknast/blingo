@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { afterAll, expect, test } from "vitest";
-import { APPLY_SH, COMMIT_FILES_SH, CONFLICT, ENSURE_REP, ENV_MERGE_SH, ENV_PUSH_SH, ENV_SAVE_SH, FERGE_SH, MEMORY_HOOK_SH, MERGES, MERGE_SH, NO_CONFLICT, PATCH_SH, PUSH_SH, REP, readSeries } from "../src/git-scripts";
+import { APPLY_SH, COMMIT_FILES_SH, CONFLICT, ENSURE_REP, ENV_MERGE_SH, ENV_PUSH_SH, ENV_SAVE_SH, FERGE_SH, MEMORY_HOOK_SH, MERGES, MERGE_SH, NO_CONFLICT, PATCH_SH, PUSH_SH, REP, STOP_HOOK_SH, readSeries } from "../src/git-scripts";
 
 const T = mkdtempSync(`${tmpdir()}/blingo-git-`);
 afterAll(() => rmSync(T, { recursive: true, force: true }));
@@ -134,6 +134,30 @@ test("memory hook: new items once, as PostToolBatch additional context", () => {
 	expect(hook().out).toBe(""); // unchanged since
 	sh("printf -- '- use pnpm\\n' > task/memory.md");
 	expect(JSON.parse(hook().out).hookSpecificOutput.additionalContext).toContain("- use pnpm");
+});
+
+test("stop hook: blocks an agent's unsubmittable repo state (at most 3 times), and a missing plan", () => {
+	let n = 0;
+	// A fresh agent clone of R with `edit` applied; the hook's exit code and message.
+	const stop = (edit: string, plan = "") => {
+		const d = `${T}/sh${++n}`;
+		sh(`mkdir -p ${d}/task && git clone -q ${R} ${d}/repo && git -C ${d}/repo rev-parse HEAD > ${d}/task/base`);
+		sh(edit, `${d}/repo`);
+		const r = () => run(STOP_HOOK_SH, [`${d}/task`, `${d}/repo`, plan]);
+		return Object.assign(r(), { again: r });
+	};
+	expect(stop("printf 'n\\n' > n.txt && git add -A && git commit -qm n && printf 'u\\n' > u.txt").code).toBe(0);
+	const merged = stop("git checkout -qb s && printf 's\\n' > s.txt && git add -A && git commit -qm s && git checkout -q main && printf 't\\n' > t.txt && git add -A && git commit -qm t && git merge -q --no-edit s");
+	expect([merged.code, merged.err]).toEqual([2, expect.stringContaining("merge commits")]);
+	const conflict = stop("git checkout -qb s && printf 'x\\n' > a.txt && git commit -qam s && git checkout -q main && printf 'y\\n' > a.txt && git commit -qam t && (git merge -q s 2>/dev/null || true)");
+	expect(conflict.err).toContain("still in progress");
+	expect(stop("git checkout -q --orphan o && git commit -qm o").err).toContain("no longer contains");
+	expect(stop("git init -q sub && mkdir -p dep && git init -q dep/x").err).toMatch(/inside .*: dep\/x\/ sub\//);
+	const linked = stop("git init -q sub && git -C sub commit -q --allow-empty -m s && git add sub 2>/dev/null");
+	expect(linked.err).toContain(": sub -");
+	expect([linked.again().code, linked.again().code, linked.again().code]).toEqual([2, 2, 0]); // then it may stop
+	expect(stop("true", "http://127.0.0.1:1/plan").err).toContain("haven't written your plan");
+	expect(stop("echo '[]' > ../task/tasks.json", "http://127.0.0.1:1/plan").code).toBe(0); // checker unreachable: let it stop
 });
 
 test("env: a run's overlay changes saved as an env commit, unchanged files never fetched, pushed", () => {

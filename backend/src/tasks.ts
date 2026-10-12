@@ -112,6 +112,18 @@ export function validatePlan(raw: unknown, available: string[] = []): { items: P
 	return left.size ? { error: `dependency cycle among ${[...left.keys()].join(", ")}` } : { items };
 }
 
+// A superagent's tasks.json as written (raw text): its plan, or what's wrong with it.
+export function checkPlan(raw: string, available: string[]): ReturnType<typeof validatePlan> {
+	if (!raw.trim()) return { error: "no plan written to tasks.json" };
+	let json: unknown;
+	try {
+		json = JSON.parse(raw);
+	} catch {
+		return { error: "tasks.json is not JSON" };
+	}
+	return validatePlan(json, available);
+}
+
 // The prompt for a CI fixer: a new agent on a fork whose last attempt at a task failed CI or review.
 export function fixPrompt(f: { title: string; description: string; failed: string[]; command: string; log: string | null; review: string | null }): string {
 	const parts = [

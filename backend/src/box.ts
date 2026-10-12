@@ -1,8 +1,8 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
-import { APPLY_SH, CONFLICT, ENSURE_REP, ENV_MERGE_SH, ENV_MOUNT_SH, ENV_OVERLAY_SH, ENV_PUSH_SH, ENV_SAVE_SH, FERGE_SH, MEMORY_HOOK_SH, MERGES, MERGE_SH, NO_CONFLICT, PATCH_SH, PUSH_SH, REP, readSeries } from "./git-scripts";
+import { APPLY_SH, CONFLICT, ENSURE_REP, ENV_MERGE_SH, ENV_MOUNT_SH, ENV_OVERLAY_SH, ENV_PUSH_SH, ENV_SAVE_SH, FERGE_SH, MEMORY_HOOK_SH, MERGES, STOP_HOOK_SH, MERGE_SH, NO_CONFLICT, PATCH_SH, PUSH_SH, REP, readSeries } from "./git-scripts";
 import { MODEL_HOSTS, egress, type Provider } from "./settings";
 import type { Skill } from "./skills";
-import { retryNote, validatePlan } from "./tasks";
+import { checkPlan, retryNote } from "./tasks";
 import { NO_USAGE, completeLines, usageFromBody, type Usage } from "./transcript";
 
 // Containers re-sign intercepted HTTPS with this CA; git/node/curl must trust it.
@@ -30,7 +30,7 @@ rm -rf /workspace/repo; git clone -q --single-branch "$1" /workspace/repo; cd /w
 git rev-parse -q --verify HEAD >${TASK}/base || true
 claude --print --dangerously-skip-permissions --no-session-persistence --output-format stream-json --verbose --settings "$4" --model "$MODEL" --append-system-prompt "$3" -- "$2" >${TASK}/transcript.jsonl
 git add -A
-git commit -qm "$2" || true
+git commit -q --no-verify -m "$2" || true
 (${ENV_SAVE_SH}) || echo "blingo: env not saved" >&2`;
 
 // Superagent: same args, but a read-only clone and nothing is pushed; its plan is $TASK/tasks.json.
@@ -82,8 +82,16 @@ Commit your work with messages that explain what you did and why: they become th
 	return `${role}\n\n${NOTES}${mem}${sk}`;
 }
 
-// Claude Code settings for agents: the memory hook (MEMORY_HOOK_SH, written to $TASK at start).
-const AGENT_SETTINGS = JSON.stringify({ hooks: { PostToolBatch: [{ hooks: [{ type: "command", command: `bash ${TASK}/memory-hook.sh ${TASK}` }] }] } });
+// Claude Code settings for agents: the memory and stop hooks (MEMORY_HOOK_SH, STOP_HOOK_SH, written to $TASK at start).
+const agentSettings = (kind: AgentJob["kind"]) =>
+	JSON.stringify({
+		hooks: {
+			PostToolBatch: [{ hooks: [{ type: "command", command: `bash ${TASK}/memory-hook.sh ${TASK}` }] }],
+			Stop: [{ hooks: [{ type: "command", command: `bash ${TASK}/stop-hook.sh ${TASK} /workspace/repo '${kind === "superagent" ? PLAN_CHECK : ""}'` }] }],
+		},
+	});
+// Outbound answers this for the Stop hook (any host resolves to Outbound; .invalid is never real).
+const PLAN_CHECK = "http://blingo.invalid/plan";
 // A transcript line bigger than this is stored as a stub (SQLite rows max out at 2 MB).
 const MAX_LINE = 256_000;
 
@@ -145,6 +153,11 @@ export class Outbound extends WorkerEntrypoint<Env, { ci?: string[]; repo?: stri
 	async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url);
 		const { ci, repo, box, deploy } = this.ctx.props ?? {};
+		// The Stop hook (STOP_HOOK_SH) checks a superagent's plan here: "" = fine, else what's wrong.
+		if (repo && request.method === "POST" && url.href === PLAN_CHECK) {
+			const plan = checkPlan(await request.text(), await this.env.REPO.getByName(repo).skillNames());
+			return new Response("error" in plan ? plan.error : "");
+		}
 		const creds = repo && Object.values(MODEL_HOSTS).includes(url.hostname) ? await this.env.REPO.getByName(repo).credentials() : null;
 		const to = egress(url, { ci, agent: !!repo, provider: creds?.provider });
 		if (to === "pass") {
@@ -316,6 +329,7 @@ export class Box extends DurableObject<Env> {
 		await this.start();
 		await this.sh(`rm -rf ${TASK} && mkdir -p ${TASK}`);
 		await this.sh(`cat > ${TASK}/memory-hook.sh`, [], { stdin: MEMORY_HOOK_SH });
+		await this.sh(`cat > ${TASK}/stop-hook.sh`, [], { stdin: STOP_HOOK_SH });
 		// Only the chosen skills: nothing else is in the user skills folder.
 		await this.sh(`rm -rf ~/.claude/skills`);
 		if (job.kind !== "superagent" && job.skills?.length) await this.sh(UNPACK_SKILLS, [], { stdin: JSON.stringify(job.skills) });
@@ -342,7 +356,7 @@ export class Box extends DurableObject<Env> {
 			job.provider === "openrouter"
 				? { ANTHROPIC_BASE_URL: "https://openrouter.ai/api", ANTHROPIC_AUTH_TOKEN: "added-by-outbound", ANTHROPIC_API_KEY: "" }
 				: { CLAUDE_CODE_OAUTH_TOKEN: "added-by-outbound", ANTHROPIC_API_KEY: "" };
-		await this.container.exec(["bash", "-c", BG_SH, script, job.remote, prompt, systemPrompt(job.kind, job.memory ?? [], job.skills ?? []), AGENT_SETTINGS], {
+		await this.container.exec(["bash", "-c", BG_SH, script, job.remote, prompt, systemPrompt(job.kind, job.memory ?? [], job.skills ?? []), agentSettings(job.kind)], {
 			cwd: "/workspace",
 			env: {
 				...TRUST,
@@ -473,17 +487,12 @@ export class Box extends DurableObject<Env> {
 		let loose = false;
 		if (job.kind === "superagent") {
 			const raw = (await this.sh(`cat ${TASK}/tasks.json 2>/dev/null || true`)).stdout;
-			let plan: ReturnType<typeof validatePlan>;
-			try {
-				plan = validatePlan(JSON.parse(raw), await repo.skillNames());
-			} catch {
-				plan = { error: raw.trim() ? "tasks.json is not JSON" : `it wrote no plan to ${TASK}/tasks.json` };
-			}
+			const plan = checkPlan(raw, await repo.skillNames());
 			if ("error" in plan) return unsubmitted(`plan rejected: ${plan.error}`);
 			await repo.addTasks(job.repo, plan.items, job.fork);
 		} else {
 			const { url } = await authRemote(this.env, job.fork, "write");
-			const push = await this.sh(`cd /workspace/repo && git push -q "$1" HEAD:refs/heads/main`, [url]);
+			const push = await this.sh(`cd /workspace/repo && git push -q --no-verify "$1" HEAD:refs/heads/main`, [url]);
 			if (push.exitCode !== 0) return unsubmitted(`couldn't push its commit: ${push.stderr.trim().split("\n").at(-1) || `exit ${push.exitCode}`}`);
 			const env = await this.sh(ENV_PUSH_SH, [url]);
 			if (env.exitCode !== 0) log += `\nenv not pushed (agents building on this reinstall what it installed): ${env.stderr.trim().split("\n").at(-1) || `exit ${env.exitCode}`}`;

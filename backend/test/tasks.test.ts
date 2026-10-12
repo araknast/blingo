@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { explanation, fixPrompt, ready, renameOwed, retryNote, shortTitle, validatePlan, type ForkState, type TaskState } from "../src/tasks";
+import { checkPlan, explanation, fixPrompt, ready, renameOwed, retryNote, shortTitle, validatePlan, type ForkState, type TaskState } from "../src/tasks";
 
 const t = (id: string, status: TaskState["status"], deps: string[] = [], fork: string | null = null, bubble: string | null = null): TaskState => ({
 	id,
@@ -141,4 +141,11 @@ test("a plan drops skills the repository lacks; omitted = all", () => {
 	expect(validatePlan(item(["run", "x"]), ["x"])).toMatchObject({ items: [{ skills: ["x"] }] });
 	expect(validatePlan(item(["run"]), [])).toMatchObject({ items: [{ skills: [] }] });
 	expect((validatePlan(item(), ["x"]) as { items: object[] }).items[0]).not.toHaveProperty("skills");
+});
+
+test("checkPlan: tasks.json as written", () => {
+	expect(checkPlan(" \n", [])).toEqual({ error: "no plan written to tasks.json" });
+	expect(checkPlan("[{", [])).toEqual({ error: "tasks.json is not JSON" });
+	expect(checkPlan('[{"key":"a","title":"t","description":"d","kind":"agent","deps":["b"]}]', [])).toEqual({ error: "task a: unknown dep b" });
+	expect(checkPlan('[{"key":"a","title":"t","description":"d","kind":"agent"}]', [])).toHaveProperty("items");
 });
