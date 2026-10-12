@@ -2,6 +2,7 @@
 	import FileDiff from "../../lib/FileDiff.svelte";
 	import { commit } from "../../lib/git";
 	import type { Change, Commit } from "../../lib/types";
+	import { isRun } from "../../lib/attention";
 	import { ago, firstLine, plural } from "../../lib/util";
 
 	let { repo, bubble, hash, base }: { repo: string; bubble: string; hash: string; base: string } = $props();
@@ -40,7 +41,7 @@
 		<h2>{firstLine(c.message)}</h2>
 		{#if body(c.message)}<pre class="body">{body(c.message)}</pre>{/if}
 		<dl>
-			<div><dt>Author</dt><dd>{c.author.name} <span class="muted">&lt;{c.author.email}&gt;</span></dd></div>
+			<div><dt>Author</dt><dd>{#if isRun(c.author.name)}<a href="/repos/{repo}/agents/{c.author.name}">{c.author.name}</a>{:else}{c.author.name}{/if} <span class="muted">&lt;{c.author.email}&gt;</span></dd></div>
 			<div><dt>Committed</dt><dd title={new Date(c.committedAt * 1000).toLocaleString()}>{ago(c.committedAt * 1000)}</dd></div>
 			<div><dt>Commit</dt><dd class="mono">{c.hash}</dd></div>
 			{#if c.parents.length}
