@@ -149,6 +149,14 @@ export class RepoDO extends DurableObject<Env> {
 			DELETE FROM watch; DELETE FROM pushed;`);
 		// A fresh instance means any merge or ferge that hid bubbles died with the old one.
 		if (this.recoverHidden(true)) void ctx.blockConcurrencyWhile(() => this.kick());
+		// ...and so did any task start (schedule, takeTask) still between marking it in-progress and its
+		// agent run (or loose fork) being recorded: back to open, to start again.
+		// ponytail: an agent that did start but whose run wasn't recorded yet keeps running unwatched.
+		const orphaned = this.sql.exec(
+			`UPDATE task SET status = 'open', fork = NULL, base_head = NULL WHERE status = 'in-progress'
+			AND (fork IS NULL OR (kind = 'agent' AND fork NOT IN (SELECT fork FROM agent_run)) OR (kind = 'notagent' AND fork NOT IN (SELECT fork FROM loose)))`,
+		).rowsWritten;
+		if (orphaned) void ctx.blockConcurrencyWhile(() => this.kick());
 	}
 
 	// Adds a column to a live table if it isn't there yet; returns whether it was added.
