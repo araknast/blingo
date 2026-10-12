@@ -45,7 +45,9 @@ const overlap = (a, b) => { let n = 0; for (let i = 0; i < a.length; i++) n += p
 const count = (a) => { let n = 0; for (let i = 0; i < a.length; i++) n += pop(a[i]); return n; };
 const bitsOf = (a) => { const out = []; for (let i = 0; i < a.length; i++) { let w = a[i]; while (w) { const j = 31 - Math.clz32(w & -w); out.push(i * 32 + j); w &= w - 1; } } return out; };
 
-const DEFAULTS = { agents: 2000, ci: true, parallel: false, modules: 240, maxAgentPushes: 3, repo: "orchard" };
+// Neighbour merges and ferges at once per repository, as RepoDO's MAX_MERGES.
+const MAX_OPS = 12;
+const DEFAULTS = { agents: 2000, ci: true, parallel: true, modules: 240, maxAgentPushes: 3, repo: "orchard" };
 
 function createWorld(seed = 7, opts = {}) {
 	const o = { ...DEFAULTS, ...opts };
@@ -126,15 +128,15 @@ function advanceAgent(w, a) {
 	const { rng, opts } = w;
 	if (a.state === "running") {
 		if (a.role === "agent" && a.pushes === 0 && !a.fixing && rng() < 0.03) { a.state = "failed"; a.person = true; a.why = "Agent failed. Retry it from its task"; a.since = w.t; return; }
-		if (a.role === "ferge" && rng() < 0.08) { failFergeAgent(w, a); return; }
 		a.fixing = false;
 		if (opts.ci) { a.state = "ci"; a.until = w.t + 120 + rng() * 240; }
 		else { a.state = "placing"; a.until = w.t + 15 + rng() * 30; }
 	} else if (a.state === "ci") {
-		if (rng() < 0.15) return failGate(w, a, "CI failed");
+		// Ferge agents never fail, so every ferge's fix lands and its bubble unlocks.
+		if (a.role === "agent" && rng() < 0.15) return failGate(w, a, "CI failed");
 		a.state = "review"; a.until = w.t + 60 + rng() * 90;
 	} else if (a.state === "review") {
-		if (rng() < 0.07) return failGate(w, a, "Review rejected");
+		if (a.role === "agent" && rng() < 0.07) return failGate(w, a, "Review rejected");
 		a.state = "placing"; a.until = w.t + 15 + rng() * 30;
 	} else if (a.state === "placing") place(w, a);
 }
@@ -143,12 +145,6 @@ function failGate(w, a, why) {
 	a.pushes++;
 	if (a.pushes >= w.opts.maxAgentPushes) return toPerson(w, a, why);
 	a.state = "running"; a.fixing = true; a.until = w.t + 180 + w.rng() * 420; // a fixer run on the same fork
-}
-
-function failFergeAgent(w, a) {
-	const b = w.bubbles.get(resolve(w, a.basis));
-	if (b) b.fergeAgent = null;
-	w.agents.delete(a.id);
 }
 
 // RepoDO.place / placeFork: home first, then the first bubble neither it nor the basis touched those files in.
@@ -287,7 +283,7 @@ function alarm(w) {
 	}
 	// Neighbour merges: one at a time (blingo today), or every disjoint pair (the what-if).
 	const busy = new Set(w.ops.flatMap((o) => [o.a, o.b]));
-	const limit = w.opts.parallel ? 12 : 1;
+	const limit = w.opts.parallel ? MAX_OPS : 1;
 	while (w.ops.length < limit) {
 		const p = pickMerge(w, busy);
 		if (p) { startOp(w, "merge", p[0], p[1]); busy.add(p[0].id); busy.add(p[1].id); continue; }

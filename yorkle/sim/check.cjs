@@ -2,7 +2,7 @@
 const assert = require("node:assert");
 const e = require("./engine.cjs");
 
-for (const opts of [{}, { parallel: true, agents: 500, modules: 48 }]) {
+for (const opts of [{}, { parallel: false, agents: 500, modules: 48 }]) {
 	const w = e.createWorld(7, opts);
 	e.step(w, 2 * 3600);
 	const c = e.census(w);
@@ -17,11 +17,20 @@ for (const opts of [{}, { parallel: true, agents: 500, modules: 48 }]) {
 	console.log("ok", JSON.stringify(opts), `${w.bubbles.size} bubbles, ${w.stats.merges} merges`);
 }
 
-// Stopped superagents start nothing new; within two hours every agent they started has finished.
-const w = e.createWorld(7, { agents: 500, modules: 48 });
-e.step(w, 3600);
-w.opts.stopped = true;
-e.step(w, 2 * 3600);
-const left = [...w.agents.values()].filter((a) => e.working(a) && a.role === "agent").length;
-assert.strictEqual(left, 0, "no superagent agents at work after draining");
-console.log("ok stopped: drained,", `${w.bubbles.size} bubbles, ${w.conflicts.size} conflicts left`);
+// Stopped superagents start nothing new: every agent they started finishes, and with parallel merges and
+// ferge agents that never fail, the repository settles to one unlocked bubble with no conflicts.
+for (const opts of [{}, { agents: 500, modules: 48 }]) {
+	const w = e.createWorld(7, opts);
+	e.step(w, 3600);
+	w.opts.stopped = true;
+	e.step(w, 4 * 3600);
+	const left = [...w.agents.values()].filter((a) => e.working(a) && a.role === "agent").length;
+	assert.strictEqual(left, 0, "no superagent agents at work after draining");
+	const bs = [...w.bubbles.values()];
+	assert.strictEqual(bs.length, 1, `settles to one bubble (has ${bs.length}: ${bs.map((b) => b.name).join(", ")})`);
+	assert.strictEqual(w.conflicts.size, 0, "no conflicts left");
+	assert(!bs[0].locked && bs[0].visible, "the bubble is unlocked and idle");
+	console.log("ok stopped", JSON.stringify(opts), `settled to ${bs[0].name}, ${fmt(bs[0].members)} forks`);
+}
+
+function fmt(n) { return n.toLocaleString("en-US"); }

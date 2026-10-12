@@ -210,9 +210,9 @@ button:focus-visible, select:focus-visible, input:focus-visible, summary:focus-v
 				<div class="settings-body">
 					<h3>Repository settings</h3>
 					<label class="toggle"><input type="checkbox" id="ci" checked>CI and automatic review<small>Each agent fork runs CI, then review. A failure gets a fixer agent; after 3 pushes it's a person's.</small></label>
-					<p class="muted">Auto-ferge and ferge agents are always on: the merge loop ferges a conflicting pair when it has no neighbour merge to do, and an agent resolves each ferge's markers.</p>
-					<h3>What if (not in blingo yet)</h3>
-					<label class="toggle"><input type="checkbox" id="parallel">Parallel neighbour merges<small>Up to 12 disjoint pairs merge at once, instead of one per repository.</small></label>
+					<p class="muted">Up to 12 disjoint pairs neighbour-merge at once. Auto-ferge and ferge agents are always on: conflicting pairs are ferged in the free slots, and an agent resolves each ferge's markers.</p>
+					<h3>Compare</h3>
+					<label class="toggle"><input type="checkbox" id="serial">One merge at a time<small>blingo before parallel merges: one neighbour merge per repository, and a ferge only when there's no merge to do.</small></label>
 				</div>
 			</details>
 		</div>
@@ -241,7 +241,7 @@ button:focus-visible, select:focus-visible, input:focus-visible, summary:focus-v
 				<ul>
 					<li><strong>Placement</strong> follows <span class="mono">placeFork</span>: home if it's visible, at the same epoch, and nothing since the fork started changed its files; otherwise the first bubble that neither it nor the home bubble touched those files in; otherwise a new bubble.</li>
 					<li><strong>Patch queues</strong>: each bubble's Box applies its queue, then pushes. A bubble with a queue can't neighbour-merge.</li>
-					<li><strong>Merge loop</strong>: one neighbour merge per repository at a time, nearest neighbour first. Merges fail when both sides changed the same files since they split.</li>
+					<li><strong>Merge loop</strong>: up to 12 disjoint neighbour merges at once, nearest neighbour first, with ferges in the free slots. Merges fail when both sides changed the same files since they split.</li>
 					<li><strong>Ferges</strong>, CI fixers and the 3-push limit match the app. Auto-ferge and ferge agents are always on, so a conflict is only a red line until the merge loop ferges it. There's no "Needs you" panel: nothing in the simulation acts on it.</li>
 				</ul>
 				<p>Differences from the real map: it draws on a canvas instead of SVG, the dock shows at most 60 chips per group, and you can zoom out further than 25% so thousands of bubbles fit.</p>
@@ -330,7 +330,7 @@ function boot(prerun) {
 
 function readOpts() {
 	return {
-		agents: +$("agents").value, modules: +$("repo").value, ci: $("ci").checked, parallel: $("parallel").checked,
+		agents: +$("agents").value, modules: +$("repo").value, ci: $("ci").checked, parallel: !$("serial").checked,
 		stopped: $("stop").getAttribute("aria-pressed") === "true",
 	};
 }
@@ -800,7 +800,8 @@ $("stop").addEventListener("click", (e) => {
 });
 $("pause").addEventListener("click", () => { paused = !paused; $("pause").textContent = paused ? "Play" : "Pause"; });
 $("reset").addEventListener("click", () => boot(0));
-for (const id of ["ci", "parallel"]) $(id).addEventListener("change", (e) => (w.opts[id] = e.target.checked));
+$("ci").addEventListener("change", (e) => (w.opts.ci = e.target.checked));
+$("serial").addEventListener("change", (e) => (w.opts.parallel = !e.target.checked));
 
 // ---- Loop ----
 let last = performance.now(), acc = 0, slow = 0;
