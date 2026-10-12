@@ -1163,11 +1163,9 @@ export class RepoDO extends DurableObject<Env> {
 				for (const f of forks.filter((f) => f.diff === null)) {
 					const src = await authRemote(this.env, f.name, "read");
 					const r = await box.mergeFrom(url, src.url, "merge fork");
+					if (r.ok) await box.mergeEnv(url, [src.url]); // before it counts as merged: a task waiting on it gets its env
 					this.sql.exec("UPDATE fork SET status = ?, diff = ?, seq = ? WHERE name = ?", r.ok ? "merged" : "conflict", r.diff, r.ok ? this.nextSeq() : null, f.name);
-					if (r.ok) {
-						await box.mergeEnv(url, [src.url]);
-						await this.env.ARTIFACTS.delete(f.name).catch(() => false);
-					}
+					if (r.ok) await this.env.ARTIFACTS.delete(f.name).catch(() => false);
 				}
 				const series = forks.filter((f) => f.diff !== null);
 				if (!series.length) return;
@@ -1175,16 +1173,17 @@ export class RepoDO extends DurableObject<Env> {
 					url,
 					series.map((f) => ({ fork: f.name, mbox: f.diff!, committer: { name: f.name, email: `${f.kind === "notagent" ? "notagent" : "agent"}@${domain}` } })),
 				);
+				// The applied forks' envs join the bubble's before they count as merged, so a task waiting on
+				// them gets their envs (a fork from before forks were kept until applied has none: skipped).
+				const landed = await Promise.all(series.filter((_, i) => ok[i]).map((f) => authRemote(this.env, f.name, "read").then((r) => r.url, () => null)));
+				await box.mergeEnv(url, landed.filter((u) => u !== null));
 				series.forEach((f, i) => {
 					if (!ok[i]) console.error(`series of ${f.name} did not apply to ${bubble}`);
 					this.sql.exec("UPDATE fork SET status = ?, seq = ? WHERE name = ?", ok[i] ? "merged" : "failed", ok[i] ? this.nextSeq() : null, f.name);
 					// A ferge agent's resolution has landed in its bubble: the conflicts are gone, so unlock it.
 					if (ok[i] && f.role === "ferge") this.sql.exec("DELETE FROM locked WHERE id = ?", bubble);
 				});
-				// The applied forks' envs join the bubble's; then their repos go (a fork from before forks were
-				// kept until applied has none left: skipped).
-				const landed = await Promise.all(series.filter((_, i) => ok[i]).map((f) => authRemote(this.env, f.name, "read").then((r) => r.url, () => null)));
-				await box.mergeEnv(url, landed.filter((u) => u !== null));
+				// Their repos go now.
 				await Promise.all(series.map((f) => this.env.ARTIFACTS.delete(f.name).catch(() => false)));
 			}),
 		);
