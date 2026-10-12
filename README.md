@@ -61,6 +61,19 @@ After changing a `wrangler.jsonc`, run `npm run types -w backend` / `-w yorkle`.
 npm run deploy      # blingo first (yorkle binds to it), then yorkle
 ```
 
+blingo deploys itself: the `blingo` repository on prod has a `production` deployment (Deploy tab →
+run it on a bubble) whose command is
+
+```sh
+export CLOUDFLARE_ACCOUNT_ID=<account id> CLOUDFLARE_API_TOKEN=added-by-outbound WRANGLER_SEND_METRICS=false
+npm ci --no-audit --no-fund && npm run deploy
+```
+
+with hosts `registry.npmjs.org` and `api.cloudflare.com`, and an `Authorization: Bearer <API token>` auth
+header for `api.cloudflare.com` (a token with Workers Scripts edit, Containers and Artifacts access). A
+Box has no Docker, so there the backend deploys with `--containers-rollout=none`: a change to
+`backend/Dockerfile` still needs `npm run deploy` from a machine with Docker.
+
 - UI: `https://yorkle.<subdomain>.workers.dev`
 - API: same origin through yorkle under `/api`, or directly at `https://blingo.<subdomain>.workers.dev`
 
