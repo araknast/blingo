@@ -75,7 +75,7 @@ export type PlanItem = { key: string; title: string; description: string; kind: 
 export const MAX_PLAN = 30;
 
 // Checks a superagent's plan: [{key, title, description, kind, deps}], deps by key within the plan,
-// acyclic, and skills (optional) among `available`. Long titles are shortened rather than rejected.
+// acyclic; skills (optional) the repository lacks are dropped. Long titles are shortened rather than rejected.
 export function validatePlan(raw: unknown, available: string[] = []): { items: PlanItem[] } | { error: string } {
 	if (!Array.isArray(raw) || !raw.length) return { error: "plan must be a non-empty array" };
 	if (raw.length > MAX_PLAN) return { error: `plan has more than ${MAX_PLAN} tasks` };
@@ -88,7 +88,7 @@ export function validatePlan(raw: unknown, available: string[] = []): { items: P
 		if (x.kind !== "agent" && x.kind !== "notagent") return { error: `task ${key}: kind must be agent or notagent` };
 		const deps = x.deps ?? [];
 		if (!Array.isArray(deps) || deps.some((d) => typeof d !== "string")) return { error: `task ${key}: deps must be keys` };
-		const skills = resolveSkills(x.skills, available);
+		const skills = resolveSkills(x.skills, available, true);
 		if ("error" in skills) return { error: `task ${key}: ${skills.error}` };
 		items.push({ key, title, description, kind: x.kind, deps: [...new Set(deps as string[])], ...(x.skills === undefined ? {} : { skills }) });
 	}

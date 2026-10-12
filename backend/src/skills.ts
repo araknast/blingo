@@ -51,11 +51,12 @@ export function parseSkillUpload(raw: unknown): Skill | { error: string } {
 }
 
 // The skills to load: undefined = all of the repository's (the default), [] = none, else exactly those.
-export function resolveSkills(requested: unknown, available: string[]): string[] | { error: string } {
+// `dropUnknown` skips names the repository lacks: a planner may name Claude Code's built-ins ("run").
+export function resolveSkills(requested: unknown, available: string[], dropUnknown = false): string[] | { error: string } {
 	if (requested === undefined || requested === null) return available;
 	if (!Array.isArray(requested) || requested.some((s) => typeof s !== "string")) return { error: "skills must be a list of skill names" };
 	// A planner may copy a name with the prompt list's punctuation ("run:", "`run`"); names never contain it.
 	const names = (requested as string[]).map((s) => s.trim().replace(/^[`"']+|[`"':,]+$/g, ""));
-	const unknown = names.find((s) => !available.includes(s));
-	return unknown ? { error: `no such skill: ${unknown}` } : [...new Set(names)];
+	const unknown = dropUnknown ? undefined : names.find((s) => !available.includes(s));
+	return unknown ? { error: `no such skill: ${unknown}` } : [...new Set(names.filter((s) => available.includes(s)))];
 }
