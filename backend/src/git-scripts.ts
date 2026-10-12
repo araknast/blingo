@@ -249,11 +249,12 @@ for S in "$@"; do
 	e=$(git commit-tree "$(git write-tree --missing-ok)" -p "$e" -p "$src" -m "env: merge")
 done
 [ "$e" != "$start" ] || exit 0
-GIT_NO_LAZY_FETCH=1 git push -q --no-thin origin "$e:refs/heads/env"`;
+GIT_NO_LAZY_FETCH=1 git -c pack.window=0 push -q --no-thin origin "$e:refs/heads/env"`;
 
 // From the Box after the run: $1 the fork's remote (write). Only objects the fork lacks are sent; a
-// lazy fetch is refused rather than made (every object pushed was written here). Not a thin pack: that
-// would read the old env's unfetched blobs as delta bases.
+// lazy fetch is refused rather than made (every object pushed was written here). No deltas and not a
+// thin pack: both read the old env's (unfetched) version of a changed file as a base. Over Artifacts'
+// HTTP even --no-thin does (ENV_MERGE_SH's push too); pack.window=0 stops it.
 export const ENV_PUSH_SH = `export GIT_DIR=\${ENV_GIT:-${ENV_GIT}}
 git rev-parse -q --verify refs/blingo/env >/dev/null || exit 0
-GIT_NO_LAZY_FETCH=1 git push -qf --no-thin "$1" refs/blingo/env:refs/heads/env`;
+GIT_NO_LAZY_FETCH=1 git -c pack.window=0 push -qf --no-thin "$1" refs/blingo/env:refs/heads/env`;
