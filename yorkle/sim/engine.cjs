@@ -45,13 +45,13 @@ const overlap = (a, b) => { let n = 0; for (let i = 0; i < a.length; i++) n += p
 const count = (a) => { let n = 0; for (let i = 0; i < a.length; i++) n += pop(a[i]); return n; };
 const bitsOf = (a) => { const out = []; for (let i = 0; i < a.length; i++) { let w = a[i]; while (w) { const j = 31 - Math.clz32(w & -w); out.push(i * 32 + j); w &= w - 1; } } return out; };
 
-const DEFAULTS = { agents: 2000, ci: true, person: false, parallel: false, modules: 240, maxAgentPushes: 3, repo: "orchard" };
+const DEFAULTS = { agents: 2000, ci: true, parallel: false, modules: 240, maxAgentPushes: 3, repo: "orchard" };
 
 function createWorld(seed = 7, opts = {}) {
 	const o = { ...DEFAULTS, ...opts };
 	return {
 		rng: mulberry32(seed), opts: o, repo: makeRepo(o.modules),
-		t: 0, seq: 0, nextAlarm: 0, nextPerson: 0, nextSample: 0, nid: 0, nb: 0,
+		t: 0, seq: 0, nextAlarm: 0, nextSample: 0, nid: 0, nb: 0,
 		bubbles: new Map(), renamed: new Map(), conflicts: new Map(), requested: new Set(),
 		agents: new Map(), ops: [], events: [],
 		stats: { placed: 0, merges: 0, conflicts: 0, ferges: 0, newBubbles: 0, applied: 0 },
@@ -72,7 +72,7 @@ function newBubble(w, repId, extra = {}) {
 		id: repId, n: w.nb++, adj, noun, name: adj ? `${adj} ${noun}` : noun, visible: true, locked: false, ferge: false, fixed: false,
 		files: new Uint32Array(w.repo.words), own: new Uint32Array(w.repo.words), last: new Float64Array(w.repo.nf), epoch: 0,
 		queue: [], applying: [], boxUntil: 0, nMerged: 0, nFailed: 0, members: 1, recent: [], created: w.t,
-		film: (repId.charCodeAt(repId.length - 1) + repId.charCodeAt(repId.length - 2)) % 4, fergeAgent: null, personFix: 0, hiddenBy: null,
+		film: (repId.charCodeAt(repId.length - 1) + repId.charCodeAt(repId.length - 2)) % 4, fergeAgent: null, hiddenBy: null,
 		...extra,
 	};
 	w.bubbles.set(b.id, b);
@@ -276,7 +276,7 @@ function alarm(w) {
 		if (b.applying.length && b.boxUntil <= w.t) {
 			for (const m of b.applying) {
 				b.nMerged++; w.seq++; w.stats.applied++;
-				if (m.role === "ferge" || m.role === "person-ferge") { b.locked = false; b.fixed = true; b.fergeAgent = null; b.personFix = 0; }
+				if (m.role === "ferge") { b.locked = false; b.fixed = true; b.fergeAgent = null; }
 			}
 			b.applying = [];
 		}
@@ -297,20 +297,6 @@ function alarm(w) {
 	}
 }
 
-// A person working "Needs you", one item at a time.
-function personTurn(w) {
-	const n = needs(w)[0];
-	if (!n) return;
-	if (n.kind === "fork" || n.kind === "task") {
-		const a = w.agents.get(n.id);
-		if (!a) return;
-		a.person = false; a.why = ""; a.pushes = 0; a.state = "running"; a.fixing = true; a.until = w.t + 300 + w.rng() * 600;
-	} else if (n.kind === "ferge") {
-		const b = w.bubbles.get(n.bubble);
-		if (b) b.personFix = w.t + 600 + w.rng() * 600;
-	}
-}
-
 function step(w, dt) {
 	const end = w.t + dt;
 	while (w.t < end) {
@@ -323,10 +309,7 @@ function step(w, dt) {
 		for (let i = 0; i < room; i++) startAgent(w);
 		for (const a of [...w.agents.values()]) if (!a.person && a.until <= w.t) advanceAgent(w, a);
 		for (const op of [...w.ops]) if (op.until <= w.t) { w.ops.splice(w.ops.indexOf(op), 1); finishOp(w, op); }
-		for (const b of w.bubbles.values())
-			if (b.personFix && b.personFix <= w.t && b.locked) { b.personFix = 0; b.queue.push({ id: `${b.id}-fix`, role: "person-ferge" }); b.members++; }
 		if (w.t >= w.nextAlarm) { alarm(w); w.nextAlarm = w.t + 5; }
-		if (w.opts.person && w.t >= w.nextPerson) { personTurn(w); w.nextPerson = w.t + 120; }
 		if (w.t >= w.nextSample) { sample(w); w.nextSample = w.t + 60; }
 	}
 	const cut = w.t - 3600;
@@ -334,22 +317,6 @@ function step(w, dt) {
 	let i = 0;
 	while (i < pl.length && pl[i][0] < cut) i++;
 	if (i) pl.splice(0, i);
-}
-
-function needs(w) {
-	const out = [];
-	const forks = [], tasks = [];
-	// Conflicts aren't listed: with auto-ferge and ferge agents on, resolving them is the merge loop's job.
-	for (const a of w.agents.values()) {
-		if (a.state === "person") forks.push({ kind: "fork", key: `f:${a.id}`, id: a.id, title: a.title, why: a.why, mark: "failed", since: a.since });
-		else if (a.state === "failed") tasks.push({ kind: "task", key: `t:${a.id}`, id: a.id, title: a.title, why: a.why, mark: "failed", since: a.since });
-	}
-	out.push(...forks, ...tasks);
-	for (const b of w.bubbles.values())
-		if (b.ferge && b.locked && !b.fergeAgent && !b.personFix && !b.queue.length && !b.applying.length)
-			out.push({ kind: "ferge", key: `g:${b.id}`, bubble: b.id, why: "Fix its conflicting files in a fork, then unlock it", since: b.created });
-	// The app's order: conflicts, forks, tasks, then ferge bubbles.
-	return out;
 }
 
 function census(w) {
@@ -371,9 +338,9 @@ function census(w) {
 
 function sample(w) {
 	const c = census(w);
-	w.history.push({ t: w.t, bubbles: c.bubbles, needs: needs(w).length, perHour: c.perHour });
+	w.history.push({ t: w.t, bubbles: c.bubbles, conflicts: w.conflicts.size, perHour: c.perHour });
 	if (w.history.length > 720) w.history.shift();
 }
 
-const engine = { createWorld, step, needs, census, resolve, bitsOf, count, DEFAULTS, working };
+const engine = { createWorld, step, census, resolve, bitsOf, count, DEFAULTS, working };
 if (typeof module !== "undefined") module.exports = engine;
