@@ -68,6 +68,14 @@ export function fergeAgent(d: RepoState, bubble: string) {
 	);
 }
 
+// Whether someone is resolving locked ferge bubble `bubble`: its ferge agent (fergeAgent), or any agent or
+// person whose task forked it and is at work, or done with the fix still queued there.
+export function resolving(d: RepoState, bubble: string) {
+	if (fergeAgent(d, bubble)) return true;
+	const queued = new Set(d.bubbles.find((b) => b.id === bubble)?.members.filter((m) => m.status === "pending").map((m) => m.name));
+	return d.tasks.some((t) => t.bubble === bubble && (t.status === "in-progress" || (t.status === "completed" && !!t.fork && queued.has(t.fork))));
+}
+
 // How many items each tab has.
 export function needsByTab(d: RepoState): Partial<Record<Tab, number>> {
 	const by: Partial<Record<Tab, number>> = {};
@@ -110,5 +118,9 @@ export function docked(d: RepoState, need: Need[] = needs(d)): Docked[] {
 		const person = t ? t.kind === "notagent" : !d.agents.some((a) => a.fork === fork);
 		runs.push({ fork, prompt: t?.title ?? short(fork), started: 0, status, finished: null, log: null, ...(person ? { kind: "notagent" as const } : {}) });
 	}
-	return runs.filter((r) => !skip.has(r.fork)).map((r) => ({ fork: r.fork, title: r.prompt, person: r.kind === "notagent", status: r.status }));
+	// Ferge agents get a group of their own, whatever they're doing (a fixer run is `<fork>-c<n>`).
+	const ferging = (fork: string) => taskOf.get(fork.replace(/-c\d+$/, ""))?.role === "ferge";
+	return runs
+		.filter((r) => !skip.has(r.fork))
+		.map((r) => ({ fork: r.fork, title: r.prompt, person: r.kind === "notagent", status: ferging(r.fork) ? "ferging" : r.status }));
 }

@@ -2,7 +2,7 @@
 	import { forceCollide, forceLink, forceManyBody, forceSimulation, forceX, forceY, type SimulationNodeDatum } from "d3-force";
 	import { onDestroy, untrack } from "svelte";
 	import { fade } from "svelte/transition";
-	import { autoResolves, docked, needs, type Docked, type Need } from "./attention";
+	import { autoResolves, docked, needs, resolving, type Docked, type Need } from "./attention";
 	import Glyph from "./Glyph.svelte";
 	import Mark from "./Mark.svelte";
 	import { MAX_DOTS, dotOffset, edge, fileCount, hash, orderMembers, radius } from "./layout";
@@ -71,6 +71,8 @@
 	const need = $derived(data ? needs(data) : []);
 	// Conflicts the merge loop resolves itself: drawn as a plain line with nothing to click.
 	const quiet = $derived(!!data && autoResolves(data));
+	// Locked ferge bubbles an agent or a person is resolving: labelled so, with a spinning rim.
+	const resolvingIds = $derived(new Set(data ? data.bubbles.filter((b) => b.ferge && b.locked && resolving(data, b.id)).map((b) => b.id) : []));
 	const dock = $derived(data ? docked(data, need) : []);
 	// Bubbles in a conflict or holding a series that didn't apply: drawn with a halo and drift to the top.
 	const hot = $derived(new Set(need.flatMap((n) => (n.kind === "conflict" ? [n.a, n.b] : n.kind === "member" ? [n.bubble] : []))));
@@ -420,7 +422,7 @@
 	}
 
 	// ---- Dock: forks not in a bubble yet, grouped by what they're doing; folded when there are many ----
-	const GROUPS = ["running", "loose", "placing", "pushed", "waiting"];
+	const GROUPS = ["running", "ferging", "loose", "placing", "pushed", "waiting"];
 	const groups = $derived.by(() => {
 		const by = new Map<string, Docked[]>();
 		for (const x of dock) by.set(x.status, [...(by.get(x.status) ?? []), x]);
@@ -453,7 +455,7 @@
 		return `M ${Math.cos(a0) * rr} ${Math.sin(a0) * rr} A ${rr} ${rr} 0 0 1 ${Math.cos(a1) * rr} ${Math.sin(a1) * rr}`;
 	};
 	const stateLabel = (n: Node) => {
-		const s = !n.b.visible ? "Merging" : n.b.ferge && n.b.locked ? "Ferge, locked" : n.b.ferge ? "Ferge" : n.b.locked ? "Locked" : plural(n.files, "file");
+		const s = !n.b.visible ? "Merging" : resolvingIds.has(n.id) ? "Resolving" : n.b.ferge && n.b.locked ? "Ferge, locked" : n.b.ferge ? "Ferge" : n.b.locked ? "Locked" : plural(n.files, "file");
 		return n.members.length > MAX_DOTS ? `${s} · ${n.members.length} forks` : s;
 	};
 	const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
@@ -537,6 +539,7 @@
 						class:merging={!n.b.visible}
 						class:locked={n.b.locked}
 						class:ferge={n.b.ferge}
+						class:resolving={resolvingIds.has(n.id)}
 						class:hot={hovered === n.id}
 						class:needs={isHot}
 						class:lit={spot?.includes(n.id)}
@@ -660,7 +663,8 @@
 						<li><svg class="mark" width="22" height="14" viewBox="0 0 22 14" aria-hidden="true"><line class="k-merging" x1="1" y1="7" x2="21" y2="7" /></svg>Merging with each other</li>
 						<li><svg class="mark" width="22" height="14" viewBox="0 0 22 14" aria-hidden="true"><line class="k-conflict" x1="1" y1="7" x2="21" y2="7" /></svg>{quiet ? "Conflict: waiting for auto-ferge" : "Conflict: open it to ferge"}</li>
 						<li><svg class="mark badge" width="14" height="14" viewBox="-7 -7 14 14" aria-hidden="true">{@render lockIcon()}</svg>Locked</li>
-						<li><svg class="mark badge ferge-badge" width="14" height="14" viewBox="-7 -7 14 14" aria-hidden="true">{@render fergeIcon()}</svg>Ferge</li>
+						<li><svg class="mark badge ferge-badge" width="14" height="14" viewBox="-7 -7 14 14" aria-hidden="true">{@render fergeIcon()}</svg>Ferge; its dotted rim turns while it's being resolved</li>
+						<li><Mark status="ferging" />Ferge agent at work</li>
 					</ul>
 					<p class="key-hint">Right-click a bubble or the map for actions.</p>
 				</div>
@@ -775,6 +779,7 @@
 				<strong>{nameOf(n)}</strong>
 				{#if !n.b.visible}<span class="tag">Merging</span>{/if}
 				{#if n.b.ferge}<span class="tag">Ferge</span>{/if}
+				{#if resolvingIds.has(n.id)}<span class="tag">Resolving</span>{/if}
 				{#if n.b.locked}<span class="tag">Locked</span>{/if}
 			</div>
 			<p class="muted">{plural(n.members.length, "fork")}, {plural(n.files, "file")}</p>
@@ -844,8 +849,11 @@
 	.ferge-badge .i-line { stroke: var(--working); stroke-width: 1.8; }
 	.merging-line { stroke: var(--ink-3); stroke-width: 2; stroke-dasharray: 10 7; animation: swirl 1.4s linear infinite; vector-effect: non-scaling-stroke; }
 	@keyframes swirl { to { stroke-dashoffset: -46; } }
+	/* Someone is resolving a ferge bubble: its dotted rim turns (a whole number of 3 + 5 dashes per loop). */
+	.bubble.resolving .rim { animation: turn 1.6s linear infinite; }
+	@keyframes turn { to { stroke-dashoffset: -48; } }
 	@media (prefers-reduced-motion: reduce) {
-		.bubble.merging .rim, .merging-line { animation: none; }
+		.bubble.merging .rim, .bubble.resolving .rim, .merging-line { animation: none; }
 	}
 
 	/* What needs a person stands out; the rest steps back while it does. */
@@ -1031,7 +1039,8 @@
 		box-shadow: 0 2px 4px rgb(15 24 33 / 0.08);
 	}
 	.chip.person { border-color: var(--pending); border-style: dashed; }
-	.group:not([data-group="running"]) .chip:not(.person) { border-color: var(--line); }
+	.group:not([data-group="running"]):not([data-group="ferging"]) .chip:not(.person) { border-color: var(--line); }
+	.group[data-group="ferging"] .chip { border-style: dashed; }
 	a.chip:hover { border-width: 1.5px; box-shadow: 0 3px 10px rgb(15 24 33 / 0.14); }
 	a.chip:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 	.chip .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

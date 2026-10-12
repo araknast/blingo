@@ -18,6 +18,8 @@
 	<circle class="g-failed" r="5.5" /><path class="g-failed-x" d="M -2.4 -2.4 L 2.4 2.4 M 2.4 -2.4 L -2.4 2.4" />
 {:else if status === "running"}
 	<circle class="g-running" r="4.5" />
+{:else if status === "ferging"}
+	<circle class="g-ferging" r="4.5" />
 {:else if status === "placing" || status === "loose"}
 	<circle class="g-placing" r="4.5" />
 {:else if status === "approval"}

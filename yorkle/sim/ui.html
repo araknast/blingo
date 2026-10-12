@@ -133,9 +133,10 @@ button:focus-visible, select:focus-visible, input:focus-visible, summary:focus-v
 .g-placing { fill: var(--ink-3); animation: g-blink 1.6s ease-in-out infinite; }
 .g-review { fill: var(--paper); stroke: var(--working); stroke-width: 2; }
 .g-review-dot { fill: var(--working); }
+.g-ferging { fill: var(--paper); stroke: var(--working); stroke-width: 2; stroke-dasharray: 2 2.2; animation: g-blink 1.6s ease-in-out infinite; }
 .k-line { stroke-width: 2.5; stroke-dasharray: 5 3; }
 @keyframes g-blink { 50% { opacity: 0.35; } }
-@media (prefers-reduced-motion: reduce) { .g-running, .g-placing { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .g-running, .g-placing, .g-ferging { animation: none; } }
 
 .what { min-width: 0; flex: 1; }
 .what p { overflow-wrap: anywhere; }
@@ -152,7 +153,8 @@ button:focus-visible, select:focus-visible, input:focus-visible, summary:focus-v
 .group-head .n { font-variant-numeric: tabular-nums; color: var(--ink-2); font-weight: 500; }
 .group ul { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 0.35rem; max-width: 60rem; }
 .chip { display: inline-flex; align-items: center; gap: 0.45rem; max-width: 15rem; padding: 0.3rem 0.75rem 0.3rem 0.55rem; border: 1.5px solid var(--line); border-radius: 999px; background: var(--raised); color: var(--ink); font-size: 0.8125rem; box-shadow: 0 2px 4px rgb(15 24 33 / 0.08); }
-.group[data-group="running"] .chip { border-color: var(--working); }
+.group[data-group="running"] .chip, .group[data-group="ferging"] .chip { border-color: var(--working); }
+.group[data-group="ferging"] .chip { border-style: dashed; }
 .chip .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chip.more { border-style: dashed; color: var(--ink-2); }
 
@@ -290,6 +292,7 @@ function glyph(status) {
 		case "conflict": return '<rect class="g-conflict" x="-4.2" y="-4.2" width="8.4" height="8.4" rx="1" transform="rotate(45)"/>';
 		case "failed": return '<circle class="g-failed" r="5.5"/><path class="g-failed-x" d="M -2.4 -2.4 L 2.4 2.4 M 2.4 -2.4 L -2.4 2.4"/>';
 		case "running": return '<circle class="g-running" r="4.5"/>';
+		case "ferging": return '<circle class="g-ferging" r="4.5"/>';
 		case "review": return '<circle class="g-review" r="5"/><circle class="g-review-dot" r="1.8"/>';
 		default: return '<circle class="g-placing" r="4.5"/>';
 	}
@@ -302,7 +305,8 @@ $("keyBody").innerHTML = `
 	<ul>
 		<li><svg class="mark" width="22" height="14" viewBox="0 0 22 14" aria-hidden="true"><line class="k-line" x1="1" y1="7" x2="21" y2="7" style="stroke:var(--ink-3);stroke-width:2"/></svg>Merging with each other</li>
 		<li><svg class="mark" width="22" height="14" viewBox="0 0 22 14" aria-hidden="true"><line class="k-line" x1="1" y1="7" x2="21" y2="7" style="stroke:var(--conflict)"/></svg>Conflict: waiting for auto-ferge</li>
-		<li><svg class="mark" width="14" height="14" viewBox="-7 -7 14 14" aria-hidden="true"><path d="M -4 -4.5 L 0 0 L 4 -4.5 M 0 0 V 5" fill="none" stroke="var(--working)" stroke-width="1.8" stroke-linecap="round"/></svg>Ferge: locked until its conflicts are fixed</li>
+		<li><svg class="mark" width="14" height="14" viewBox="-7 -7 14 14" aria-hidden="true"><path d="M -4 -4.5 L 0 0 L 4 -4.5 M 0 0 V 5" fill="none" stroke="var(--working)" stroke-width="1.8" stroke-linecap="round"/></svg>Ferge: locked until its conflicts are fixed; its rim turns while an agent resolves it</li>
+		<li>${mark("ferging")}Ferge agent at work</li>
 	</ul>`;
 
 // ---- World ----
@@ -537,8 +541,9 @@ function dotStatus(b, i) {
 	const q = b.queue.length + b.applying.length;
 	return i <= q ? "pending" : "merged";
 }
+const resolvingB = (b) => b.ferge && b.locked && !!b.fergeAgent;
 const stateLabel = (b, files) => {
-	const s = !b.visible ? "Merging" : b.ferge && b.locked ? "Ferge, locked" : b.ferge ? "Ferge" : b.locked ? "Locked" : `${fmt(files)} file${files === 1 ? "" : "s"}`;
+	const s = !b.visible ? "Merging" : resolvingB(b) ? "Resolving" : b.ferge && b.locked ? "Ferge, locked" : b.ferge ? "Ferge" : b.locked ? "Locked" : `${fmt(files)} file${files === 1 ? "" : "s"}`;
 	return b.members > MAX_DOTS ? `${s} · ${fmt(b.members)} forks` : s;
 };
 const clip = (s, n) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
@@ -603,7 +608,11 @@ function draw(now) {
 		// Rim
 		ctx.save();
 		ctx.lineWidth = Math.max(hovered === n.id ? 5 : 3, 1.3 * px);
-		if (b.ferge) { ctx.setLineDash([3, 5]); ctx.lineCap = "round"; ctx.lineWidth = Math.max(4, 1.6 * px); ctx.strokeStyle = C.working; }
+		if (b.ferge) {
+			ctx.setLineDash([3, 5]); ctx.lineCap = "round"; ctx.lineWidth = Math.max(4, 1.6 * px); ctx.strokeStyle = C.working;
+			// Being resolved: the dotted rim turns, a whole 3 + 5 dash pattern at a time.
+			if (resolvingB(b) && !reduced) ctx.lineDashOffset = -((now / 1600) * 48) % 48;
+		}
 		else if (b.locked) { const lg = ctx.createLinearGradient(x - r, y - r, x + r, y + r); lg.addColorStop(0, C["ink-3"]); lg.addColorStop(1, C.line); ctx.strokeStyle = lg; }
 		else ctx.strokeStyle = big ? filmGrad(x, y, r, b.film) : [C.teal, C.lilac, C.amber, C.lilac][b.film];
 		if (!b.visible) { ctx.setLineDash([14, 9]); ctx.lineDashOffset = -dash; }
@@ -694,12 +703,14 @@ function dockPoint(status) {
 
 // ---- Panels: dock, numbers, hover card ----
 let openGroup = null, lastDockSig = "";
-const GROUPS = [["running", "Working"], ["loose", "Waiting for CI"], ["placing", "Finding a bubble"]];
+const GROUPS = [["running", "Working"], ["ferging", "Resolving conflicts"], ["loose", "Waiting for CI"], ["placing", "Finding a bubble"]];
+const GLYPH = { running: "running", ferging: "ferging", loose: "review", placing: "placing" };
 function renderDock() {
-	const by = { running: [], loose: [], placing: [] };
+	const by = { running: [], ferging: [], loose: [], placing: [] };
 	for (const a of w.agents.values()) {
 		if (a.person) continue;
-		if (a.state === "running") by.running.push(a);
+		if (a.role === "ferge") by.ferging.push(a);
+		else if (a.state === "running") by.running.push(a);
 		else if (a.state === "ci" || a.state === "review") by.loose.push(a);
 		else if (a.state === "placing") by.placing.push(a);
 	}
@@ -708,8 +719,8 @@ function renderDock() {
 	lastDockSig = sig;
 	$("dock").innerHTML = GROUPS.filter(([s]) => by[s].length).map(([s, label]) => {
 		const items = by[s], open = openGroup === s;
-		const chips = open ? `<ul>${items.slice(0, 60).map((a) => `<li><span class="chip" title="${esc(a.title)}">${mark(s === "running" ? "running" : s === "loose" ? "review" : "placing")}<span class="t">${esc(a.title)}</span></span></li>`).join("")}${items.length > 60 ? `<li><span class="chip more">and ${fmt(items.length - 60)} more</span></li>` : ""}</ul>` : "";
-		return `<div class="group" data-group="${s}"><button class="group-head" aria-expanded="${open}" data-open="${s}">${mark(s === "running" ? "running" : s === "loose" ? "review" : "placing")}${label}<span class="n">${fmt(items.length)}</span></button>${chips}</div>`;
+		const chips = open ? `<ul>${items.slice(0, 60).map((a) => `<li><span class="chip" title="${esc(a.title)}">${mark(GLYPH[s])}<span class="t">${esc(a.title)}</span></span></li>`).join("")}${items.length > 60 ? `<li><span class="chip more">and ${fmt(items.length - 60)} more</span></li>` : ""}</ul>` : "";
+		return `<div class="group" data-group="${s}"><button class="group-head" aria-expanded="${open}" data-open="${s}">${mark(GLYPH[s])}${label}<span class="n">${fmt(items.length)}</span></button>${chips}</div>`;
 	}).join("");
 }
 $("dock").addEventListener("click", (e) => { const b = e.target.closest("[data-open]"); if (b) { openGroup = openGroup === b.dataset.open ? null : b.dataset.open; lastDockSig = ""; renderDock(); } });
@@ -771,7 +782,7 @@ function updateCard() {
 	const b = n.b, q = b.queue.length + b.applying.length;
 	const files = E.bitsOf(b.own).map((f) => w.repo.files[f]);
 	const recent = b.recent.slice(-5).reverse();
-	card.innerHTML = `<div class="card-head"><strong>${esc(b.name)}</strong>${!b.visible ? '<span class="tag">Merging</span>' : ""}${b.ferge ? '<span class="tag">Ferge</span>' : ""}${b.locked ? '<span class="tag">Locked</span>' : ""}</div>
+	card.innerHTML = `<div class="card-head"><strong>${esc(b.name)}</strong>${!b.visible ? '<span class="tag">Merging</span>' : ""}${b.ferge ? '<span class="tag">Ferge</span>' : ""}${b.locked ? '<span class="tag">Locked</span>' : ""}${resolvingB(b) ? '<span class="tag">Resolving</span>' : ""}</div>
 		<p class="muted">${fmt(b.members)} fork${b.members === 1 ? "" : "s"}, ${fmt(files.length)} file${files.length === 1 ? "" : "s"}${q ? `, ${q} queued` : ""}</p>
 		<ul><li>${mark("rep")}<span class="mono">${short(b.id)}</span><span class="muted">representative</span></li>
 		${recent.filter((id) => id !== b.id).map((id, i) => `<li>${mark(i < q ? "pending" : "merged")}<span class="mono">${short(id)}</span><span class="muted">${i < q ? "pending" : "merged"}</span></li>`).join("")}

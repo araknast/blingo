@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { docked, needs, needsByTab } from "./attention";
+import { docked, needs, needsByTab, resolving } from "./attention";
 import { demoSteps } from "./demo";
 import type { LooseFork, RepoState } from "./types";
 
@@ -78,6 +78,29 @@ test("with auto-ferge and ferge agents, conflicts aren't a person's, but a ferge
 	expect(needs(d).some((n) => n.kind === "ferge")).toBe(false);
 	d.tasks[0].status = "failed";
 	expect(needs(d).find((n) => n.kind === "ferge")).toMatchObject({ bubble: d.bubbles[1].id });
+});
+
+test("a ferge bubble is resolving while an agent or a person works on it; ferge agents dock apart", () => {
+	const d: RepoState = structuredClone(demoSteps[4]);
+	const l = d.bubbles[1];
+	l.ferge = l.locked = true;
+	const task = (id: string, o: Partial<RepoState["tasks"][number]>) => ({ id, title: id, description: "", kind: "agent" as const, status: "open" as const, bubble: null, fork: null, deps: [], explanation: null, superagent: null, created: 0, finished: 0, ready: true, skills: null, role: "agent" as const, ...o });
+	expect(resolving(d, l.id)).toBe(false);
+	// A person took a notagent task on it.
+	d.tasks = [task("t1", { kind: "notagent", status: "in-progress", bubble: l.id, fork: "person-fix", role: null })];
+	expect(resolving(d, l.id)).toBe(true);
+	// A ferge agent, still queued to start, counts too; and its runs (fixers too) go in their own dock group.
+	d.tasks = [task("t2", { role: "ferge", bubble: l.id, fork: "ferge-fork", status: "in-progress" })];
+	d.agents = [
+		{ fork: "ferge-fork", prompt: "Resolve", started: 1, status: "running", finished: null, log: null },
+		{ fork: "ferge-fork-c1", prompt: "Fix CI", started: 2, status: "running", finished: null, log: null },
+		{ fork: "other", prompt: "Feature", started: 3, status: "running", finished: null, log: null },
+	];
+	expect(resolving(d, l.id)).toBe(true);
+	const by = Object.fromEntries(docked(d).map((x) => [x.fork, x.status]));
+	expect(by).toMatchObject({ "ferge-fork": "ferging", "ferge-fork-c1": "ferging", other: "running" });
+	d.tasks[0].status = "failed";
+	expect(resolving(d, l.id)).toBe(false);
 });
 
 test("every item belongs to a tab, and an open ferge waits on the bubbles tab", () => {
