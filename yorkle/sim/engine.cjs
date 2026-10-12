@@ -303,9 +303,10 @@ function step(w, dt) {
 		const h = Math.min(5, end - w.t);
 		w.t += h;
 		// Superagents keep the queue full: start agents up to the target, ramping over the first minutes.
+		// Stopped, they start none; agents already at work finish, and ferges still start their own.
 		let n = 0;
 		for (const a of w.agents.values()) if (working(a) && a.role === "agent") n++;
-		const room = Math.min(w.opts.agents - n, Math.ceil((w.opts.agents * h) / 240));
+		const room = w.opts.stopped ? 0 : Math.min(w.opts.agents - n, Math.ceil((w.opts.agents * h) / 240));
 		for (let i = 0; i < room; i++) startAgent(w);
 		for (const a of [...w.agents.values()]) if (!a.person && a.until <= w.t) advanceAgent(w, a);
 		for (const op of [...w.ops]) if (op.until <= w.t) { w.ops.splice(w.ops.indexOf(op), 1); finishOp(w, op); }

@@ -202,6 +202,7 @@ button:focus-visible, select:focus-visible, input:focus-visible, summary:focus-v
 					<button aria-pressed="false" data-v="900">15 min/s</button>
 				</div>
 			</div>
+			<button class="act" id="stop" aria-pressed="false" title="Stop the superagents from starting new agents; those at work finish">Stop new agents</button>
 			<button class="act" id="pause">Pause</button>
 			<button class="act" id="reset" title="Start again from an empty repository">Restart</button>
 			<details class="settings">
@@ -330,6 +331,7 @@ function boot(prerun) {
 function readOpts() {
 	return {
 		agents: +$("agents").value, modules: +$("repo").value, ci: $("ci").checked, parallel: $("parallel").checked,
+		stopped: $("stop").getAttribute("aria-pressed") === "true",
 	};
 }
 
@@ -790,6 +792,11 @@ $("speed").addEventListener("click", (e) => {
 	const b = e.target.closest("button"); if (!b) return;
 	speed = +b.dataset.v;
 	for (const x of $("speed").children) x.setAttribute("aria-pressed", String(x === b));
+});
+$("stop").addEventListener("click", (e) => {
+	w.opts.stopped = !w.opts.stopped;
+	e.currentTarget.setAttribute("aria-pressed", String(w.opts.stopped));
+	e.currentTarget.textContent = w.opts.stopped ? "Resume new agents" : "Stop new agents";
 });
 $("pause").addEventListener("click", () => { paused = !paused; $("pause").textContent = paused ? "Play" : "Pause"; });
 $("reset").addEventListener("click", () => boot(0));

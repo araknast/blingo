@@ -16,3 +16,12 @@ for (const opts of [{}, { parallel: true, agents: 500, modules: 48 }]) {
 	for (const { a, b } of w.conflicts.values()) assert(w.bubbles.has(a) && w.bubbles.has(b), "conflicts name live bubbles");
 	console.log("ok", JSON.stringify(opts), `${w.bubbles.size} bubbles, ${w.stats.merges} merges`);
 }
+
+// Stopped superagents start nothing new; within two hours every agent they started has finished.
+const w = e.createWorld(7, { agents: 500, modules: 48 });
+e.step(w, 3600);
+w.opts.stopped = true;
+e.step(w, 2 * 3600);
+const left = [...w.agents.values()].filter((a) => e.working(a) && a.role === "agent").length;
+assert.strictEqual(left, 0, "no superagent agents at work after draining");
+console.log("ok stopped: drained,", `${w.bubbles.size} bubbles, ${w.conflicts.size} conflicts left`);
