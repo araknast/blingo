@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { authRemote, forkRepo, headOf } from "./box";
 import { getAgentByName } from "agents";
-import { COMMIT_FILES_SH, MERGES, PATCH_SH, readSeries } from "./git-scripts";
+import { COMMIT_FILES_SH, MERGES, PATCH_SH, UNBASED, readSeries } from "./git-scripts";
 import { splitParts } from "./git";
 import { conflictKey, fergeCandidate, nearestNeighbour, placeFork, renameConflicts, type Basis, type Bubble } from "./bubbles";
 import { fergeName, friendlyName, nameText, type Name } from "./names";
@@ -1141,11 +1141,13 @@ export class RepoDO extends DurableObject<Env> {
 				.map(async (l) => {
 					const { url } = await authRemote(this.env, l.fork, "read");
 					const p = await this.box().sh(PATCH_SH, [url, l.base]);
-					if (p.exitCode !== 0 && p.exitCode !== MERGES) throw new Error(`patch series of ${l.fork} (${p.exitCode}): ${p.stderr}`);
+					if (p.exitCode !== 0 && p.exitCode !== MERGES && p.exitCode !== UNBASED) throw new Error(`patch series of ${l.fork} (${p.exitCode}): ${p.stderr}`);
 					const placed =
 						p.exitCode === MERGES
 							? { error: "its history has merge commits; rebase it onto where it started" }
-							: await this.place(l.fork, readSeries(p.stdout).files, readSeries(p.stdout).mbox);
+							: p.exitCode === UNBASED
+								? { error: "its history doesn't contain the commit it started from (force-pushed?); rebase it onto that commit" }
+								: await this.place(l.fork, readSeries(p.stdout).files, readSeries(p.stdout).mbox);
 					if ("error" in placed) this.sql.exec("UPDATE loose SET placing = 0, reason = ? WHERE fork = ?", placed.error, l.fork);
 				}),
 		);

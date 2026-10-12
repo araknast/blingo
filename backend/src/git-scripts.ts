@@ -6,9 +6,12 @@
 // commits (an mbox, as git send-email would send them). Prints nothing if it committed nothing.
 // Exit MERGES = its history has merge commits, which format-patch can't carry.
 export const MERGES = 4;
+// Exit UNBASED = its history doesn't contain $2 (force-pushed over where it started).
+export const UNBASED = 5;
 export const PATCH_SH = `set -e
 if [ -d "$1" ]; then cd "$1"; else d=$(mktemp -d); trap 'rm -rf "$d"' EXIT; git clone -q --single-branch "$1" "$d"; cd "$d"; fi
 git rev-parse -q --verify HEAD >/dev/null || exit 0
+[ -z "$2" ] || git merge-base --is-ancestor "$2" HEAD 2>/dev/null || exit ${UNBASED}
 [ -z "$(git rev-list --merges "\${2:+$2..}HEAD")" ] || exit ${MERGES}
 if [ -n "$2" ]; then from=$2; range="$2..HEAD"; else from=$(git hash-object -t tree /dev/null); range="--root HEAD"; fi
 git diff --name-only "$from" HEAD

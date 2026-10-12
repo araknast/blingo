@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { afterAll, expect, test } from "vitest";
-import { APPLY_SH, COMMIT_FILES_SH, CONFLICT, ENSURE_REP, ENV_MERGE_SH, ENV_PUSH_SH, ENV_SAVE_SH, FERGE_SH, MEMORY_HOOK_SH, MERGES, MERGE_SH, NO_CONFLICT, PATCH_SH, PUSH_SH, REP, STOP_HOOK_SH, readSeries } from "../src/git-scripts";
+import { APPLY_SH, COMMIT_FILES_SH, CONFLICT, ENSURE_REP, ENV_MERGE_SH, ENV_PUSH_SH, ENV_SAVE_SH, FERGE_SH, MEMORY_HOOK_SH, MERGES, MERGE_SH, NO_CONFLICT, PATCH_SH, PUSH_SH, REP, STOP_HOOK_SH, UNBASED, readSeries } from "../src/git-scripts";
 
 const T = mkdtempSync(`${tmpdir()}/blingo-git-`);
 afterAll(() => rmSync(T, { recursive: true, force: true }));
@@ -104,6 +104,8 @@ test("patch series edge cases: from the empty base repo, nothing committed, merg
 	expect([none.code, readSeries(none.out).files]).toEqual([0, []]);
 	sh(`git clone -q ${R} m && cd m && git checkout -qb side && printf 'S\\n' > s.txt && git add s.txt && git commit -qm side && git checkout -q main && printf 'T\\n' > t.txt && git add t.txt && git commit -qm t && git merge -q --no-edit side`);
 	expect(run(PATCH_SH, [`${T}/m`, head(R)]).code).toBe(MERGES);
+	sh(`git clone -q ${R} u && cd u && git checkout -q --orphan fresh && git commit -qm unrelated && git branch -qM main && git clone -q --bare . ../ub`);
+	expect(run(PATCH_SH, [`file://${T}/ub`, head(R)]).code).toBe(UNBASED);
 });
 
 test("commit files: a person's files committed and pushed; bad paths and no-ops refused", () => {
