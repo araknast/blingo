@@ -164,20 +164,20 @@ test("stop hook: blocks an agent's unsubmittable repo state (at most 3 times), a
 
 test("env: a run's overlay changes saved as an env commit, unchanged files never fetched, pushed", () => {
 	// The fork's env: an old tool, an untouched lib, a dir the run replaces.
-	sh(`git init -q -b env envw && cd envw && mkdir -p usr/bin usr/lib opt/gone && seq 400 > usr/bin/old && echo keep > usr/lib/keep && echo x > opt/gone/x && git add -A && git commit -qm env && git clone -q --bare . ../env.git && git --git-dir=../env.git config uploadpack.allowFilter true`);
+	sh(`git init -q -b env envw && cd envw && mkdir -p usr/bin usr/lib opt/gone && echo old > usr/bin/old && echo keep > usr/lib/keep && echo x > opt/gone/x && git add -A && git commit -qm env && git clone -q --bare . ../env.git && git --git-dir=../env.git config uploadpack.allowFilter true`);
 	const G = `${T}/afs.git`; // as ArtifactFS clones it: blobless
 	sh(`git clone -q --bare --filter=blob:none --branch env file://${T}/env.git ${G}`);
 	// The run's upper dirs, and the merged view (the overlays) at W.
 	const O = `${T}/ovl`;
 	const W = `${T}/root`;
-	sh(`mkdir -p ${O}/usr/u/bin ${O}/opt/u/gone ${O}/root/u/.claude ${O}/etc/u && cd ${O} && echo new > usr/u/bin/new && seq 401 > usr/u/bin/old && ln -s new usr/u/bin/link && seq 1100 > usr/u/big && chmod +x usr/u/big && echo y > opt/u/gone/y && echo s > root/u/.claude/session && echo h > etc/u/hosts`);
+	sh(`mkdir -p ${O}/usr/u/bin ${O}/opt/u/gone ${O}/root/u/.claude ${O}/etc/u && cd ${O} && echo new > usr/u/bin/new && echo NEW > usr/u/bin/old && ln -s new usr/u/bin/link && printf '0123456789abcdefghijKLMNO' > usr/u/big && chmod +x usr/u/big && echo y > opt/u/gone/y && echo s > root/u/.claude/session && echo h > etc/u/hosts`);
 	sh(`mkdir -p ${W} && for d in usr opt root etc; do mkdir -p ${W}/$d && cp -a ${O}/$d/u/. ${W}/$d/; done`);
-	const env = { ENV_GIT: G, ENV_ROOT: W, ENV_OVL: O, ENV_CHUNK: "2000", GIT_NO_LAZY_FETCH: "1" };
+	const env = { ENV_GIT: G, ENV_ROOT: W, ENV_OVL: O, ENV_CHUNK: "10", GIT_NO_LAZY_FETCH: "1" };
 	const s = run(ENV_SAVE_SH, [], { env });
 	expect(s.code, s.err).toBe(0);
 	const tree = sh(`git --git-dir=${G} ls-tree -r refs/blingo/env`);
 	const at = (p: string) => tree.split("\n").find((l) => l.endsWith(`\t${p}`))?.split(/\s+/);
-	expect(sh(`git --git-dir=${G} show refs/blingo/env:usr/bin/old`)).toBe(sh("seq 401"));
+	expect(sh(`git --git-dir=${G} show refs/blingo/env:usr/bin/old`)).toBe("NEW");
 	expect(sh(`git --git-dir=${G} show refs/blingo/env:usr/bin/new`)).toBe("new");
 	expect(at("usr/bin/link")?.[0]).toBe("120000");
 	expect(at("usr/lib/keep")?.[2]).toBe(sh(`git --git-dir=${T}/env.git rev-parse env:usr/lib/keep`)); // carried, not read
@@ -191,8 +191,8 @@ test("env: a run's overlay changes saved as an env commit, unchanged files never
 	const p = run(ENV_PUSH_SH, [`file://${T}/env.git`], { env });
 	expect(p.code, p.err).toBe(0);
 	sh(`git clone -q --branch env ${T}/env.git envc`);
-	expect(sh("cat usr/big.blingo-part-*", `${T}/envc`)).toBe(sh("seq 1100"));
-	expect(sh("cat usr/lib/keep; tail -1 usr/bin/old", `${T}/envc`)).toBe("keep\n401");
+	expect(sh("cat usr/big.blingo-part-*", `${T}/envc`)).toBe("0123456789abcdefghijKLMNO");
+	expect(sh("cat usr/lib/keep usr/bin/old", `${T}/envc`)).toBe("keep\nNEW");
 });
 
 test("env merge: members' envs merge into the rep's as their code lands", () => {
