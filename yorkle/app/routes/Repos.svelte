@@ -7,7 +7,7 @@
 	import { api, loadMe, session } from "../lib/session.svelte";
 	import { toastError } from "../lib/toast.svelte";
 	import type { RepoSummary } from "../lib/types";
-	import { repoName } from "../lib/util";
+	import { plural, repoName } from "../lib/util";
 
 	let creating = $state(false);
 	let filter = $state("");
@@ -46,7 +46,6 @@
 
 	const nameOf = (r: string) => repoName(r, session.me?.names);
 	const dateFmt = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" });
-	const count = new Intl.NumberFormat();
 	const repos = $derived(
 		(session.me?.repos ?? [])
 			.filter((r) => `${nameOf(r)} ${r}`.toLowerCase().includes(filter.trim().toLowerCase()))
@@ -93,40 +92,33 @@
 				<button class="primary" onclick={() => (createOpen = true)} disabled={creating}>Create repository</button>
 			</div>
 		{:else}
-			<label class="search">
-				<span class="visually-hidden">Filter repositories</span>
-				<input type="search" placeholder="Filter by name" bind:value={filter} />
-				<kbd aria-hidden="true">/</kbd>
-			</label>
+			<div class="tools">
+				<label class="visually-hidden" for="filter">Filter repositories</label>
+				<input id="filter" type="search" placeholder="Filter by name" bind:value={filter} />
+			</div>
 			<table>
 				<thead>
-					<tr><th>Name</th><th class="num">Bubbles</th><th class="num wide">Forks</th><th class="num wide">Agents working</th><th class="num">Conflicts</th><th class="created">Created</th></tr>
+					<tr><th>Name</th><th>Bubbles</th><th>Agents working</th><th>Conflicts</th><th>Created</th></tr>
 				</thead>
 				<tbody>
 					{#each visible as r (r)}
 						{@const s = summaries[r]}
 						{@const made = session.me?.created?.[r]}
-						{@const needs = s && s !== "error" ? s.needs : 0}
 						<tr>
-							<td>
-								<a class="name" href="/repos/{r}">{nameOf(r)}</a>
-								{#if needs}<span class="needs" title="{needs} {needs === 1 ? 'needs' : 'need'} you">{needs}<span class="visually-hidden"> {needs === 1 ? "needs" : "need"} you</span></span>{/if}
-								{#if nameOf(r) !== r}<span class="muted id mono">{r}</span>{/if}
-							</td>
+							<td><a class="name" href="/repos/{r}">{nameOf(r)}</a>{#if s && s !== "error" && s.needs}<a class="needs" href="/repos/{r}" title="{s.needs} {s.needs === 1 ? 'needs' : 'need'} you" aria-label="{s.needs} {s.needs === 1 ? 'needs' : 'need'} you">{s.needs}</a>{/if}{#if nameOf(r) !== r}<span class="muted id mono">{r}</span>{/if}</td>
 							{#if s === "error"}
-								<td colspan="4" class="num muted">Couldn't load <button class="link" onclick={() => delete summaries[r]}>Retry</button></td>
+								<td colspan="3" class="muted">Couldn't load</td>
 							{:else if !s}
-								<td colspan="4" class="num muted">Loading…</td>
+								<td colspan="3" class="muted">Loading</td>
 							{:else}
-								<td class="num">{count.format(s.bubbles)}</td>
-								<td class="num wide" class:muted={!s.forks}>{count.format(s.forks)}</td>
-								<td class="num wide" class:muted={!s.working}>{#if s.working}<Mark status="running" />{/if} {count.format(s.working)}</td>
-								<td class="num" class:muted={!s.conflicts}>{#if s.conflicts}<Mark status="conflict" />{/if} {count.format(s.conflicts)}</td>
+								<td>{s.bubbles}<span class="muted forks">{plural(s.forks, "fork")}</span></td>
+								<td>{#if s.working}<Mark status="running" /> {s.working}{:else}<span class="muted">None</span>{/if}</td>
+								<td>{#if s.conflicts}<Mark status="conflict" /> {s.conflicts}{:else}<span class="muted">None</span>{/if}</td>
 							{/if}
 							<td class="created">{#if made}<time datetime={new Date(made).toISOString()} title={new Date(made).toLocaleString()}>{dateFmt.format(made)}</time>{:else}<span class="muted">—</span>{/if}</td>
 						</tr>
 					{:else}
-						<tr><td colspan="6" class="muted">No repository matches “{filter}”.</td></tr>
+						<tr><td colspan="5" class="muted">No repository matches “{filter}”.</td></tr>
 					{/each}
 				</tbody>
 			</table>
@@ -147,33 +139,25 @@
 </Dialog>
 
 <style>
-	.page { padding: 1.5rem clamp(1rem, 3vw, 2.5rem) 3rem; max-width: 72rem; }
-	h1 { margin-bottom: 1rem; }
-	.search { margin-bottom: 1rem; }
-	.search input { width: 18rem; max-width: 70vw; }
-	table { width: 100%; border-collapse: separate; border-spacing: 0; background: var(--raised); border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; }
-	th { text-align: left; font-size: 0.8125rem; font-weight: 500; color: var(--ink-3); padding: 0.6rem 1rem; background: var(--paper); border-bottom: 1px solid var(--line); white-space: nowrap; }
+	.page { padding: 2rem clamp(1rem, 3vw, 2.5rem); max-width: 72rem; }
+	h1 { margin-bottom: 1.25rem; }
+	.tools { margin-bottom: 1rem; max-width: 20rem; }
+	table { width: 100%; border-collapse: collapse; background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; }
+	th { text-align: left; font-size: 0.8125rem; font-weight: 500; color: var(--ink-3); padding: 0.6rem 1rem; border-bottom: 1px solid var(--line); }
 	td { padding: 0.75rem 1rem; border-bottom: 1px solid var(--line-2); font-size: 0.9375rem; }
 	tr:last-child td { border-bottom: 0; }
-	/* Proportional figures: tabular ones give the grouping comma a full figure's width ("1 , 240"). */
-	.num { text-align: right; white-space: nowrap; }
-	/* The whole row opens the repository: the name's link covers it. */
-	tbody tr { position: relative; }
-	tbody tr:hover { background: var(--paper); }
+	tbody tr:hover { background: var(--raised); }
 	.name { font-weight: 500; text-decoration: none; }
-	.name::after { content: ""; position: absolute; inset: 0; }
-	.name:focus-visible { outline: 0; }
-	tbody tr:has(.name:focus-visible) { outline: 2px solid var(--focus); outline-offset: -2px; }
-	tbody tr:hover .name { text-decoration: underline; text-underline-offset: 0.15em; }
-	.id { margin-left: 0.5rem; font-size: 0.75rem; white-space: nowrap; }
-	.created { white-space: nowrap; text-align: right; }
-	td.created { color: var(--ink-2); }
-	.link { position: relative; padding: 0; margin-left: 0.4rem; border: 0; background: none; color: var(--ink); font-size: inherit; text-decoration: underline; text-underline-offset: 0.15em; }
+	.id { margin-left: 0.6rem; font-size: 0.75rem; }
+	.name:hover { text-decoration: underline; }
+	.forks { margin-left: 0.6rem; font-size: 0.8125rem; }
+	.created { white-space: nowrap; color: var(--ink-2); font-variant-numeric: tabular-nums; }
 	.empty { max-width: 32rem; padding: 2rem; background: var(--paper); border: 1px dashed var(--line); border-radius: var(--r-md); }
 	.empty p { margin: 0.5rem 0 1.25rem; color: var(--ink-2); }
-	.needs { display: inline-block; margin-left: 0.5rem; min-width: 1.4rem; text-align: center; padding: 0 0.4rem; border-radius: 999px; background: var(--conflict); color: #fff; font-size: 0.75rem; font-weight: 600; line-height: 1.5; vertical-align: 0.1em; font-variant-numeric: tabular-nums; }
-	@media (prefers-color-scheme: dark) { .needs { color: #0f1821; } }
 	@media (max-width: 640px) {
-		.wide, .created, .id { display: none; }
+		th:nth-child(3), td:nth-child(3), th:nth-child(5), td.created { display: none; }
+		.forks { display: none; }
 	}
+	.needs { display: inline-block; margin-left: 0.6rem; min-width: 1.4rem; text-align: center; padding: 0 0.4rem; border-radius: 999px; background: var(--conflict); color: #fff; font-size: 0.75rem; font-weight: 600; line-height: 1.5; text-decoration: none; vertical-align: 0.1em; font-variant-numeric: tabular-nums; }
+	.needs:hover { filter: brightness(1.08); }
 </style>
