@@ -45,7 +45,7 @@ const overlap = (a, b) => { let n = 0; for (let i = 0; i < a.length; i++) n += p
 const count = (a) => { let n = 0; for (let i = 0; i < a.length; i++) n += pop(a[i]); return n; };
 const bitsOf = (a) => { const out = []; for (let i = 0; i < a.length; i++) { let w = a[i]; while (w) { const j = 31 - Math.clz32(w & -w); out.push(i * 32 + j); w &= w - 1; } } return out; };
 
-const DEFAULTS = { agents: 2000, ci: true, autoFerge: true, fergeAgents: true, person: false, parallel: false, modules: 240, maxAgentPushes: 3, repo: "orchard" };
+const DEFAULTS = { agents: 2000, ci: true, person: false, parallel: false, modules: 240, maxAgentPushes: 3, repo: "orchard" };
 
 function createWorld(seed = 7, opts = {}) {
 	const o = { ...DEFAULTS, ...opts };
@@ -77,7 +77,7 @@ function newBubble(w, repId, extra = {}) {
 	};
 	w.bubbles.set(b.id, b);
 	w.stats.newBubbles++;
-	w.events.push({ type: "bubble", id: b.id });
+	w.events.push({ type: "bubble", id: b.id, from: extra.parent ?? null });
 	return b;
 }
 
@@ -167,7 +167,7 @@ function place(w, a) {
 	const why = into ? (into === home ? "home" : "other") : !home ? "nobasis" : !home.visible ? "hidden" : home.epoch !== a.basisEpoch ? "epoch" : "changed";
 	w.placeLog.push([w.t, why]);
 	if (!into) {
-		const b = newBubble(w, a.id);
+		const b = newBubble(w, a.id, { parent: home?.id ?? null });
 		for (const f of a.files) { set(b.files, f); set(b.own, f); b.last[f] = w.t; }
 		if (home) for (let i = 0; i < b.files.length; i++) b.files[i] |= home.files[i];
 		b.recent.push(a.id);
@@ -229,7 +229,7 @@ function pickFerge(w, busy) {
 	const cands = [...w.conflicts.values()].filter((c) => ok(c.a) && ok(c.b));
 	const req = cands.find((c) => w.requested.has(pairKey(c.a, c.b)));
 	if (req) return req;
-	return w.opts.autoFerge ? cands[0] : null;
+	return cands[0] ?? null; // auto-ferge is always on
 }
 
 function startOp(w, kind, a, b) {
@@ -265,10 +265,9 @@ function finishOp(w, op) {
 	f.last.set(keep.last);
 	for (const x of c) set(f.own, x);
 	f.conflictFiles = c;
-	if (w.opts.fergeAgents) {
-		const ag = startAgent(w, { basis: f, role: "ferge", files: c.slice(0, 6), title: `Resolve conflict markers in ${name}` });
-		f.fergeAgent = ag.id;
-	}
+	// Ferge agents are always on: one resolves the markers, and the bubble unlocks when its fix lands.
+	const ag = startAgent(w, { basis: f, role: "ferge", files: c.slice(0, 6), title: `Resolve conflict markers in ${name}` });
+	f.fergeAgent = ag.id;
 }
 
 function alarm(w) {
@@ -302,8 +301,7 @@ function alarm(w) {
 function personTurn(w) {
 	const n = needs(w)[0];
 	if (!n) return;
-	if (n.kind === "conflict") w.requested.add(pairKey(n.a, n.b));
-	else if (n.kind === "fork" || n.kind === "task") {
+	if (n.kind === "fork" || n.kind === "task") {
 		const a = w.agents.get(n.id);
 		if (!a) return;
 		a.person = false; a.why = ""; a.pushes = 0; a.state = "running"; a.fixing = true; a.until = w.t + 300 + w.rng() * 600;
@@ -341,7 +339,7 @@ function step(w, dt) {
 function needs(w) {
 	const out = [];
 	const forks = [], tasks = [];
-	for (const [k, c] of w.conflicts) out.push({ kind: "conflict", key: `c:${k}`, a: c.a, b: c.b, since: c.since });
+	// Conflicts aren't listed: with auto-ferge and ferge agents on, resolving them is the merge loop's job.
 	for (const a of w.agents.values()) {
 		if (a.state === "person") forks.push({ kind: "fork", key: `f:${a.id}`, id: a.id, title: a.title, why: a.why, mark: "failed", since: a.since });
 		else if (a.state === "failed") tasks.push({ kind: "task", key: `t:${a.id}`, id: a.id, title: a.title, why: a.why, mark: "failed", since: a.since });
