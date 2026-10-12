@@ -758,7 +758,7 @@ function drawTrend() {
 		const last = hs[hs.length - 1];
 		g.beginPath(); g.arc(X(hs.length - 1), Y(last[key]), 2.2, 0, 7); g.fillStyle = col; g.fill();
 	}
-	g.fillStyle = C["ink-3"]; g.font = `10px ${getFont()}`; g.fillText(fmt(max), 2, 9);
+	g.fillStyle = C["ink-3"]; g.font = `11px ${getFont()}`; g.fillText(fmt(max), 2, 9);
 	const last = hs[hs.length - 1];
 	$("trendLabel").innerHTML = `<span style="color:${C.lilac}">●</span> ${fmt(last.bubbles)} bubbles <span style="color:${C.conflict}">●</span> ${fmt(last.conflicts)} conflicts`;
 }
