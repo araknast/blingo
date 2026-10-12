@@ -18,6 +18,7 @@ const HIDE_LEASE_MS = 15 * 60_000;
 // part and `fork_part` the rest. It crosses DO RPC whole (32 MiB a message), hence the cap.
 // ponytail: store series in R2 if forks get bigger than this.
 const MAX_SERIES = 25_000_000;
+const PLACE_TRIES = 5; // placement attempts that may fail with an error before a fork goes loose
 const PART = 500_000; // UTF-16 units: at most 1.5 MB of UTF-8
 // SQL: ferge bubble `b` has a ferge agent at work on its conflicts (yorkle's attention.ts fergeAgent):
 // not yet done, or done with its fix still queued there (the bubble unlocks once that's applied).
@@ -75,6 +76,9 @@ export type NewTask = Omit<PlanItem, "key"> & { key?: string; bubble?: string | 
 // ponytail: one neighbour merge at a time per repo (alarm is single-flight); disjoint pairs could run in parallel.
 export class RepoDO extends DurableObject<Env> {
 	private sql = this.ctx.storage.sql;
+	// Placement attempts in a row that failed with an error (checkLoose). ponytail: in memory, so a
+	// restart gives a fork another PLACE_TRIES.
+	private placeFails = new Map<string, number>();
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
@@ -1139,15 +1143,25 @@ export class RepoDO extends DurableObject<Env> {
 				.exec<Loose>("SELECT * FROM loose WHERE placing = 1")
 				.toArray()
 				.map(async (l) => {
-					const { url } = await authRemote(this.env, l.fork, "read");
-					const p = await this.box().sh(PATCH_SH, [url, l.base]);
-					if (p.exitCode !== 0 && p.exitCode !== MERGES && p.exitCode !== UNBASED) throw new Error(`patch series of ${l.fork} (${p.exitCode}): ${p.stderr}`);
-					const placed =
-						p.exitCode === MERGES
-							? { error: "its history has merge commits; rebase it onto where it started" }
-							: p.exitCode === UNBASED
-								? { error: "its history doesn't contain the commit it started from (force-pushed?); rebase it onto that commit" }
-								: await this.place(l.fork, readSeries(p.stdout).files, readSeries(p.stdout).mbox);
+					let placed: { bubble: string | null } | { error: string };
+					try {
+						const { url } = await authRemote(this.env, l.fork, "read");
+						const p = await this.box().sh(PATCH_SH, [url, l.base]);
+						if (p.exitCode !== 0 && p.exitCode !== MERGES && p.exitCode !== UNBASED) throw new Error(`patch series of ${l.fork} (${p.exitCode}): ${p.stderr}`);
+						placed =
+							p.exitCode === MERGES
+								? { error: "its history has merge commits; rebase it onto where it started" }
+								: p.exitCode === UNBASED
+									? { error: "its history doesn't contain the commit it started from (force-pushed?); rebase it onto that commit" }
+									: await this.place(l.fork, readSeries(p.stdout).files, readSeries(p.stdout).mbox);
+					} catch (e) {
+						// Infra errors are retried, but not forever: then it is loose, with the error as its reason.
+						const n = (this.placeFails.get(l.fork) ?? 0) + 1;
+						this.placeFails.set(l.fork, n);
+						if (n < PLACE_TRIES) throw e;
+						placed = { error: `placement kept failing: ${String(e).slice(-1500)}` };
+					}
+					this.placeFails.delete(l.fork);
 					if ("error" in placed) this.sql.exec("UPDATE loose SET placing = 0, reason = ? WHERE fork = ?", placed.error, l.fork);
 				}),
 		);
