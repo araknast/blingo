@@ -54,9 +54,14 @@ export function needs(d: RepoState): Need[] {
 	return out;
 }
 
-// The task of the ferge agent at work on ferge bubble `bubble`'s conflicts, if any (RepoDO.fergeAgent).
-export const fergeAgent = (d: RepoState, bubble: string) =>
-	d.tasks.find((t) => t.role === "ferge" && t.bubble === bubble && (t.status === "open" || t.status === "in-progress" || t.status === "awaiting-approval"));
+// The task of the ferge agent at work on ferge bubble `bubble`'s conflicts, if any (repo-do.ts
+// FERGE_AGENT): not yet done, or done with its fix still queued there (it unlocks once that's applied).
+export function fergeAgent(d: RepoState, bubble: string) {
+	const queued = new Set(d.bubbles.find((b) => b.id === bubble)?.members.filter((m) => m.status === "pending").map((m) => m.name));
+	return d.tasks.find(
+		(t) => t.role === "ferge" && t.bubble === bubble && (t.status === "open" || t.status === "in-progress" || t.status === "awaiting-approval" || (t.status === "completed" && !!t.fork && queued.has(t.fork))),
+	);
+}
 
 // How many items each tab has.
 export function needsByTab(d: RepoState): Partial<Record<Tab, number>> {

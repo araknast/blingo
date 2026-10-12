@@ -19,8 +19,10 @@ const HIDE_LEASE_MS = 15 * 60_000;
 // ponytail: store series in R2 if forks get bigger than this.
 const MAX_SERIES = 25_000_000;
 const PART = 500_000; // UTF-16 units: at most 1.5 MB of UTF-8
-// SQL: ferge bubble `b` has a ferge agent at work on its conflicts (yorkle's attention.ts fergeAgent).
-const FERGE_AGENT = "EXISTS (SELECT 1 FROM task t WHERE t.role = 'ferge' AND t.bubble = b.id AND t.status IN ('open', 'in-progress', 'awaiting-approval'))";
+// SQL: ferge bubble `b` has a ferge agent at work on its conflicts (yorkle's attention.ts fergeAgent):
+// not yet done, or done with its fix still queued there (the bubble unlocks once that's applied).
+const FERGE_AGENT = `EXISTS (SELECT 1 FROM task t WHERE t.role = 'ferge' AND t.bubble = b.id AND (t.status IN ('open', 'in-progress', 'awaiting-approval')
+	OR (t.status = 'completed' AND EXISTS (SELECT 1 FROM fork f WHERE f.name = t.fork AND f.bubble = b.id AND f.status = 'pending'))))`;
 
 // status: rep = the fork that started the bubble; pending = its patch series is queued; merged = applied
 // (or merged in, for forks from before patch series); failed = its series didn't apply; conflict = a

@@ -78,6 +78,10 @@ test("every item belongs to a tab, and an open ferge waits on the bubbles tab", 
 	// While a ferge agent works on it the locked bubble isn't a person's; once it failed, it is again.
 	d.tasks.push({ ...d.tasks[0], id: "t2", status: "in-progress", role: "ferge", bubble: d.bubbles[1].id });
 	expect(needs(d).find((n) => n.kind === "ferge")).toBeUndefined();
+	// Done, with its fix queued in the bubble: still the agent's until it's applied (and unlocks).
+	d.tasks[1] = { ...d.tasks[1], status: "completed", fork: "fix" };
+	d.bubbles[1].members.push({ name: "fix", bubble: d.bubbles[1].id, status: "pending", files: [] });
+	expect(needs(d).find((n) => n.kind === "ferge")).toBeUndefined();
 	d.tasks[1].status = "failed";
 	expect(needs(d).find((n) => n.kind === "ferge")).toBeDefined();
 });

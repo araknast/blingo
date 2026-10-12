@@ -329,7 +329,7 @@
 
 <style>
 	.stage { height: 100%; min-height: 0; position: relative; }
-	.drawn :global(.card) { display: none; } /* a bubble's hover card would sit beside the drawer */
+	.drawn :global(#map-card) { display: none; } /* a bubble's hover card would sit beside the drawer */
 	.drawer {
 		position: absolute;
 		top: 0;
