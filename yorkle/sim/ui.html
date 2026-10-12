@@ -1,0 +1,891 @@
+<title>Orchard at Scale</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Schibsted+Grotesk:wght@400;500;600;700&display=swap">
+<style>
+/* Layout: harbor top bar for the simulation's controls, a paper strip of live numbers, then yorkle's bubble map filling the rest. */
+:root {
+	--fog: #e9edf1; --paper: #f8fafb; --raised: #ffffff;
+	--harbor: #1d2b3a; --harbor-2: #2a3b4e; --on-harbor: #d9e2ea; --on-harbor-2: #9fb0c0;
+	--ink: #1a2430; --ink-2: #4a5866; --ink-3: #5d6b79; --line: #d3dae1; --line-2: #e2e7ec; --focus: #4f7fb8;
+	--teal: #7fd1c7; --lilac: #b9a3f0; --amber: #f2c38b;
+	--working: #966309; --merged: #277a70; --pending: #6b7a89; --conflict: #b8482e;
+	--soap-core: rgb(255 255 255 / 0.85); --soap-mid: rgb(255 255 255 / 0.35); --soap-edge: rgb(185 163 240 / 0.18); --glint: rgb(255 255 255 / 0.9);
+	--overlay: color-mix(in srgb, var(--raised) 94%, transparent);
+	--font: "Schibsted Grotesk", system-ui, sans-serif; --mono: "JetBrains Mono", ui-monospace, monospace;
+	--r-sm: 4px; --r-md: 8px;
+	color-scheme: light;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+	--fog: #16202b; --paper: #1c2834; --raised: #22303e; --harbor: #0f1821; --harbor-2: #1b2836; --on-harbor: #c9d4de; --on-harbor-2: #8b9cac;
+	--ink: #e4eaf0; --ink-2: #b2bfcb; --ink-3: #93a2b0; --line: #33434f; --line-2: #2a3845; --focus: #8db4e2;
+	--working: #e0a338; --merged: #4fb3a5; --pending: #8595a4; --conflict: #e8806a;
+	--soap-core: rgb(255 255 255 / 0.1); --soap-mid: rgb(255 255 255 / 0.03); --soap-edge: rgb(185 163 240 / 0.12); --glint: rgb(255 255 255 / 0.55);
+	color-scheme: dark;
+} }
+:root[data-theme="dark"] {
+	--fog: #16202b; --paper: #1c2834; --raised: #22303e; --harbor: #0f1821; --harbor-2: #1b2836; --on-harbor: #c9d4de; --on-harbor-2: #8b9cac;
+	--ink: #e4eaf0; --ink-2: #b2bfcb; --ink-3: #93a2b0; --line: #33434f; --line-2: #2a3845; --focus: #8db4e2;
+	--working: #e0a338; --merged: #4fb3a5; --pending: #8595a4; --conflict: #e8806a;
+	--soap-core: rgb(255 255 255 / 0.1); --soap-mid: rgb(255 255 255 / 0.03); --soap-edge: rgb(185 163 240 / 0.12); --glint: rgb(255 255 255 / 0.55);
+	color-scheme: dark;
+}
+html, body { height: 100%; }
+body { background: var(--fog); color: var(--ink); font-family: var(--font); font-size: 16px; line-height: 1.5; }
+* { box-sizing: border-box; }
+p, ul { margin: 0; }
+button {
+	font: inherit; font-size: 0.875rem; font-weight: 500; display: inline-flex; align-items: center; gap: 0.4rem;
+	padding: 0.45rem 0.9rem; border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--raised); color: var(--ink);
+	cursor: pointer; white-space: nowrap;
+}
+button:hover { border-color: var(--ink-3); }
+button:focus-visible, select:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.mono { font-family: var(--mono); font-size: 0.8em; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+.app { height: 100%; display: flex; flex-direction: column; }
+
+/* Top bar */
+.top { background: var(--harbor); color: var(--on-harbor); display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem 1.25rem; padding: 0.6rem 16px; }
+.brand { display: flex; align-items: baseline; gap: 0.6rem; min-width: 0; }
+.logo { font-weight: 700; letter-spacing: -0.01em; font-size: 1.05rem; color: #fff; }
+.crumb { color: var(--on-harbor-2); font-size: 0.875rem; }
+.crumb strong { color: var(--on-harbor); font-weight: 600; }
+.sim-tag { font-size: 0.6875rem; letter-spacing: 0.06em; text-transform: uppercase; padding: 0.05rem 0.45rem; border-radius: 999px; border: 1px solid var(--harbor-2); color: var(--amber); }
+.clock { font-variant-numeric: tabular-nums; font-family: var(--mono); font-size: 0.8125rem; color: var(--on-harbor); background: var(--harbor-2); padding: 0.2rem 0.55rem; border-radius: var(--r-sm); }
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; margin-left: auto; }
+.field { display: flex; align-items: center; gap: 0.45rem; font-size: 0.8125rem; color: var(--on-harbor-2); }
+.field output { font-variant-numeric: tabular-nums; color: var(--on-harbor); font-weight: 600; min-width: 3.2em; }
+.field input[type="range"] { width: 8.5rem; accent-color: var(--amber); }
+.top select { font: inherit; font-size: 0.8125rem; color: var(--on-harbor); background: var(--harbor-2); border: 1px solid transparent; border-radius: var(--r-sm); padding: 0.2rem 0.4rem; }
+.seg { display: inline-flex; border: 1px solid var(--harbor-2); border-radius: var(--r-sm); overflow: hidden; }
+.seg button { border: 0; border-radius: 0; background: transparent; color: var(--on-harbor-2); padding: 0.2rem 0.55rem; font-size: 0.8125rem; }
+.seg button[aria-pressed="true"] { background: var(--harbor-2); color: #fff; }
+.top .act { background: var(--harbor-2); color: var(--on-harbor); border-color: transparent; padding: 0.25rem 0.7rem; font-size: 0.8125rem; }
+.top .act:hover { border-color: var(--on-harbor-2); }
+.settings { position: relative; }
+.settings summary { list-style: none; cursor: pointer; font-size: 0.8125rem; padding: 0.25rem 0.7rem; border-radius: var(--r-sm); background: var(--harbor-2); }
+.settings summary::-webkit-details-marker { display: none; }
+.settings-body {
+	position: absolute; right: 0; top: calc(100% + 0.4rem); width: min(20rem, calc(100vw - 32px)); z-index: 20;
+	background: var(--raised); color: var(--ink); border: 1px solid var(--line); border-radius: var(--r-md);
+	box-shadow: 0 10px 30px rgb(15 24 33 / 0.2); padding: 0.8rem 0.9rem; display: grid; gap: 0.55rem; font-size: 0.8125rem;
+}
+.settings-body h3 { margin: 0.2rem 0 0; font-size: 0.6875rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; }
+.toggle { display: grid; grid-template-columns: auto 1fr; gap: 0.1rem 0.55rem; align-items: start; cursor: pointer; }
+.toggle input { margin-top: 0.25rem; accent-color: var(--merged); }
+.toggle small { grid-column: 2; color: var(--ink-2); font-size: 0.75rem; line-height: 1.35; }
+
+/* Live numbers */
+.stats { background: var(--paper); border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; align-items: stretch; gap: 0.5rem 1.4rem; padding: 0.55rem 16px; }
+.stat { display: grid; gap: 0; min-width: 0; }
+.stat .v { font-size: 1.1rem; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.25; display: flex; align-items: center; gap: 0.35rem; }
+.stat .l { font-size: 0.6875rem; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; }
+.stat.bad .v { color: var(--conflict); }
+.placement { display: grid; gap: 0.25rem; min-width: 14rem; flex: 1 1 16rem; max-width: 26rem; }
+.pbar { display: flex; height: 0.55rem; border-radius: 999px; overflow: hidden; background: var(--line-2); }
+.pbar span { display: block; height: 100%; transition: width 400ms ease-out; }
+.plegend { display: flex; flex-wrap: wrap; gap: 0.1rem 0.8rem; font-size: 0.75rem; color: var(--ink-2); }
+.plegend i { display: inline-block; width: 0.55rem; height: 0.55rem; border-radius: 2px; margin-right: 0.3rem; vertical-align: -1px; }
+.trend { display: grid; gap: 0.1rem; }
+.trend canvas { display: block; width: 12rem; height: 2.6rem; }
+.about { font-size: 0.8125rem; align-self: center; margin-left: auto; position: relative; }
+.about summary { cursor: pointer; color: var(--ink-2); list-style: none; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--line); }
+.about summary::-webkit-details-marker { display: none; }
+.about-body {
+	position: absolute; right: 0; top: calc(100% + 0.4rem); width: min(30rem, calc(100vw - 32px)); z-index: 20; max-height: 70vh; overflow-y: auto;
+	background: var(--raised); border: 1px solid var(--line); border-radius: var(--r-md); box-shadow: 0 10px 30px rgb(15 24 33 / 0.16);
+	padding: 0.9rem 1rem; display: grid; gap: 0.6rem; color: var(--ink-2); line-height: 1.5;
+}
+.about-body strong { color: var(--ink); }
+.about-body ul { padding-left: 1.1rem; display: grid; gap: 0.3rem; }
+
+/* The map, as in yorkle's BubbleMap.svelte */
+.map {
+	position: relative; flex: 1; min-height: 22rem; overflow: hidden;
+	background: radial-gradient(circle at 1px 1px, var(--line) 1px, transparent 0) 0 0 / 24px 24px, var(--fog);
+}
+.map canvas { position: absolute; inset: 0; display: block; touch-action: none; cursor: grab; }
+.map canvas:active { cursor: grabbing; }
+.map canvas:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.bar { position: absolute; left: 1rem; top: 1rem; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0.5rem; max-width: calc(100% - 2rem); z-index: 4; pointer-events: none; }
+.bar > * { pointer-events: auto; }
+.zoom { display: flex; gap: 2px; }
+.zoom button { padding: 0.3rem 0.6rem; min-width: 2rem; justify-content: center; background: var(--overlay); }
+.zoom svg path { stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
+.key { position: relative; }
+.key summary { list-style: none; cursor: pointer; padding: 0.3rem 0.7rem; font-size: 0.875rem; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--overlay); }
+.key summary::-webkit-details-marker { display: none; }
+.key[open] summary { background: var(--raised); }
+.key-body { position: absolute; top: calc(100% + 0.35rem); left: 0; width: 17rem; padding: 0.75rem 0.9rem; background: var(--raised); border: 1px solid var(--line); border-radius: var(--r-md); box-shadow: 0 10px 30px rgb(15 24 33 / 0.16); font-size: 0.8125rem; }
+.key-head { font-weight: 600; margin: 0.6rem 0 0.3rem; }
+.key-head:first-child { margin-top: 0; }
+.key ul { list-style: none; padding: 0; display: grid; gap: 0.25rem; color: var(--ink-2); }
+.key li { display: flex; align-items: center; gap: 0.5rem; }
+.mark { flex: none; overflow: visible; }
+
+.g-rep { fill: var(--paper); stroke: var(--merged); stroke-width: 2.5; }
+.g-pending { fill: var(--paper); stroke: var(--pending); stroke-width: 2; }
+.g-merged { fill: var(--merged); }
+.g-conflict { fill: var(--conflict); }
+.g-failed { fill: var(--paper); stroke: var(--conflict); stroke-width: 1.8; }
+.g-failed-x { stroke: var(--conflict); stroke-width: 1.8; stroke-linecap: round; }
+.g-running { fill: var(--working); animation: g-blink 1.6s ease-in-out infinite; }
+.g-placing { fill: var(--ink-3); animation: g-blink 1.6s ease-in-out infinite; }
+.g-review { fill: var(--paper); stroke: var(--working); stroke-width: 2; }
+.g-review-dot { fill: var(--working); }
+.k-line { stroke-width: 2.5; stroke-dasharray: 5 3; }
+@keyframes g-blink { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .g-running, .g-placing { animation: none; } }
+
+.needs { position: absolute; right: 1rem; top: 1rem; width: 21rem; max-width: calc(100% - 2rem); z-index: 5; }
+.needs details { background: var(--raised); border: 1px solid var(--line); border-radius: var(--r-md); box-shadow: 0 10px 30px rgb(15 24 33 / 0.14); overflow: hidden; }
+.needs summary { display: flex; align-items: center; gap: 0.5rem; padding: 0.6rem 0.9rem; font-weight: 700; cursor: pointer; list-style: none; }
+.needs summary::-webkit-details-marker { display: none; }
+.needs summary::after { content: ""; margin-left: auto; width: 0.45rem; height: 0.45rem; border: solid var(--ink-3); border-width: 0 1.5px 1.5px 0; rotate: 45deg; translate: 0 -2px; transition: rotate 150ms ease-out; }
+.needs details[open] summary::after { rotate: -135deg; translate: 0 2px; }
+.count { min-width: 1.5rem; padding: 0 0.45rem; border-radius: 999px; background: var(--conflict); color: #fff; font-size: 0.75rem; text-align: center; font-variant-numeric: tabular-nums; }
+.needs ul { list-style: none; padding: 0 0 0.25rem; overflow-y: auto; border-top: 1px solid var(--line-2); }
+.needs li { display: flex; gap: 0.6rem; padding: 0.65rem 0.9rem; font-size: 0.875rem; }
+.needs li + li { border-top: 1px solid var(--line-2); }
+.needs li:hover { background: color-mix(in srgb, var(--conflict) 5%, transparent); }
+.needs li > .mark { margin-top: 0.2rem; }
+.needs li.more { color: var(--ink-2); font-size: 0.8125rem; justify-content: center; }
+.what { min-width: 0; flex: 1; }
+.what p { overflow-wrap: anywhere; }
+.what .t { font-weight: 600; }
+.why { color: var(--ink-2); font-size: 0.8125rem; margin-top: 0.1rem; }
+.acts { display: flex; gap: 0.4rem; margin-top: 0.5rem; }
+.small { padding: 0.2rem 0.6rem; font-size: 0.8125rem; }
+.primary { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.all-clear { float: right; display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.3rem 0.75rem 0.3rem 0.6rem; border: 1px solid var(--line); border-radius: 999px; background: var(--overlay); font-size: 0.8125rem; color: var(--ink-2); }
+
+.dock { position: absolute; left: 1rem; right: 1rem; bottom: 1rem; display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0.5rem 1.25rem; max-height: 45%; overflow-y: auto; pointer-events: none; z-index: 4; }
+.group { display: flex; flex-direction: column; gap: 0.3rem; pointer-events: auto; min-width: 0; }
+.group-head { display: inline-flex; align-items: center; gap: 0.4rem; align-self: flex-start; padding: 0.25rem 0.6rem; background: var(--overlay); font-size: 0.8125rem; font-weight: 600; color: var(--ink-2); }
+.group-head .n { font-variant-numeric: tabular-nums; color: var(--ink-2); font-weight: 500; }
+.group ul { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 0.35rem; max-width: 60rem; }
+.chip { display: inline-flex; align-items: center; gap: 0.45rem; max-width: 15rem; padding: 0.3rem 0.75rem 0.3rem 0.55rem; border: 1.5px solid var(--line); border-radius: 999px; background: var(--raised); color: var(--ink); font-size: 0.8125rem; box-shadow: 0 2px 4px rgb(15 24 33 / 0.08); }
+.group[data-group="running"] .chip { border-color: var(--working); }
+.chip .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip.more { border-style: dashed; color: var(--ink-2); }
+
+.card { position: absolute; width: 280px; padding: 0.8rem 0.9rem; background: var(--raised); border: 1px solid var(--line); border-radius: var(--r-md); box-shadow: 0 10px 30px rgb(15 24 33 / 0.16); font-size: 0.8125rem; pointer-events: none; z-index: 6; }
+.card-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.card-head strong { font-size: 0.875rem; }
+.tag { font-size: 0.6875rem; padding: 0.05rem 0.4rem; border-radius: 999px; background: var(--line-2); color: var(--ink-2); }
+.muted { color: var(--ink-2); }
+.card ul { list-style: none; padding: 0; margin: 0.5rem 0 0; display: grid; gap: 0.2rem; }
+.card li { display: flex; align-items: center; gap: 0.5rem; }
+.card .files { margin-top: 0.6rem; padding-top: 0.5rem; border-top: 1px solid var(--line-2); display: grid; gap: 0.1rem; }
+.card code { font-family: var(--mono); font-size: 0.75rem; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.toast { position: absolute; left: 50%; translate: -50% 0; bottom: 5.5rem; padding: 0.45rem 0.85rem; border-radius: var(--r-sm); background: var(--harbor); color: var(--on-harbor); font-size: 0.8125rem; z-index: 8; max-width: calc(100% - 2rem); }
+
+@media (max-width: 760px) {
+	.controls { margin-left: 0; }
+	.field input[type="range"] { width: 6.5rem; }
+	.needs { top: auto; bottom: 1rem; left: 1rem; right: 1rem; width: auto; }
+	.needs ul { max-height: 30vh !important; }
+	.dock { bottom: 4.5rem; }
+	.card { display: none; }
+	.trend { display: none; }
+	.about { margin-left: 0; }
+	.about-body { left: 0; right: auto; }
+}
+</style>
+
+<div class="app">
+	<header class="top">
+		<div class="brand">
+			<span class="logo">yorkle</span>
+			<span class="crumb">Repositories / <strong>orchard</strong> / Overview</span>
+			<span class="sim-tag">Simulation</span>
+		</div>
+		<span class="clock" id="clock" title="Simulated time since the superagents started">0h 00m</span>
+		<div class="controls">
+			<label class="field" for="agents">Agents <input id="agents" type="range" min="250" max="5000" step="250" value="2000"><output id="agentsOut">2,000</output></label>
+			<label class="field" for="repo">Repository
+				<select id="repo">
+					<option value="48">1.9k files</option>
+					<option value="240" selected>9.6k files</option>
+					<option value="960">38k files</option>
+				</select>
+			</label>
+			<div class="field" role="group" aria-label="Speed">Speed
+				<div class="seg" id="speed">
+					<button aria-pressed="true" data-v="60">1 min/s</button>
+					<button aria-pressed="false" data-v="300">5 min/s</button>
+					<button aria-pressed="false" data-v="900">15 min/s</button>
+				</div>
+			</div>
+			<button class="act" id="pause">Pause</button>
+			<button class="act" id="reset" title="Start again from an empty repository">Restart</button>
+			<details class="settings">
+				<summary>Settings</summary>
+				<div class="settings-body">
+					<h3>Repository settings</h3>
+					<label class="toggle"><input type="checkbox" id="ci" checked>CI and automatic review<small>Each agent fork runs CI, then review. A failure gets a fixer agent; after 3 pushes it's a person's.</small></label>
+					<label class="toggle"><input type="checkbox" id="autoFerge" checked>Auto-ferge<small>The merge loop ferges a conflicting pair when it has no neighbour merge to do.</small></label>
+					<label class="toggle"><input type="checkbox" id="fergeAgents" checked>Ferge agents<small>An agent fixes each ferge's conflict markers; the bubble unlocks when its fix lands.</small></label>
+					<h3>People</h3>
+					<label class="toggle"><input type="checkbox" id="person">A person works "Needs you"<small>Clears one item every 2 simulated minutes, oldest first.</small></label>
+					<h3>What if (not in blingo yet)</h3>
+					<label class="toggle"><input type="checkbox" id="parallel">Parallel neighbour merges<small>Up to 12 disjoint pairs merge at once, instead of one per repository.</small></label>
+				</div>
+			</details>
+		</div>
+	</header>
+
+	<div class="stats" aria-live="off">
+		<div class="stat"><span class="l">Working</span><span class="v" id="sWorking">0</span></div>
+		<div class="stat"><span class="l">CI and review</span><span class="v" id="sCi">0</span></div>
+		<div class="stat"><span class="l">Bubbles</span><span class="v" id="sBubbles">0</span></div>
+		<div class="stat"><span class="l">Merging now</span><span class="v" id="sMerging">0</span></div>
+		<div class="stat" id="needsStat"><span class="l">Needs you</span><span class="v" id="sNeeds">0</span></div>
+		<div class="stat"><span class="l">Placed, last hour</span><span class="v" id="sPlaced">0</span></div>
+		<div class="placement">
+			<span class="stat"><span class="l">Where forks landed, last hour</span></span>
+			<div class="pbar" id="pbar" role="img" aria-label="Placement breakdown"></div>
+			<div class="plegend" id="plegend"></div>
+		</div>
+		<div class="trend">
+			<span class="stat"><span class="l" id="trendLabel">Bubbles and needs you, by hour</span></span>
+			<canvas id="trend" width="192" height="42" aria-label="Bubbles and Needs you over time"></canvas>
+		</div>
+		<details class="about">
+			<summary>How this works</summary>
+			<div class="about-body">
+				<p>A simulated repository in which <strong>superagents keep a fixed number of agents busy</strong>. Each agent runs for 6 to 30 minutes, changes a few files (shared files like <span class="mono">src/db/schema.ts</span> 8% of the time), then goes through CI and review and is placed. The numbers are illustrative; the rules are blingo's.</p>
+				<ul>
+					<li><strong>Placement</strong> follows <span class="mono">placeFork</span>: home if it's visible, at the same epoch, and nothing since the fork started changed its files; otherwise the first bubble that neither it nor the home bubble touched those files in; otherwise a new bubble.</li>
+					<li><strong>Patch queues</strong>: each bubble's Box applies its queue, then pushes. A bubble with a queue can't neighbour-merge.</li>
+					<li><strong>Merge loop</strong>: one neighbour merge per repository at a time, nearest neighbour first. Merges fail when both sides changed the same files since they split.</li>
+					<li><strong>Ferges</strong>, CI fixers, the 3-push limit and the "Needs you" items match the app.</li>
+				</ul>
+				<p>Differences from the real map: it draws on a canvas instead of SVG, the dock shows at most 60 chips per group, and you can zoom out further than 25% so thousands of bubbles fit.</p>
+			</div>
+		</details>
+	</div>
+
+	<div class="map" id="map">
+		<canvas id="cv" tabindex="0" role="img" aria-label="Bubble map. Arrow keys pan, plus and minus zoom, F fits."></canvas>
+		<div class="bar" id="bar">
+			<div class="zoom" role="group" aria-label="Zoom">
+				<button aria-label="Zoom out" title="Zoom out (−)" id="zOut"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6h8"/></svg></button>
+				<button aria-label="Zoom in" title="Zoom in (+)" id="zIn"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6h8M6 2v8"/></svg></button>
+				<button title="Fit everything (F)" id="zFit">Fit</button>
+			</div>
+			<details class="key">
+				<summary>Key</summary>
+				<div class="key-body" id="keyBody"></div>
+			</details>
+		</div>
+		<section class="needs" id="needs" aria-label="Needs you"></section>
+		<section class="dock" id="dock" aria-label="Not in a bubble yet"></section>
+		<div class="card" id="card" hidden></div>
+		<p class="toast" id="toast" role="status" hidden></p>
+	</div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<script>
+/*ENGINE*/
+</script>
+<script>
+(() => {
+const E = engine;
+const $ = (id) => document.getElementById(id);
+const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const fmt = (n) => n.toLocaleString("en-US");
+const short = (id) => id.split("-f-").pop();
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const MAX_DOTS = 60;
+
+// ---- Glyphs, as Glyph.svelte ----
+function glyph(status) {
+	switch (status) {
+		case "rep": return '<circle class="g-rep" r="6.5"/>';
+		case "pending": return '<circle class="g-pending" r="5"/>';
+		case "merged": return '<circle class="g-merged" r="5"/>';
+		case "conflict": return '<rect class="g-conflict" x="-4.2" y="-4.2" width="8.4" height="8.4" rx="1" transform="rotate(45)"/>';
+		case "failed": return '<circle class="g-failed" r="5.5"/><path class="g-failed-x" d="M -2.4 -2.4 L 2.4 2.4 M 2.4 -2.4 L -2.4 2.4"/>';
+		case "running": return '<circle class="g-running" r="4.5"/>';
+		case "review": return '<circle class="g-review" r="5"/><circle class="g-review-dot" r="1.8"/>';
+		default: return '<circle class="g-placing" r="4.5"/>';
+	}
+}
+const mark = (s) => `<svg class="mark" width="14" height="14" viewBox="-7 -7 14 14" aria-hidden="true">${glyph(s)}</svg>`;
+$("keyBody").innerHTML = `
+	<p class="key-head">Forks</p>
+	<ul><li>${mark("rep")}Representative</li><li>${mark("pending")}Pending: queued to merge</li><li>${mark("merged")}Merged</li><li>${mark("failed")}Failed: its changes didn't apply</li></ul>
+	<p class="key-head">Bubbles</p>
+	<ul>
+		<li><svg class="mark" width="22" height="14" viewBox="0 0 22 14" aria-hidden="true"><line class="k-line" x1="1" y1="7" x2="21" y2="7" style="stroke:var(--ink-3);stroke-width:2"/></svg>Merging with each other</li>
+		<li><svg class="mark" width="22" height="14" viewBox="0 0 22 14" aria-hidden="true"><line class="k-line" x1="1" y1="7" x2="21" y2="7" style="stroke:var(--conflict)"/></svg>Conflict: open it to ferge</li>
+		<li><svg class="mark" width="14" height="14" viewBox="-7 -7 14 14" aria-hidden="true"><path d="M -4 -4.5 L 0 0 L 4 -4.5 M 0 0 V 5" fill="none" stroke="var(--working)" stroke-width="1.8" stroke-linecap="round"/></svg>Ferge: locked until its conflicts are fixed</li>
+	</ul>`;
+
+// ---- World ----
+let w, nodes, ghosts, flyers, ripples;
+const sim = d3.forceSimulation([])
+	.force("collide", d3.forceCollide((n) => n.r + 36).strength(1))
+	.force("charge", d3.forceManyBody().strength(-40))
+	.force("x", d3.forceX(0).strength(0.03))
+	.alphaDecay(0.035)
+	.stop();
+
+function boot(prerun) {
+	w = E.createWorld(7, readOpts());
+	nodes = new Map(); ghosts = []; flyers = []; ripples = new Map();
+	userMoved = false; fitted = false;
+	if (prerun) E.step(w, prerun);
+	w.events.length = 0;
+	syncNodes(true);
+	if (prerun) { sim.alpha(1); for (let i = 0; i < 220; i++) sim.tick(); fit(false); }
+	lastNeedsSig = ""; lastDockSig = "";
+	updatePanels(true);
+}
+
+function readOpts() {
+	return {
+		agents: +$("agents").value, modules: +$("repo").value, ci: $("ci").checked, autoFerge: $("autoFerge").checked,
+		fergeAgents: $("fergeAgents").checked, person: $("person").checked, parallel: $("parallel").checked,
+	};
+}
+
+// Bubble radius as layout.ts: area grows with the files it holds, with room for its fork dots.
+function radius(b, files) {
+	const dots = Math.min(b.members, MAX_DOTS);
+	return Math.min(150, Math.max(34 + 7 * Math.sqrt(files), 13 * Math.sqrt(dots) + 18));
+}
+function spiral(i) {
+	let sx = 0, sy = 0, n = 0;
+	for (const m of nodes.values()) { sx += m.x; sy += m.y; n++; }
+	const c = n ? { x: sx / n, y: sy / n } : { x: 0, y: 0 };
+	const a = i * 2.399963, d = 150 * Math.sqrt(i);
+	return { x: c.x + Math.cos(a) * d, y: c.y + Math.sin(a) * d * 0.7 };
+}
+
+let hot = new Set();
+function syncNodes(force) {
+	let changed = force;
+	for (const b of w.bubbles.values()) {
+		let n = nodes.get(b.id);
+		const files = E.count(b.own);
+		const r = radius(b, files);
+		if (!n) {
+			const at = spiral(nodes.size);
+			n = { id: b.id, x: at.x, y: at.y, r, b };
+			nodes.set(b.id, n);
+			changed = true;
+		}
+		if (Math.abs(n.r - r) > 0.5) changed = true;
+		n.r = r; n.b = b; n.files = files;
+	}
+	for (const [id, n] of nodes) if (!w.bubbles.has(id)) {
+		if (!reduced) ghosts.push({ x: n.x, y: n.y, r: n.r, film: n.b.film, t0: performance.now() });
+		nodes.delete(id); changed = true;
+	}
+	if (!changed) return;
+	const links = [...w.conflicts.values()].filter((c) => nodes.has(c.a) && nodes.has(c.b));
+	hot = new Set(links.flatMap((c) => [c.a, c.b]));
+	for (const b of w.bubbles.values()) if (b.ferge && b.locked) hot.add(b.id);
+	sim.nodes([...nodes.values()]);
+	sim.force("y", d3.forceY((n) => (hot.has(n.id) ? -260 : 0)).strength((n) => (hot.has(n.id) ? 0.1 : 0.07)));
+	sim.force("link", d3.forceLink(links.map((c) => ({ source: c.a, target: c.b }))).id((n) => n.id).distance((l) => l.source.r + l.target.r + 110).strength(0.15));
+	sim.alpha(Math.max(sim.alpha(), fitted ? 0.3 : 1));
+}
+
+// ---- View: pan, zoom, fit ----
+const map = $("map"), cv = $("cv"), ctx = cv.getContext("2d");
+let W = 0, H = 0, dpr = 1, k = 0.5, tx = 0, ty = 0, userMoved = false, fitted = false;
+const cx = () => W / 2 + tx, cy = () => H / 2 + ty;
+const toWorld = (sx, sy) => ({ x: (sx - cx()) / k, y: (sy - cy()) / k });
+function insets() {
+	const narrow = W < 760;
+	const bar = $("bar").offsetHeight + 16, dock = $("dock").offsetHeight + 16, needs = $("needs");
+	return narrow ? { top: bar, right: 0, bottom: dock + needs.offsetHeight + 16 } : { top: bar, right: needs.offsetWidth + 16, bottom: dock };
+}
+function frame(ns, maxK) {
+	const pad = 40, ins = insets();
+	let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+	for (const n of ns) { x0 = Math.min(x0, n.x - n.r); x1 = Math.max(x1, n.x + n.r); y0 = Math.min(y0, n.y - n.r); y1 = Math.max(y1, n.y + n.r + 34); }
+	const aw = Math.max(80, W - ins.right - pad * 2), ah = Math.max(80, H - ins.top - ins.bottom - pad * 2);
+	// The real map stops at 25%; thousands of bubbles need further.
+	const kk = Math.max(0.03, Math.min(maxK, aw / (x1 - x0), ah / (y1 - y0)));
+	return { k: kk, x: -((x0 + x1) / 2) * kk - ins.right / 2, y: -((y0 + y1) / 2) * kk + (ins.top - ins.bottom) / 2 };
+}
+function fit(smooth) {
+	const ns = [...nodes.values()];
+	if (!ns.length || !W) return;
+	const t = frame(ns, 1.4), a = smooth ? 0.08 : 1;
+	k += (t.k - k) * a; tx += (t.x - tx) * a; ty += (t.y - ty) * a;
+	fitted = true;
+}
+let glide = 0;
+function focusOn(ids) {
+	const ns = ids.map((id) => nodes.get(id)).filter(Boolean);
+	if (!ns.length) return;
+	userMoved = true;
+	const t = frame(ns, 1.2), from = { k, x: tx, y: ty };
+	cancelAnimationFrame(glide);
+	if (reduced) { k = t.k; tx = t.x; ty = t.y; return; }
+	const t0 = performance.now();
+	const stepG = () => {
+		const p = Math.min(1, (performance.now() - t0) / 450), e = 1 - Math.pow(2, -10 * p);
+		k = from.k + (t.k - from.k) * e; tx = from.x + (t.x - from.x) * e; ty = from.y + (t.y - from.y) * e;
+		if (p < 1) glide = requestAnimationFrame(stepG);
+	};
+	glide = requestAnimationFrame(stepG);
+}
+function zoomBy(f, sx = W / 2, sy = H / 2) {
+	const p = toWorld(sx, sy), nk = Math.max(0.03, Math.min(3, k * f));
+	tx = sx - W / 2 - p.x * nk; ty = sy - H / 2 - p.y * nk; k = nk;
+	userMoved = true; cancelAnimationFrame(glide);
+}
+function refit() { userMoved = false; cancelAnimationFrame(glide); fit(false); }
+$("zOut").onclick = () => zoomBy(0.8);
+$("zIn").onclick = () => zoomBy(1.25);
+$("zFit").onclick = refit;
+
+new ResizeObserver(() => {
+	dpr = Math.min(2, devicePixelRatio || 1);
+	W = map.clientWidth; H = map.clientHeight;
+	cv.width = W * dpr; cv.height = H * dpr; cv.style.width = W + "px"; cv.style.height = H + "px";
+	if (!userMoved) fit(false);
+}).observe(map);
+
+function hit(sx, sy) {
+	const p = toWorld(sx, sy);
+	let best = null;
+	for (const n of nodes.values()) if ((n.x - p.x) ** 2 + (n.y - p.y) ** 2 <= n.r * n.r && (!best || n.r < best.r)) best = n;
+	return best;
+}
+function hitConflict(sx, sy) {
+	for (const c of w.conflicts.values()) {
+		const a = nodes.get(c.a), b = nodes.get(c.b);
+		if (!a || !b) continue;
+		const mx = cx() + ((a.x + b.x) / 2) * k, my = cy() + ((a.y + b.y) / 2) * k;
+		if (Math.abs(sx - mx) + Math.abs(sy - my) < 13) return c;
+	}
+	return null;
+}
+let drag = null, hovered = null;
+cv.addEventListener("pointerdown", (e) => {
+	if (e.button !== 0) return;
+	const r0 = cv.getBoundingClientRect(), sx = e.clientX - r0.left, sy = e.clientY - r0.top;
+	drag = { node: hit(sx, sy), x: e.clientX, y: e.clientY, moved: false, sx, sy };
+});
+cv.addEventListener("pointermove", (e) => {
+	const r0 = cv.getBoundingClientRect(), sx = e.clientX - r0.left, sy = e.clientY - r0.top;
+	if (!drag) { hovered = hit(sx, sy)?.id ?? null; cv.style.cursor = hovered || hitConflict(sx, sy) ? "pointer" : ""; return; }
+	const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+	if (!drag.moved && Math.hypot(dx, dy) < 5) return;
+	if (!drag.moved) { drag.moved = true; cv.setPointerCapture(e.pointerId); }
+	userMoved = true; cancelAnimationFrame(glide);
+	if (drag.node) { const p = toWorld(sx, sy); drag.node.fx = p.x; drag.node.fy = p.y; sim.alphaTarget(0.25); }
+	else { tx += dx; ty += dy; drag.x = e.clientX; drag.y = e.clientY; }
+});
+const endDrag = () => {
+	if (!drag) return;
+	if (drag.node) { drag.node.fx = drag.node.fy = null; sim.alphaTarget(0); }
+	if (!drag.moved) {
+		const c = hitConflict(drag.sx, drag.sy);
+		if (c) requestFerge(c.a, c.b);
+		else if (drag.node) focusOn([drag.node.id]);
+	}
+	drag = null;
+};
+cv.addEventListener("pointerup", endDrag);
+cv.addEventListener("pointercancel", endDrag);
+cv.addEventListener("pointerleave", () => { if (!drag) hovered = null; });
+cv.addEventListener("wheel", (e) => {
+	e.preventDefault();
+	const r0 = cv.getBoundingClientRect();
+	zoomBy(Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0015)), e.clientX - r0.left, e.clientY - r0.top);
+}, { passive: false });
+cv.addEventListener("keydown", (e) => {
+	if (e.altKey || e.ctrlKey || e.metaKey) return;
+	const s = e.shiftKey ? 240 : 80;
+	const pan = { ArrowLeft: [s, 0], ArrowRight: [-s, 0], ArrowUp: [0, s], ArrowDown: [0, -s] }[e.key];
+	if (pan) { e.preventDefault(); userMoved = true; tx += pan[0]; ty += pan[1]; }
+	else if (e.key === "+" || e.key === "=") zoomBy(1.25);
+	else if (e.key === "-" || e.key === "_") zoomBy(0.8);
+	else if ("fF0".includes(e.key)) refit();
+});
+
+let toastT = 0;
+function toast(msg) { const t = $("toast"); t.textContent = msg; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => (t.hidden = true), 2600); }
+function requestFerge(a, b) {
+	w.requested.add(a < b ? `${a}|${b}` : `${b}|${a}`);
+	toast(`Ferge requested for ${w.bubbles.get(a)?.name} and ${w.bubbles.get(b)?.name}. It starts when both are idle.`);
+}
+
+// ---- Drawing ----
+let C = {};
+function readColors() {
+	const s = getComputedStyle(document.documentElement);
+	for (const t of ["teal", "lilac", "amber", "ink", "ink-2", "ink-3", "line", "paper", "working", "merged", "pending", "conflict", "soap-core", "soap-mid", "soap-edge", "glint", "focus"]) C[t] = s.getPropertyValue(`--${t}`).trim();
+}
+readColors();
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", readColors);
+new MutationObserver(readColors).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+
+function dotOffset(i, n, r) {
+	if (i === 0) return { x: 0, y: 0 };
+	const st = Math.min(13, (r - 14) / Math.sqrt(Math.max(n - 1, 1))), a = i * 2.399963, d = st * Math.sqrt(i + 0.3);
+	return { x: Math.cos(a) * d, y: Math.sin(a) * d };
+}
+function edge(x, y, r, tx2, ty2) { const d = Math.hypot(tx2 - x, ty2 - y) || 1; return { x: x + ((tx2 - x) / d) * r, y: y + ((ty2 - y) / d) * r }; }
+function filmGrad(x, y, r, v) {
+	const a = ((v * 90 + 30) * Math.PI) / 180, dx = Math.cos(a) * r, dy = Math.sin(a) * r;
+	const g = ctx.createLinearGradient(x - dx, y - dy, x + dx, y + dy);
+	g.addColorStop(0, C.teal); g.addColorStop(0.5, C.lilac); g.addColorStop(1, C.amber);
+	return g;
+}
+function drawGlyph(status, x, y) {
+	ctx.beginPath();
+	if (status === "rep") { ctx.arc(x, y, 6.5, 0, 7); ctx.fillStyle = C.paper; ctx.fill(); ctx.lineWidth = 2.5; ctx.strokeStyle = C.merged; ctx.stroke(); }
+	else if (status === "pending") { ctx.arc(x, y, 5, 0, 7); ctx.fillStyle = C.paper; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = C.pending; ctx.stroke(); }
+	else { ctx.arc(x, y, 5, 0, 7); ctx.fillStyle = C.merged; ctx.fill(); }
+}
+// Dots in display order: rep, then queued, then merged (layout.ts orderMembers).
+function dotStatus(b, i) {
+	if (i === 0) return "rep";
+	const q = b.queue.length + b.applying.length;
+	return i <= q ? "pending" : "merged";
+}
+const stateLabel = (b, files) => {
+	const s = !b.visible ? "Merging" : b.ferge && b.locked ? "Ferge, locked" : b.ferge ? "Ferge" : b.locked ? "Locked" : `${fmt(files)} file${files === 1 ? "" : "s"}`;
+	return b.members > MAX_DOTS ? `${s} · ${fmt(b.members)} forks` : s;
+};
+const clip = (s, n) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
+
+function draw(now) {
+	ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+	ctx.clearRect(0, 0, W, H);
+	ctx.setTransform(dpr * k, 0, 0, dpr * k, dpr * cx(), dpr * cy());
+	const px = 1 / k;
+	const vx0 = -cx() / k, vy0 = -cy() / k, vx1 = (W - cx()) / k, vy1 = (H - cy()) / k;
+	const dash = reduced ? 0 : (now / 1400) * 46;
+	const calming = hot.size > 0;
+
+	// Merging lines
+	ctx.save();
+	ctx.setLineDash([10 * px, 7 * px]); ctx.lineDashOffset = -dash * px;
+	ctx.strokeStyle = C["ink-3"]; ctx.lineWidth = 2 * px;
+	for (const op of w.ops) {
+		const a = nodes.get(op.a), b = nodes.get(op.b);
+		if (!a || !b) continue;
+		const p = edge(a.x, a.y, a.r + 6, b.x, b.y), q = edge(b.x, b.y, b.r + 6, a.x, a.y);
+		ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
+	}
+	ctx.restore();
+
+	// Ghosts of absorbed bubbles, fading as the real map's transition does.
+	ghosts = ghosts.filter((g) => now - g.t0 < 400);
+	for (const g of ghosts) {
+		ctx.globalAlpha = 1 - (now - g.t0) / 400;
+		ctx.beginPath(); ctx.arc(g.x, g.y, g.r, 0, 7); ctx.lineWidth = 3; ctx.strokeStyle = filmGrad(g.x, g.y, g.r, g.film); ctx.stroke();
+	}
+	ctx.globalAlpha = 1;
+
+	const showText = k * 12 >= 6.5, showDots = k * 5 >= 1.2;
+	for (const n of nodes.values()) {
+		const { x, y, r, b } = n;
+		if (x + r + 40 < vx0 || x - r - 40 > vx1 || y + r + 40 < vy0 || y - r - 40 > vy1) continue;
+		const sr = r * k, isHot = hot.has(n.id);
+		const dim = (calming && !isHot && hovered !== n.id) || (spot && !spot.includes(n.id));
+		if (sr < 2.5) {
+			ctx.globalAlpha = dim ? 0.45 : 1;
+			ctx.beginPath(); ctx.arc(x, y, Math.max(r, 2.2 * px), 0, 7);
+			ctx.fillStyle = isHot ? C.conflict : b.locked ? C["ink-3"] : C.lilac; ctx.fill();
+			ctx.globalAlpha = 1;
+			continue;
+		}
+		if (isHot) {
+			ctx.save(); ctx.setLineDash([2 * px, 5 * px]); ctx.lineCap = "round"; ctx.lineWidth = (spot?.includes(n.id) ? 3 : 2) * px; ctx.strokeStyle = C.conflict;
+			ctx.beginPath(); ctx.arc(x, y, r + 10, 0, 7); ctx.stroke(); ctx.restore();
+		}
+		ctx.globalAlpha = spot && !spot.includes(n.id) ? 0.3 : dim ? 0.55 : 1;
+		// Soap body: the film's gradient only where it's big enough to see.
+		const big = sr >= 10;
+		ctx.save();
+		if (!b.visible) ctx.globalAlpha *= 0.6;
+		ctx.beginPath(); ctx.arc(x, y, r, 0, 7);
+		if (big) {
+			const g = ctx.createRadialGradient(x - 0.24 * r, y - 0.36 * r, 0, x - 0.24 * r, y - 0.36 * r, 1.7 * r);
+			g.addColorStop(0, C["soap-core"]); g.addColorStop(0.65, C["soap-mid"]); g.addColorStop(1, C["soap-edge"]);
+			ctx.fillStyle = g;
+		} else ctx.fillStyle = C["soap-mid"];
+		ctx.fill();
+		ctx.restore();
+		// Ripple when a fork lands
+		const rp = ripples.get(n.id);
+		if (rp && now - rp < 900) {
+			const t = (now - rp) / 900;
+			ctx.save(); ctx.globalAlpha *= 0.9 * (1 - t); ctx.lineWidth = 3; ctx.strokeStyle = filmGrad(x, y, r, b.film);
+			ctx.beginPath(); ctx.arc(x, y, r * (1 + 0.35 * t), 0, 7); ctx.stroke(); ctx.restore();
+		}
+		// Rim
+		ctx.save();
+		ctx.lineWidth = Math.max(hovered === n.id ? 5 : 3, 1.3 * px);
+		if (b.ferge) { ctx.setLineDash([3, 5]); ctx.lineCap = "round"; ctx.lineWidth = Math.max(4, 1.6 * px); ctx.strokeStyle = C.working; }
+		else if (b.locked) { const lg = ctx.createLinearGradient(x - r, y - r, x + r, y + r); lg.addColorStop(0, C["ink-3"]); lg.addColorStop(1, C.line); ctx.strokeStyle = lg; }
+		else ctx.strokeStyle = big ? filmGrad(x, y, r, b.film) : [C.teal, C.lilac, C.amber, C.lilac][b.film];
+		if (!b.visible) { ctx.setLineDash([14, 9]); ctx.lineDashOffset = -dash; }
+		ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.stroke();
+		ctx.restore();
+		// Glint
+		if (sr > 8) {
+			ctx.save(); if (b.locked) ctx.globalAlpha *= 0.4;
+			ctx.beginPath(); ctx.arc(x, y, r * 0.8, (205 * Math.PI) / 180, (250 * Math.PI) / 180);
+			ctx.lineWidth = 3; ctx.lineCap = "round"; ctx.strokeStyle = C.glint; ctx.stroke(); ctx.restore();
+		}
+		// Fork dots
+		if (showDots) {
+			const nd = Math.min(b.members, MAX_DOTS);
+			for (let i = 0; i < nd; i++) {
+				if (flyingInto.get(n.id) > 0 && i === 1) continue;
+				const o = dotOffset(i, nd, r);
+				drawGlyph(dotStatus(b, i), x + o.x, y + o.y);
+			}
+		}
+		// Ferge badge
+		if (b.ferge && sr > 14) {
+			const bx = x - r * 0.7, by = y - r * 0.7;
+			ctx.beginPath(); ctx.arc(bx, by, 10, 0, 7); ctx.fillStyle = C.paper; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = C.working; ctx.stroke();
+			ctx.beginPath(); ctx.moveTo(bx - 4, by - 4.5); ctx.lineTo(bx, by); ctx.lineTo(bx + 4, by - 4.5); ctx.moveTo(bx, by); ctx.lineTo(bx, by + 5);
+			ctx.lineWidth = 1.8; ctx.lineCap = "round"; ctx.stroke();
+		}
+		if (showText) {
+			ctx.textAlign = "center";
+			ctx.font = `600 12px ${getFont()}`; ctx.fillStyle = C.ink;
+			ctx.fillText(clip(b.name, 28), x, y + r + 17);
+			ctx.font = `${isHot ? 600 : 400} 11px ${getFont()}`; ctx.fillStyle = isHot ? C.conflict : C["ink-2"];
+			ctx.fillText(stateLabel(b, n.files), x, y + r + 31);
+		}
+		ctx.globalAlpha = 1;
+	}
+
+	// Conflicts: above bubbles, the same size on screen at any zoom.
+	for (const c of w.conflicts.values()) {
+		const a = nodes.get(c.a), b = nodes.get(c.b);
+		if (!a || !b) continue;
+		const lit = spot && spot.includes(c.a) && spot.includes(c.b);
+		ctx.globalAlpha = spot && !lit ? 0.3 : 1;
+		const p = edge(a.x, a.y, a.r + 6, b.x, b.y), q = edge(b.x, b.y, b.r + 6, a.x, a.y);
+		ctx.save(); ctx.setLineDash([7 * px, 5 * px]); ctx.lineWidth = (lit ? 4 : 2.5) * px; ctx.strokeStyle = C.conflict;
+		ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke(); ctx.restore();
+		const mx = (p.x + q.x) / 2, my = (p.y + q.y) / 2, s = px;
+		ctx.save(); ctx.translate(mx, my); ctx.scale(s, s);
+		ctx.save(); ctx.rotate(Math.PI / 4); ctx.beginPath(); ctx.roundRect(-10, -10, 20, 20, 3); ctx.fillStyle = C.conflict; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = C.paper; ctx.stroke(); ctx.restore();
+		ctx.beginPath(); ctx.moveTo(0, -5.5); ctx.lineTo(0, 1.5); ctx.moveTo(0, 4.6); ctx.lineTo(0, 5);
+		ctx.strokeStyle = "#fff"; ctx.lineWidth = 2.6; ctx.lineCap = "round"; ctx.stroke();
+		ctx.restore();
+	}
+	ctx.globalAlpha = 1;
+
+	// Forks flying from the dock into their bubble.
+	flyingInto.clear();
+	flyers = flyers.filter((f) => {
+		const n = nodes.get(f.bubble);
+		if (!n) return false;
+		const t = Math.min(1, (now - f.t0) / 1100);
+		if (t >= 1) { ripples.set(f.bubble, now); return false; }
+		flyingInto.set(f.bubble, (flyingInto.get(f.bubble) ?? 0) + 1);
+		const to = { x: n.x + dotOffset(1, Math.min(n.b.members, MAX_DOTS), n.r).x, y: n.y + dotOffset(1, Math.min(n.b.members, MAX_DOTS), n.r).y };
+		const from = toWorld(f.sx, f.sy);
+		const e = t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2, lift = Math.sin(Math.PI * t) * 40;
+		ctx.save(); ctx.translate(from.x + (to.x - from.x) * e, from.y + (to.y - from.y) * e - lift); ctx.scale(px, px);
+		ctx.shadowColor = "rgb(15 24 33 / 0.3)"; ctx.shadowBlur = 3; ctx.shadowOffsetY = 1;
+		drawGlyph("pending", 0, 0); ctx.restore();
+		return true;
+	});
+}
+const flyingInto = new Map();
+let fontReady = false;
+document.fonts?.load('600 12px "Schibsted Grotesk"').then(() => (fontReady = true)).catch(() => {});
+const getFont = () => (fontReady ? '"Schibsted Grotesk", system-ui, sans-serif' : "system-ui, sans-serif");
+
+// ---- Events from the engine: forks landing, bubbles appearing and being absorbed ----
+function drainEvents(now) {
+	const src = dockPoint("placing");
+	for (const ev of w.events) {
+		if (ev.type === "join") {
+			if (!reduced && flyers.length < 14 && src && Math.random() < 0.5) flyers.push({ bubble: ev.id, sx: src.x, sy: src.y, t0: now });
+			else if (!reduced) ripples.set(ev.id, now);
+		} else if (!reduced && (ev.type === "bubble" || ev.type === "absorb")) ripples.set(ev.id, now);
+	}
+	w.events.length = 0;
+}
+function dockPoint(status) {
+	const el = $("dock").querySelector(`[data-group="${status}"] .group-head`);
+	if (!el) return null;
+	const r = el.getBoundingClientRect(), r0 = map.getBoundingClientRect();
+	return { x: r.left + 20 - r0.left, y: r.top + r.height / 2 - r0.top };
+}
+
+// ---- Panels: Needs you, dock, numbers, hover card ----
+let spot = null, needsOpen = !matchMedia("(max-width: 760px)").matches, openGroup = null, lastNeedsSig = "", lastDockSig = "";
+const nameOf = (id) => w.bubbles.get(id)?.name ?? short(id);
+function needRow(n) {
+	if (n.kind === "conflict")
+		return `<li data-spot="${n.a} ${n.b}">${mark("conflict")}<div class="what"><p><strong>${esc(nameOf(n.a))}</strong> and <strong>${esc(nameOf(n.b))}</strong> conflict</p>
+			<div class="acts"><button class="small primary" data-ferge="${n.a} ${n.b}">Ferge…</button><button class="small" data-show="${n.a} ${n.b}">Show</button></div></div></li>`;
+	if (n.kind === "ferge")
+		return `<li data-spot="${n.bubble}">${mark("conflict")}<div class="what"><p class="t">${esc(nameOf(n.bubble))} holds a ferge's conflicts</p><p class="why">${esc(n.why)}</p>
+			<div class="acts"><button class="small" data-show="${n.bubble}">Show</button></div></div></li>`;
+	return `<li>${mark(n.mark)}<div class="what"><p class="t">${esc(n.title)}</p><p class="why">${esc(n.why)}</p></div></li>`;
+}
+function renderNeeds(list) {
+	const el = $("needs");
+	const sig = list.length + "|" + list.slice(0, 40).map((n) => n.key).join(",");
+	if (sig === lastNeedsSig) return;
+	lastNeedsSig = sig;
+	if (!list.length) { el.innerHTML = `<p class="all-clear">${mark("merged")}Nothing needs you</p>`; return; }
+	const scroll = el.querySelector("ul")?.scrollTop ?? 0;
+	el.innerHTML = `<details ${needsOpen ? "open" : ""}><summary><span>Needs you</span><span class="count">${fmt(list.length)}</span></summary>
+		<ul style="max-height:${Math.max(160, H - $("dock").offsetHeight - 130)}px">${list.slice(0, 40).map(needRow).join("")}${list.length > 40 ? `<li class="more">and ${fmt(list.length - 40)} more</li>` : ""}</ul></details>`;
+	const ul = el.querySelector("ul");
+	if (ul) ul.scrollTop = scroll;
+	el.querySelector("details").addEventListener("toggle", (e) => (needsOpen = e.target.open));
+}
+$("needs").addEventListener("click", (e) => {
+	const f = e.target.closest("[data-ferge]"), s = e.target.closest("[data-show]");
+	if (f) { const [a, b] = f.dataset.ferge.split(" "); requestFerge(a, b); }
+	if (s) focusOn(s.dataset.show.split(" "));
+});
+$("needs").addEventListener("pointerover", (e) => { const li = e.target.closest("[data-spot]"); spot = li ? li.dataset.spot.split(" ") : null; });
+$("needs").addEventListener("pointerleave", () => (spot = null));
+
+const GROUPS = [["running", "Working"], ["loose", "Waiting for CI"], ["placing", "Finding a bubble"]];
+function renderDock() {
+	const by = { running: [], loose: [], placing: [] };
+	for (const a of w.agents.values()) {
+		if (a.person) continue;
+		if (a.state === "running") by.running.push(a);
+		else if (a.state === "ci" || a.state === "review") by.loose.push(a);
+		else if (a.state === "placing") by.placing.push(a);
+	}
+	const sig = GROUPS.map(([s]) => by[s].length).join(",") + "|" + openGroup + "|" + (openGroup ? by[openGroup].slice(0, 60).map((a) => a.id).join("") : "");
+	if (sig === lastDockSig) return;
+	lastDockSig = sig;
+	$("dock").innerHTML = GROUPS.filter(([s]) => by[s].length).map(([s, label]) => {
+		const items = by[s], open = openGroup === s;
+		const chips = open ? `<ul>${items.slice(0, 60).map((a) => `<li><span class="chip" title="${esc(a.title)}">${mark(s === "running" ? "running" : s === "loose" ? "review" : "placing")}<span class="t">${esc(a.title)}</span></span></li>`).join("")}${items.length > 60 ? `<li><span class="chip more">and ${fmt(items.length - 60)} more</span></li>` : ""}</ul>` : "";
+		return `<div class="group" data-group="${s}"><button class="group-head" aria-expanded="${open}" data-open="${s}">${mark(s === "running" ? "running" : s === "loose" ? "review" : "placing")}${label}<span class="n">${fmt(items.length)}</span></button>${chips}</div>`;
+	}).join("");
+}
+$("dock").addEventListener("click", (e) => { const b = e.target.closest("[data-open]"); if (b) { openGroup = openGroup === b.dataset.open ? null : b.dataset.open; lastDockSig = ""; renderDock(); } });
+
+const PLACE = [
+	["home", "Home bubble", "var(--merged)"],
+	["other", "Another bubble", "var(--teal)"],
+	["changed", "New: files changed at home", "var(--working)"],
+	["hidden", "New: home was merging", "var(--conflict)"],
+	["epoch", "New: home absorbed a bubble", "var(--lilac)"],
+	["nobasis", "New: first forks", "var(--pending)"],
+];
+let tick = 0;
+function updatePanels(forceAll) {
+	const c = E.census(w), list = E.needs(w);
+	const h = Math.floor(w.t / 3600), m = Math.floor((w.t % 3600) / 60);
+	$("clock").textContent = `${h}h ${String(m).padStart(2, "0")}m`;
+	$("sWorking").textContent = fmt(c.running + c.placing);
+	$("sCi").textContent = fmt(c.ci);
+	$("sBubbles").textContent = fmt(c.bubbles);
+	$("sMerging").textContent = fmt(c.merging);
+	$("sNeeds").textContent = fmt(list.length);
+	$("needsStat").classList.toggle("bad", list.length > 0);
+	$("sPlaced").textContent = fmt(c.perHour);
+	const counts = {};
+	for (const [, why] of w.placeLog) counts[why] = (counts[why] ?? 0) + 1;
+	const total = w.placeLog.length || 1;
+	$("pbar").innerHTML = PLACE.map(([key, , col]) => `<span style="width:${((counts[key] ?? 0) / total) * 100}%;background:${col}"></span>`).join("");
+	$("pbar").setAttribute("aria-label", PLACE.map(([key, label]) => `${label} ${Math.round(((counts[key] ?? 0) / total) * 100)}%`).join(", "));
+	$("plegend").innerHTML = PLACE.filter(([key]) => counts[key]).map(([key, label, col]) => `<span><i style="background:${col}"></i>${label} ${Math.round((counts[key] / total) * 100)}%</span>`).join("");
+	renderNeeds(list);
+	renderDock();
+	drawTrend();
+	if (forceAll) updateCard();
+}
+
+function drawTrend() {
+	const t = $("trend"), g = t.getContext("2d"), r = Math.min(2, devicePixelRatio || 1);
+	const tw = t.clientWidth || 192, th = t.clientHeight || 42;
+	if (t.width !== tw * r) { t.width = tw * r; t.height = th * r; }
+	g.setTransform(r, 0, 0, r, 0, 0); g.clearRect(0, 0, tw, th);
+	const hs = w.history;
+	if (hs.length < 2) return;
+	const max = Math.max(10, ...hs.map((x) => Math.max(x.bubbles, x.needs)));
+	const X = (i) => (i / (hs.length - 1)) * (tw - 2) + 1, Y = (v) => th - 2 - (v / max) * (th - 12);
+	g.strokeStyle = C.line; g.lineWidth = 1; g.beginPath(); g.moveTo(0, th - 1.5); g.lineTo(tw, th - 1.5); g.stroke();
+	for (const [key, col] of [["bubbles", C.lilac], ["needs", C.conflict]]) {
+		g.beginPath(); hs.forEach((x, i) => (i ? g.lineTo(X(i), Y(x[key])) : g.moveTo(X(i), Y(x[key]))));
+		g.strokeStyle = col; g.lineWidth = 1.6; g.stroke();
+		const last = hs[hs.length - 1];
+		g.beginPath(); g.arc(X(hs.length - 1), Y(last[key]), 2.2, 0, 7); g.fillStyle = col; g.fill();
+	}
+	g.fillStyle = C["ink-3"]; g.font = `10px ${getFont()}`; g.fillText(fmt(max), 2, 9);
+	const last = hs[hs.length - 1];
+	$("trendLabel").innerHTML = `<span style="color:${C.lilac}">●</span> ${fmt(last.bubbles)} bubbles <span style="color:${C.conflict}">●</span> ${fmt(last.needs)} needs`;
+}
+
+function updateCard() {
+	const card = $("card"), n = hovered && nodes.get(hovered);
+	if (!n || drag) { card.hidden = true; return; }
+	const b = n.b, q = b.queue.length + b.applying.length;
+	const files = E.bitsOf(b.own).map((f) => w.repo.files[f]);
+	const recent = b.recent.slice(-5).reverse();
+	card.innerHTML = `<div class="card-head"><strong>${esc(b.name)}</strong>${!b.visible ? '<span class="tag">Merging</span>' : ""}${b.ferge ? '<span class="tag">Ferge</span>' : ""}${b.locked ? '<span class="tag">Locked</span>' : ""}</div>
+		<p class="muted">${fmt(b.members)} fork${b.members === 1 ? "" : "s"}, ${fmt(files.length)} file${files.length === 1 ? "" : "s"}${q ? `, ${q} queued` : ""}</p>
+		<ul><li>${mark("rep")}<span class="mono">${short(b.id)}</span><span class="muted">representative</span></li>
+		${recent.filter((id) => id !== b.id).map((id, i) => `<li>${mark(i < q ? "pending" : "merged")}<span class="mono">${short(id)}</span><span class="muted">${i < q ? "pending" : "merged"}</span></li>`).join("")}
+		${b.members > 6 ? `<li class="muted">and ${fmt(b.members - 1 - Math.min(5, recent.length))} more</li>` : ""}</ul>
+		<div class="files">${files.slice(0, 5).map((f) => `<code>${esc(f)}</code>`).join("")}${files.length > 5 ? `<span class="muted">and ${fmt(files.length - 5)} more</span>` : ""}</div>`;
+	card.hidden = false;
+	const sx = cx() + n.x * k, sy = cy() + n.y * k, r = n.r * k, right = insets().right;
+	const left = sx + r + 300 < W - right ? sx + r + 14 : Math.max(8, sx - r - 14 - 280);
+	card.style.left = left + "px";
+	card.style.top = Math.max(60, Math.min(sy - 40, H - $("dock").offsetHeight - 240)) + "px";
+}
+
+// ---- Controls ----
+let speed = 60, paused = false;
+$("agents").addEventListener("input", (e) => { $("agentsOut").textContent = fmt(+e.target.value); w.opts.agents = +e.target.value; });
+$("repo").addEventListener("change", () => boot(0));
+$("speed").addEventListener("click", (e) => {
+	const b = e.target.closest("button"); if (!b) return;
+	speed = +b.dataset.v;
+	for (const x of $("speed").children) x.setAttribute("aria-pressed", String(x === b));
+});
+$("pause").addEventListener("click", () => { paused = !paused; $("pause").textContent = paused ? "Play" : "Pause"; });
+$("reset").addEventListener("click", () => boot(0));
+for (const id of ["ci", "autoFerge", "fergeAgents", "person", "parallel"]) $(id).addEventListener("change", (e) => (w.opts[id] = e.target.checked));
+
+// ---- Loop ----
+let last = performance.now(), acc = 0, slow = 0;
+function loop(now) {
+	const dt = Math.min(0.1, (now - last) / 1000);
+	last = now;
+	if (!paused) {
+		const t0 = performance.now();
+		E.step(w, dt * speed);
+		slow = performance.now() - t0;
+		drainEvents(now);
+		syncNodes(false);
+	}
+	// Big maps tick the layout every other frame.
+	if (sim.alpha() > sim.alphaMin() && (nodes.size < 1200 || tick % 2 === 0)) sim.tick();
+	if (!userMoved) fit(fitted);
+	draw(now);
+	if (++tick % 15 === 0) updatePanels(false);
+	if (tick % 4 === 0) updateCard();
+	requestAnimationFrame(loop);
+}
+
+boot(40 * 60);
+requestAnimationFrame((t) => { last = t; loop(t); });
+})();
+</script>
