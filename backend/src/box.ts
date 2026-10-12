@@ -77,9 +77,11 @@ Commit your work with messages that explain what you did and why: they become th
 	return `${role}\n\n${NOTES}${mem}${sk}`;
 }
 
-// Claude Code settings for agents: the memory and stop hooks (MEMORY_HOOK_SH, STOP_HOOK_SH, written to $TASK at start).
+// Claude Code settings for agents: the memory and stop hooks (MEMORY_HOOK_SH, STOP_HOOK_SH, written to $TASK at start),
+// and no Claude Code co-author trailer on agent commits.
 const agentSettings = (kind: AgentJob["kind"]) =>
 	JSON.stringify({
+		attribution: { commit: "", pr: "" },
 		hooks: {
 			PostToolBatch: [{ hooks: [{ type: "command", command: `bash ${TASK}/memory-hook.sh ${TASK}` }] }],
 			Stop: [{ hooks: [{ type: "command", command: `bash ${TASK}/stop-hook.sh ${TASK} /workspace/repo '${kind === "superagent" ? PLAN_CHECK : ""}'` }] }],
