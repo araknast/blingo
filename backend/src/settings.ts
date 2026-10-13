@@ -20,7 +20,7 @@ export type Settings = {
 	fergeAgents: boolean;
 	// The merge loop ferges a conflicting pair by itself, once both are visible, unlocked and idle.
 	autoFerge: boolean;
-	// New tasks wait for a person to approve them (and may be edited until then).
+	// New tasks start as usual, but their fork waits for a person to approve it before it merges.
 	taskApproval: boolean;
 	deploys: Deploy[];
 };
@@ -183,6 +183,10 @@ export const deployKey = (name: string, host: string, header: string) => `${name
 export function deployHeaders(d: Deploy | undefined, hostname: string, values: Record<string, string>): [string, string][] {
 	return (d?.auth ?? []).filter((a) => ciHostAllowed([a.host], hostname) && values[deployKey(d!.name, a.host, a.header)]).map((a) => [a.header, values[deployKey(d!.name, a.host, a.header)]]);
 }
+
+// An Authorization value the sandbox got from the host itself (a bearer JWT, e.g. wrangler's asset
+// upload session token): a deployment's stored header doesn't replace it, or the host refuses the call.
+export const issuedToken = (v: string | null) => !!v && /^Bearer [\w-]+\.[\w-]+\.[\w-]+$/.test(v);
 
 // May a request to `hostname` leave a CI Box? Exactly a listed host or one of its subdomains.
 export const ciHostAllowed = (hosts: string[], hostname: string) => hosts.some((h) => hostname === h || hostname.endsWith(`.${h}`));

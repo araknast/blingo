@@ -34,6 +34,9 @@
 	const blocks = $derived(data.tasks.filter((x) => x.deps.includes(t.id)));
 	const run = $derived(t.fork ? data.agents.find((a) => a.fork === t.fork) : undefined);
 	const plan = $derived(t.superagent ? data.agents.find((a) => a.fork === t.superagent) : undefined);
+	// A notagent a person closed before its first push: its task reads failed, and opening it again resumes it.
+	const closed = $derived(!!t.fork && data.closed.includes(t.fork));
+	const waitingForPush = $derived(t.kind === "notagent" && t.status === "in-progress" && !!t.fork && data.waiting.includes(t.fork));
 	const bubbleName = (id: string) => data.bubbles.find((b) => b.id === id)?.name || short(id);
 	const forkHref = $derived(t.fork ? (run ? links.run(t.fork) : links.fork(t.fork)) : undefined);
 	const statusText = $derived(
@@ -45,7 +48,7 @@
 				: waitingOn.length
 					? `Waiting for ${waitingOn.length === 1 ? "a task" : `${waitingOn.length} tasks`} it depends on`
 					: "Waiting for its dependencies to land in one bubble"
-			: { "awaiting-approval": "Awaiting approval", "in-progress": "In progress", completed: "Completed", failed: "Failed" }[t.status],
+			: { "awaiting-approval": "Awaiting your approval to merge", "in-progress": "In progress", completed: "Completed", failed: closed ? "Closed" : "Failed" }[t.status],
 	);
 	// Why it failed: the run's state, and the end of its sandbox log.
 	const tail = $derived(run?.log?.trim().split("\n").slice(-4).join("\n"));
@@ -65,12 +68,29 @@
 	let pushed = $state<{ fork: string; clone: string; push: string } | null>(null);
 	let takeOpen = $state(false);
 
+	// Closing and opening act on the notagent's fork, not on the task.
+	async function actFork(path: string, done: string) {
+		try {
+			await api("POST", `/repos/${repo}/forks/${t.fork}/${path}`);
+			toast(done);
+			await refresh();
+		} catch (e) {
+			toastError(e);
+		}
+	}
+
 	async function reject() {
-		if (!(await ask({ title: "Reject this task?", body: `"${t.title}" is deleted and never starts.`, confirm: "Reject task", danger: true }))) return;
+		if (!(await ask({ title: "Reject this task?", body: `"${t.title}" is deleted${t.fork ? " and its fork is discarded: it never merges" : " and never starts"}.`, confirm: "Reject task", danger: true }))) return;
 		if (await act("reject", "Task rejected")) ongone?.();
 	}
 
-	// A task awaiting approval can be edited before it's approved.
+	// A failed task can be deleted outright: its record, its agent runs and their forks all go.
+	async function remove() {
+		if (!(await ask({ title: "Delete this task?", body: `"${t.title}" is deleted, along with its agent runs and forks. This can't be undone.`, confirm: "Delete task", danger: true }))) return;
+		if (await act("delete", "Task deleted")) ongone?.();
+	}
+
+	// A task can be edited until it starts (briefly for an agent, until it's taken for a notagent).
 	let editing = $state(false);
 	let title = $state("");
 	let description = $state("");
@@ -104,8 +124,12 @@
 {#if t.status === "failed"}
 	<div class="callout failure">
 		<div>
-			<p><strong>{run ? `Its agent ${agentLabel(run.status).toLowerCase()}` : "It failed"}.</strong> Retry starts a new agent with what the last one learned.</p>
-			{#if tail}<pre>{tail}</pre>{/if}
+			{#if closed}
+				<p><strong>Its notagent is closed.</strong> It takes no pushes while it's closed. Open it again to take pushes.</p>
+			{:else}
+				<p><strong>{run ? `Its agent ${agentLabel(run.status).toLowerCase()}` : "It failed"}.</strong> Retry starts a new agent with what the last one learned.</p>
+				{#if tail}<pre>{tail}</pre>{/if}
+			{/if}
 			{#if t.fork && forkHref}<p><a href={forkHref}>{run ? "Read its transcript" : "Open its fork"}</a></p>{/if}
 		</div>
 	</div>
@@ -144,23 +168,29 @@
 	</article>
 
 	<aside>
-		{#if t.status === "awaiting-approval"}
-			{#if editing}
-				<form class="edit" onsubmit={save}>
-					<label for="edit-title">Title</label>
-					<input id="edit-title" bind:value={title} required maxlength="60" />
-					<label for="edit-description">Description</label>
-					<textarea id="edit-description" bind:value={description} rows="8"></textarea>
-					<div class="row"><button class="primary">Save</button><button type="button" onclick={() => (editing = false)}>Cancel</button></div>
-				</form>
-			{:else}
-				<button class="primary wide" onclick={() => act("approve", "Task approved")}>Approve</button>
-				<div class="row"><button class="grow" onclick={startEdit}>Edit</button><button class="grow danger" onclick={reject}>Reject</button></div>
+		{#if editing}
+			<form class="edit" onsubmit={save}>
+				<label for="edit-title">Title</label>
+				<input id="edit-title" bind:value={title} required maxlength="60" />
+				<label for="edit-description">Description</label>
+				<textarea id="edit-description" bind:value={description} rows="8"></textarea>
+				<div class="row"><button class="primary">Save</button><button type="button" onclick={() => (editing = false)}>Cancel</button></div>
+			</form>
+		{:else if t.status === "awaiting-approval"}
+			<button class="primary wide" onclick={() => act("approve", "Task approved")}>Approve</button>
+			<div class="row"><button class="grow danger" onclick={reject}>Reject</button></div>
+		{:else if t.status === "open"}
+			{#if t.kind === "notagent" && t.ready}
+				<button class="primary wide" onclick={() => act("take", "")}>Take this task</button>
 			{/if}
-		{:else if t.status === "open" && t.kind === "notagent" && t.ready}
-			<button class="primary wide" onclick={() => act("take", "")}>Take this task</button>
+			<div class="row"><button class="grow" onclick={startEdit}>Edit</button><button class="grow danger" onclick={reject}>Reject</button></div>
+		{:else if closed}
+			<button class="primary wide" onclick={() => actFork("open", "Notagent opened")}>Open its notagent</button>
 		{:else if t.status === "failed"}
 			<button class="primary wide" onclick={() => act("retry", "Task reopened. A new agent starts on it")}>Retry</button>
+			<button class="danger wide" onclick={remove}>Delete</button>
+		{:else if waitingForPush}
+			<button class="primary wide" onclick={() => actFork("close", "Notagent closed")}>Close its notagent</button>
 		{/if}
 
 		<dl>

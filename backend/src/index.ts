@@ -170,7 +170,6 @@ async function handle(request: Request, env: Env): Promise<Response> {
 		const added = await repoDO.addTasks(src.repo, [{ title, description, kind, deps: [], bubble: src.bubble, model: body.model, skills: body.skills }]);
 		if ("error" in added) return Response.json(added, { status: 400 });
 		const [task] = added.ids;
-		if ((await repoDO.task(task))?.status === "awaiting-approval") return Response.json({ repo: src.repo, task, awaitingApproval: true }, { status: 202 });
 		if (a === "notagents") {
 			// A failed request leaves no task behind: the client will retry with a new one.
 			const r = await repoDO.takeTask(task).catch(async (e) => {
@@ -214,6 +213,10 @@ async function handle(request: Request, env: Env): Promise<Response> {
 	if (request.method === "GET" && a === "repos" && b && c === "skills" && d && !e) {
 		const skill = await env.REPO.getByName(b).skillFiles(d);
 		return skill ? Response.json(skill) : Response.json({ error: "no such skill" }, { status: 404 });
+	}
+	// A running deployment's output so far, live (the Deploy page polls this). `from` is a line cursor.
+	if (request.method === "GET" && a === "repos" && b && c === "deploys" && d && e === "log") {
+		return Response.json(await env.BOX.getByName(`deploy-${d}`).ciLog(Number(url.searchParams.get("from"))));
 	}
 	// Code browser: tree, log, commit and blob reads of a fork (or of the bubble a merged fork joined).
 	if (request.method === "GET" && a === "repos" && b && c && d) {
@@ -293,6 +296,10 @@ async function handle(request: Request, env: Env): Promise<Response> {
 		const r = await env.REPO.getByName(b).rejectTask(d);
 		return "error" in r ? Response.json(r, { status: 409 }) : Response.json({ task: d });
 	}
+	if (request.method === "POST" && a === "repos" && b && c === "tasks" && d && e === "delete") {
+		const r = await env.REPO.getByName(b).deleteTask(d);
+		return "error" in r ? Response.json(r, { status: 409 }) : Response.json({ task: d });
+	}
 	if (request.method === "POST" && a === "repos" && b && c === "tasks" && d && e === "stop") {
 		const r = await env.REPO.getByName(b).stopTask(d);
 		return "error" in r ? Response.json(r, { status: 409 }) : Response.json({ task: d });
@@ -348,15 +355,18 @@ async function handle(request: Request, env: Env): Promise<Response> {
 		const r = await repo.setSettings(await request.json());
 		return Response.json(r, { status: "error" in r ? 400 : 200 });
 	}
-	// A loose (pushed, unplaced) fork: ask for its placement, get a new push token, or review it.
-	if (request.method === "POST" && a === "repos" && b && c === "forks" && d?.startsWith(`${b}-f-`) && (e === "place" || e === "token" || e === "review")) {
+	// A loose (pushed, unplaced) fork: ask for its placement, get a new push token, review it, or close a
+	// notagent that hasn't been pushed to yet (and open it again).
+	if (request.method === "POST" && a === "repos" && b && c === "forks" && d?.startsWith(`${b}-f-`) && (e === "place" || e === "token" || e === "review" || e === "close" || e === "open")) {
 		const repo = env.REPO.getByName(b);
 		let r: { error: string } | object;
 		if (e === "review") {
 			const { approve, comment } = (await request.json()) as { approve?: unknown; comment?: unknown };
 			if (typeof approve !== "boolean") return Response.json({ error: "approve must be true or false" }, { status: 400 });
 			r = await repo.review(d, approve, typeof comment === "string" ? comment.slice(0, 4000) : "");
-		} else r = e === "place" ? await repo.requestPlacement(d) : await repo.pushToken(d);
+		} else if (e === "place") r = await repo.requestPlacement(d);
+		else if (e === "token") r = await repo.pushToken(d);
+		else r = e === "close" ? await repo.closeFork(d) : await repo.openFork(d);
 		return "error" in r ? Response.json(r, { status: 409 }) : Response.json(r, { status: e === "token" ? 201 : 202 });
 	}
 	// The conflict resolver: {files: {path: resolved content}} for ferge bubble d.

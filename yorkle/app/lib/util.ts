@@ -79,8 +79,10 @@ export const active = (r: AgentRun) => (r.kind === "notagent" ? r.status !== "pl
 export const allRuns = (d: RepoState) => [...d.agents, ...notagentRuns(d)].sort((a, b) => Number(active(b)) - Number(active(a)) || b.started - a.started);
 // A run's status in words, from its fork when it's loose: CI and reviews say more than "loose".
 export function runLabel(r: AgentRun, d: RepoState | null | undefined): string {
+	if (d?.closed.includes(r.fork)) return "Closed";
 	const l = r.status === "loose" || r.status === "pushed" ? d?.loose.find((x) => x.fork === r.fork) : undefined;
 	if (!l) return agentLabel(r.status);
+	if (d?.tasks.some((t) => t.fork === r.fork && t.status === "awaiting-approval")) return "Waiting for your approval";
 	if (l.reviewManual === "pending") return "Waiting for your review";
 	if (l.reviewAuto === "pending") return "Being reviewed";
 	if (l.reviewAuto === "rejected" || l.reviewManual === "rejected") return "Review rejected";
@@ -91,6 +93,7 @@ export function runLabel(r: AgentRun, d: RepoState | null | undefined): string {
 // A run's mark (Glyph): shape and colour.
 export function runMark(r: AgentRun, d?: RepoState | null): string {
 	const l = r.status === "loose" || r.status === "pushed" ? d?.loose.find((x) => x.fork === r.fork) : undefined;
+	if (d?.tasks.some((t) => t.fork === r.fork && t.status === "awaiting-approval")) return "approval";
 	if (l?.reviewManual === "pending") return "review";
 	if (l && (l.ci === "failed" || l.reviewAuto === "rejected" || l.reviewManual === "rejected")) return "failed";
 	if (r.status === "running") return "running";

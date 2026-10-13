@@ -32,7 +32,7 @@ bubble pairs that a ferge resolves. The live bubble map is the product's own pic
 - Per-repository tabs: Map, Tasks, Agents (runs and transcripts), Deploy, Skills, Memory, Settings;
   loose forks and bubbles have their own pages with a code and commit browser.
 - Tasks work like an issue tracker: filed by hand or planned by a superagent, with dependencies,
-  optional approval (`taskApproval`), and agent or notagent kinds.
+  optional approval before merging (`taskApproval`), and agent or notagent kinds.
 - Repo settings include each repository's own model API key/provider, CI and reviews, `autoFerge`.
 - Humans push to notagent forks with ordinary git.
 

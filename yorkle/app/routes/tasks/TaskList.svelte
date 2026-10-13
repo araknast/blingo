@@ -12,6 +12,9 @@
 		href,
 		ontake,
 		onretry,
+		ondelete,
+		onopen,
+		onclose,
 		onapprove,
 		onreject,
 		onnew,
@@ -21,11 +24,19 @@
 		href: (id: string) => string;
 		ontake: (id: string) => void;
 		onretry: (id: string) => void;
+		ondelete: (id: string) => void;
+		// Opening a notagent a person closed (its task reads failed), and closing one that is still waiting
+		// for its first push.
+		onopen: (id: string) => void;
+		onclose: (id: string) => void;
 		onapprove: (ids: string[]) => void;
 		onreject: (id: string) => void;
 		onnew: () => void;
 		onplan: () => void;
 	} = $props();
+
+	const isClosed = (t: Task) => !!t.fork && data.closed.includes(t.fork);
+	const waitingForPush = (t: Task) => t.kind === "notagent" && t.status === "in-progress" && !!t.fork && data.waiting.includes(t.fork);
 
 	const tab = $derived(new URLSearchParams(route.search).get("state") === "completed" ? "completed" : "open");
 	const byId = $derived(new Map(data.tasks.map((t) => [t.id, t])));
@@ -104,7 +115,7 @@
 	<ul class="plans">
 		{#each plans as p (p.id)}
 			<li>
-				<span>A superagent planned <strong>{plural(p.tasks.length, "task")}</strong> awaiting approval: <q>{p.prompt.split("\n")[0]}</q></span>
+				<span><strong>{plural(p.tasks.length, "task")}</strong> from a superagent's plan await your approval to merge: <q>{p.prompt.split("\n")[0]}</q></span>
 				<button class="primary" onclick={() => onapprove(p.tasks.map((t) => t.id))}>Approve all {p.tasks.length}</button>
 			</li>
 		{/each}
@@ -157,7 +168,7 @@
 							<a class="title" href={href(t.id)}>{t.title}</a>
 							<span class="badge">{t.kind === "agent" ? "Agent" : "Notagent"}</span>
 							{#if t.role === "ferge"}<span class="badge">Ferge</span>{/if}
-							{#if t.status === "failed"}<span class="badge failed">Failed</span>{/if}
+							{#if isClosed(t)}<span class="badge failed">Closed</span>{:else if t.status === "failed"}<span class="badge failed">Failed</span>{/if}
 							{#if t.status === "awaiting-approval"}<span class="badge">Awaiting approval</span>{/if}
 							{#if t.status === "in-progress"}<span class="badge working">In progress</span>{/if}
 							{#if t.status === "open" && t.ready && t.kind === "notagent"}<span class="badge">Ready to take</span>{/if}
@@ -173,14 +184,20 @@
 							{#if t.superagent}· planned by a superagent{#if planner(t)}: <span class="plan" title={planner(t)}>{planner(t)}</span>{/if}{/if}
 						</p>
 					</div>
-					<div class="actions">
+					<div class="actions" class:fail={t.status === "failed"}>
 						{#if t.status === "awaiting-approval"}
 							<button onclick={() => onapprove([t.id])}>Approve</button>
 							<button class="quiet danger" onclick={() => onreject(t.id)}>Reject</button>
-						{:else if t.status === "open" && t.kind === "notagent" && t.ready}
-							<button onclick={() => ontake(t.id)}>Take</button>
+						{:else if t.status === "open"}
+							{#if t.kind === "notagent" && t.ready}<button onclick={() => ontake(t.id)}>Take</button>{/if}
+							<button class="quiet danger" onclick={() => onreject(t.id)}>Reject</button>
+						{:else if isClosed(t)}
+							<button onclick={() => onopen(t.id)}>Open</button>
 						{:else if t.status === "failed"}
 							<button onclick={() => onretry(t.id)}>Retry</button>
+							<button class="quiet danger" onclick={() => ondelete(t.id)}>Delete</button>
+						{:else if waitingForPush(t)}
+							<button onclick={() => onclose(t.id)}>Close</button>
 						{/if}
 					</div>
 				</li>
@@ -224,6 +241,7 @@
 	.meta a { color: var(--ink-2); }
 	.plan { font-style: italic; }
 	.actions { display: flex; align-items: center; gap: 0.4rem; flex: none; }
+	.actions.fail { flex-direction: column; align-items: stretch; }
 	.danger { color: var(--conflict); }
 	.empty { padding: 3rem 1rem; text-align: center; }
 	.empty h2 { font-size: 1.0625rem; margin-bottom: 0.4rem; }

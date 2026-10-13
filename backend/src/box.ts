@@ -1,6 +1,6 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { APPLY_SH, CONFLICT, ENSURE_REP, FERGE_SH, MEMORY_HOOK_SH, MERGES, STOP_HOOK_SH, MERGE_SH, NO_CONFLICT, PATCH_SH, PUSH_SH, REP, readSeries } from "./git-scripts";
-import { MODEL_HOSTS, egress, type Provider } from "./settings";
+import { MODEL_HOSTS, egress, issuedToken, type Provider } from "./settings";
 import type { Skill } from "./skills";
 import { checkPlan, retryNote } from "./tasks";
 import { NO_USAGE, completeLines, usageFromBody, type Usage } from "./transcript";
@@ -161,7 +161,7 @@ export class Outbound extends WorkerEntrypoint<Env, { ci?: string[]; repo?: stri
 			const extra = deploy ? await this.env.REPO.getByName(deploy.repo).deployHeaders(deploy.name, url.hostname) : [];
 			if (!extra.length) return fetch(request);
 			const headers = new Headers(request.headers);
-			for (const [k, v] of extra) headers.set(k, v);
+			for (const [k, v] of extra) if (k.toLowerCase() !== "authorization" || !issuedToken(headers.get(k))) headers.set(k, v);
 			return fetch(new Request(request, { headers }));
 		}
 		if (to !== "key") return new Response(`${to.deny}\n`, { status: 403 });
@@ -420,6 +420,23 @@ export class Box extends DurableObject<Env> {
 	status() {
 		const kv = this.ctx.storage.kv;
 		return { status: kv.get<string>("status") ?? "none", log: kv.get<string>("log"), reason: kv.get<string>("reason") };
+	}
+
+	// A CI or deployment job's output so far (see the Deploy page): live from the container while it
+	// runs, else as stored when it finished. Like transcript, `from` is a line cursor: `log` holds the
+	// lines after the first `from`, with the cursor to pass next time. A finished job's stored log is
+	// only a tail, so the client refetches from 0 once it ends.
+	async ciLog(from = 0): Promise<{ status: string; log: string; next: number }> {
+		from = Math.max(0, Math.floor(from) || 0);
+		const kv = this.ctx.storage.kv;
+		const status = kv.get<string>("status") ?? "none";
+		if (kv.get("ci") && this.ctx.container?.running) {
+			const raw = (await this.sh(`tail -n +${from + 1} ${TASK}/log 2>/dev/null || true`)).stdout;
+			const { lines, count } = completeLines(raw);
+			return { status, log: lines.join("\n"), next: from + count };
+		}
+		const log = kv.get<string>("log") ?? "";
+		return { status, log, next: from + log.split("\n").filter(Boolean).length };
 	}
 
 	// The run's token use so far, summed over its model responses (Outbound reports each).

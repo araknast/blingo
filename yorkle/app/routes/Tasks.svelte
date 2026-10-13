@@ -49,8 +49,9 @@
 		refresh();
 	}
 	async function reject(t: string) {
-		const title = data?.tasks.find((x) => x.id === t)?.title ?? "This task";
-		if (!(await ask({ title: "Reject this task?", body: `"${title}" is deleted and never starts.`, confirm: "Reject task", danger: true }))) return;
+		const task = data?.tasks.find((x) => x.id === t);
+		const body = `"${task?.title ?? "This task"}" is deleted${task?.fork ? " and its fork is discarded: it never merges" : " and never starts"}.`;
+		if (!(await ask({ title: "Reject this task?", body, confirm: "Reject task", danger: true }))) return;
 		try {
 			await api("POST", `/repos/${repo}/tasks/${t}/reject`);
 			toast("Task rejected");
@@ -63,6 +64,30 @@
 		try {
 			await api("POST", `/repos/${repo}/tasks/${t}/retry`);
 			toast("Task reopened. A new agent starts on it");
+			refresh();
+		} catch (e) {
+			toastError(e);
+		}
+	}
+	async function remove(t: string) {
+		const task = data?.tasks.find((x) => x.id === t);
+		const body = `"${task?.title ?? "This task"}" is deleted, along with its agent runs and forks. This can't be undone.`;
+		if (!(await ask({ title: "Delete this task?", body, confirm: "Delete task", danger: true }))) return;
+		try {
+			await api("POST", `/repos/${repo}/tasks/${t}/delete`);
+			toast("Task deleted");
+			refresh();
+		} catch (e) {
+			toastError(e);
+		}
+	}
+	// A notagent a person closed, and one still waiting for its first push: close and open act on its fork.
+	async function forkAction(t: string, path: "close" | "open") {
+		const task = data?.tasks.find((x) => x.id === t);
+		if (!task?.fork) return;
+		try {
+			await api("POST", `/repos/${repo}/forks/${task.fork}/${path}`);
+			toast(path === "close" ? "Notagent closed" : "Notagent opened");
 			refresh();
 		} catch (e) {
 			toastError(e);
@@ -133,7 +158,7 @@
 				<p class="muted"><a href="/repos/{repo}/tasks">Back to the tasks</a></p>
 			{/if}
 		{:else}
-			<TaskList {data} {href} ontake={take} onretry={retry} onapprove={approve} onreject={reject} onnew={() => (newOpen = true)} onplan={() => (superOpen = true)} />
+			<TaskList {data} {href} ontake={take} onretry={retry} ondelete={remove} onopen={(t) => forkAction(t, "open")} onclose={(t) => forkAction(t, "close")} onapprove={approve} onreject={reject} onnew={() => (newOpen = true)} onplan={() => (superOpen = true)} />
 		{/if}
 	</div>
 </Shell>

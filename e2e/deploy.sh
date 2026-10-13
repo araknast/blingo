@@ -29,6 +29,18 @@ until_ "[x['status'] for x in d['deploys'] if x['id']=='$D2'] == ['failed']" "de
 [ "$(q "'nope' in [x['log'] for x in d['deploys'] if x['id']=='$D2'][0]")" = True ] || fail "failed log"
 ok "a failing command is marked failed with its output"
 
+# The log updates while it runs: polled live from the sandbox (the Deploy page's live log).
+settings '{"deploys":[{"name":"live","command":"echo step-one; sleep 8; echo step-two"}]}'
+api -X POST --json "{\"name\":\"live\",\"bubble\":\"$A\"}" $U/repos/$R/deploys > d4.json; D4=$(j d4.json id)
+live=; for i in $(seq 1 24); do live=$(api "$U/repos/$R/deploys/$D4/log?from=0"); echo "$live" | grep -q step-one && echo "$live" | grep -q '"status":"running"' && break; sleep 5; done
+echo "$live" | grep -q step-one || fail "the live log never showed output while the deployment ran"
+echo "$live" | grep -q step-two && fail "the live log already held a line written after the poll" || ok "the deployment log updates live while it runs"
+n=$(echo "$live" | python3 -c "import json,sys;print(json.load(sys.stdin)['next'])")
+api "$U/repos/$R/deploys/$D4/log?from=$n" | grep -q step-one && fail "the log cursor should skip the lines already read" || ok "the log endpoint honours its line cursor"
+until_ "[x['status'] for x in d['deploys'] if x['id']=='$D4'] == ['succeeded']" "live deployment succeeded" 300
+[ "$(q "'step-two' in [x['log'] for x in d['deploys'] if x['id']=='$D4'][0]")" = True ] || fail "the finished log"
+ok "the finished deployment keeps its output"
+
 # The sandbox reaches only the listed hosts; the credential header is added outside it.
 HDR=$(python3 -c '
 import json

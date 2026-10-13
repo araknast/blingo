@@ -25,15 +25,24 @@ export function needs(d: RepoState): Need[] {
 	const out: Need[] = autoResolves(d) ? [] : d.conflicts.map(([a, b]) => ({ kind: "conflict", tab: "bubbles", key: `c:${a}|${b}`, a, b }));
 	// A fork goes by its task's title, else its agent's prompt.
 	const titleOf = new Map([...d.agents.map((a): [string, string] => [a.fork, a.prompt]), ...d.tasks.filter((t) => t.fork).map((t): [string, string] => [t.fork!, t.title])]);
+	// A task awaiting approval already needs a person (below); its held-back fork isn't a second item.
+	const held = new Set(d.tasks.filter((t) => t.status === "awaiting-approval" && t.fork).map((t) => t.fork!));
 	for (const l of d.loose) {
+		if (held.has(l.fork)) continue;
 		const why = looseWhy(l, d.settings.autoPlaceNotagents);
 		const mark = why === "Waiting for your review" ? "review" : why === "Ready to place" ? "waiting" : "failed";
 		if (why) out.push({ kind: "fork", tab: "agents", key: `f:${l.fork}`, fork: l.fork, title: titleOf.get(l.fork) ?? short(l.fork), why, mark });
 	}
 	const runOf = new Map(d.agents.map((a) => [a.fork, a]));
+	// A notagent a person closed: its task reads failed, but the fix is to open it again, not to retry it.
+	const closed = new Set(d.closed);
 	for (const t of d.tasks) {
 		if (t.status === "awaiting-approval") out.push({ kind: "task", tab: "tasks", key: `t:${t.id}`, id: t.id, title: t.title, why: "Waiting for your approval", mark: "approval" });
 		if (t.status !== "failed") continue;
+		if (t.fork && closed.has(t.fork)) {
+			out.push({ kind: "task", tab: "tasks", key: `t:${t.id}`, id: t.id, title: t.title, why: "Its notagent is closed. Open it again to take pushes", mark: "failed" });
+			continue;
+		}
 		const run = t.fork ? runOf.get(t.fork) : undefined;
 		const what = run ? `Agent ${agentLabel(run.status).toLowerCase()}` : "Task failed";
 		out.push({ kind: "task", tab: "tasks", key: `t:${t.id}`, id: t.id, title: t.title, why: `${what}. Retry it from its task`, mark: "failed" });

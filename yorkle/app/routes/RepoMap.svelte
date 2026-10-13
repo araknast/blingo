@@ -109,10 +109,10 @@
 		e.preventDefault();
 		busy = true;
 		try {
-			const r = await api<{ awaitingApproval?: boolean }>("POST", "/agents", { repo, title: agentTitle, prompt, bubble: agentBase || undefined, model: agentModel.trim() || undefined, skills: agentSkills });
+			await api("POST", "/agents", { repo, title: agentTitle, prompt, bubble: agentBase || undefined, model: agentModel.trim() || undefined, skills: agentSkills });
 			agentOpen = false;
 			agentTitle = prompt = "";
-			toast(r.awaitingApproval ? "Task filed. It starts once it's approved on the Tasks tab." : "Agent started. Its task is on the Tasks tab.");
+			toast("Agent started. Its task is on the Tasks tab.");
 			refresh();
 		} catch (err) {
 			toastError(err);
@@ -140,10 +140,7 @@
 		try {
 			const r = await api("POST", "/notagents", { repo, title: pushTitle, description: pushDescription || pushTitle, bubble: pushBase || undefined });
 			pushTitle = pushDescription = "";
-			if (r.awaitingApproval) {
-				pushOpen = false;
-				toast("Task filed. Take it from the Tasks tab once it's approved.");
-			} else pushed = r;
+			pushed = r;
 			refresh();
 		} catch (err) {
 			toastError(err);

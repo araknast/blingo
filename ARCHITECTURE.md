@@ -44,7 +44,7 @@ browser ──► yorkle Worker ──(service binding)──► blingo Worker �
 | `conflict(k)` | `"a|b"` bubble pairs whose merge failed; never retried (except by a ferge). When a bubble is absorbed, its pairs move to the bubble that absorbed it |
 | `locked(id)` | locked bubbles: placeable, but excluded from neighbour merges |
 | `hidden(id, since)` | lease for a bubble hidden by a running merge or ferge (see Merge loop) |
-| `loose(fork, base, head, token, expires, pushes, placing, sub, reason, kind, ci, ci_log, review_auto, review_manual, review_note, agent_pushes)` | forks not placed yet (a notagent's, or with CI on an agent's): `base` = where it started, `head` = last seen, `token` = live push token id (NULL once revoked or expired), `placing`, `reason` = why it isn't placed. CI results are for `head`: `ci` running/passed/failed and its log tail, each review pending/approved/rejected (NULL = not required) and their comments; `agent_pushes` counts an agent's attempts. Replaces `watch`/`pushed` (emptied into it on startup). Some rows have an unused `sub` column |
+| `loose(fork, base, head, token, expires, pushes, placing, sub, reason, kind, ci, ci_log, review_auto, review_manual, review_note, agent_pushes, closed)` | forks not placed yet (a notagent's, or with CI on an agent's): `base` = where it started, `head` = last seen, `token` = live push token id (NULL once revoked or expired), `placing`, `reason` = why it isn't placed, `closed` = a person closed a notagent before its first push (it takes no pushes; its task reads failed until opened again). CI results are for `head`: `ci` running/passed/failed and its log tail, each review pending/approved/rejected (NULL = not required) and their comments; `agent_pushes` counts an agent's attempts. Replaces `watch`/`pushed` (emptied into it on startup). Some rows have an unused `sub` column |
 | `agent_run(fork, prompt, started, status, finished, log)` | agent and superagent runs (`-s-` ids), kept after they finish |
 | `task(id, title, description, kind, status, bubble, fork, base_head, explanation, superagent, created, finished)` | tasks: a short `title` (≤ 60 chars); `kind` agent / notagent; `skills` = JSON list of the skills its agent loads (NULL = all, added in place); `status` open / in-progress / completed / failed; `bubble` = where it should start, then where it did. Listed in `rowid` (creation) order. `title` was added in place: objects from before it get the column and titles from their descriptions on startup |
 | `task_dep(task, dep)` | task dependencies |
@@ -114,9 +114,14 @@ task. `POST /agents` and `POST /notagents` add a one-task batch and start it; `P
 waits to be taken); a superagent adds a whole plan. Every task has a short title: given, or
 `shortTitle` of the description (first line, ≤ 60 chars at a word). A dep names a task in the same
 batch by key, or an existing task by id. Agents get `# title` then the description as their prompt.
-With the setting `taskApproval`, every new task (filed, planned, from `/agents` or `/notagents`, or a ferge
-agent's) starts as `awaiting-approval`: it never starts, it can be edited (`PATCH /repos/:r/tasks/:id
-{title?, description?}`), `POST …/approve` opens it, and `POST …/reject` deletes it (refused while another task depends on it).
+With the setting `taskApproval`, a new task (filed, planned, from `/agents` or `/notagents`, or a ferge
+agent's) still starts without approval, but its fork doesn't begin placement until a person approves it:
+when the fork is otherwise ready to place, `RepoDO` holds it back and the task reads as `awaiting-approval`.
+`POST …/approve` releases it, and `POST …/reject` deletes an open or awaiting-approval task and discards
+its fork (refused while another task depends on it). A failed task can be deleted outright with
+`POST …/delete`, which removes its record along with its agent run(s), their Boxes and the forks' git
+repos — the failed attempt and, for a task retried since, the one it learned from. A task that hasn't started can be edited (`PATCH
+/repos/:r/tasks/:id {title?, description?}`); a ferge resolution a person makes is approved as they file it.
 In yorkle, tasks are the repository's **Tasks** tab (`/repos/:r/tasks`, `/repos/:r/tasks/:id`),
 an issue tracker beside the Map tab.
 `schedule()` runs from `addTasks`, `retryTask` and every alarm. It starts each `ready` agent task:
@@ -126,8 +131,7 @@ task `in-progress` before any await, so concurrent calls don't double-start it. 
 goes back to `open` and retries on a 30 s alarm. An open notagent task waits for a human:
 `POST /repos/:r/tasks/:id/take` runs the notagent setup below. If the push token expires unused,
 the task is `open` again. When a task's fork is placed, the task is `completed` and its
-`explanation` is the commit messages in its patch series, newest first (`explanation`). An agent run that fails marks its task `failed`, and
-`POST …/retry` reopens it.
+`explanation` is the commit messages in its patch series, newest first (`explanation`). An agent run that fails marks its task `failed`; `POST …/retry` reopens it, and `POST …/delete` deletes it.
 
 A task with dependencies is `ready` when every dependency is completed **and one visible bubble
 holds all their forks fully merged**. Each fork is `merged` or that bubble's rep, the bubble has
@@ -167,7 +171,9 @@ for a host; their values are stored apart (KV `deployAuth`, never returned: the 
 `Outbound` adds the header to requests to that host, so the credential never enters the sandbox. The result
 (`deployDone`) fills the `deploy` row shown on the Deploy tab; a run with no result after 40 minutes is failed.
 `POST …/deploys/:id/cancel` (`cancelDeploy`) has its Box stop the command (`stopCI`): the run fails with its
-output so far and "cancelled by a person". What the command already did isn't undone.
+output so far and "cancelled by a person". What the command already did isn't undone. Its log updates live
+on the Deploy tab: `GET /repos/:r/deploys/:id/log?from=N` (`Box.ciLog`) returns the lines written after the
+first `N`, read from the container's `$TASK/log` while it runs (a line cursor, like the agent transcript).
 
 **Memory.** Agents and superagents get the repo's memory items through `--append-system-prompt`
 (never written into the repo). Items added while an agent runs reach it too: `addMemory` has each
@@ -190,7 +196,11 @@ started (`PATCH_SH`), and `place()` queues it, all forks in parallel; infra fail
 placement that fails (merge commits in its history, which `format-patch` can't carry; a ferge fix
 that no longer fits; too big) leaves the fork loose with the reason. `POST …/forks/:fork/token` mints
 a fresh push token for another try. A fork never pushed to is deleted, and its task reopened, when its
-token expires. The API reports `waiting` (no push yet), `placing` and `loose` (pushed, not placed).
+token expires. A person can **close** a notagent that hasn't been pushed to yet (`POST …/forks/:fork/close`):
+its token is revoked, so no push can arrive, and its task reads `failed`, the way a failed agent run does.
+`POST …/open` opens it again: the task is `in-progress` and it can be pushed to as before (a fresh token
+through `POST …/token`). The API reports `waiting` (no push yet), `placing`, `closed` (closed before its
+first push) and `loose` (pushed, not placed).
 
 **CI and review** (repo settings `ci {enabled, command, hosts}`, `review`, `maxAgentPushes`;
 `src/settings.ts` `gate`). With CI on, every new head of a loose fork runs CI: the command runs in its

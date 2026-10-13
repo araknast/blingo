@@ -45,6 +45,36 @@ test("conflicts, stuck forks, failed tasks and unapplied series need a person; w
 	expect(dock).not.toContain("handed");
 });
 
+test("a closed notagent's task needs a person, to open it again", () => {
+	const d: RepoState = structuredClone(demoSteps[0]);
+	const t = (id: string, status: RepoState["tasks"][number]["status"], fork: string): RepoState["tasks"][number] => ({
+		id,
+		title: id,
+		description: "",
+		kind: "notagent",
+		status,
+		bubble: null,
+		fork,
+		deps: [],
+		explanation: null,
+		superagent: null,
+		created: 0,
+		finished: status === "failed" ? 1 : null,
+		ready: false,
+		skills: null,
+		role: null,
+	});
+	d.tasks = [t("t1", "failed", "r-demo-f-aaaa"), t("t2", "in-progress", "r-demo-f-bbbb")];
+	d.closed = ["r-demo-f-aaaa"];
+	d.waiting = ["r-demo-f-bbbb"];
+	expect(needs(d).find((x) => x.key === "t:t1")).toMatchObject({ why: "Its notagent is closed. Open it again to take pushes", mark: "failed" });
+	expect(needs(d).find((x) => x.key === "t:t2")).toBeUndefined();
+	// A closed fork isn't waiting, so the dock (and the map) leave it out; one still waiting for a push is docked.
+	const dock = docked(d).map((x) => x.fork);
+	expect(dock).toContain("r-demo-f-bbbb");
+	expect(dock).not.toContain("r-demo-f-aaaa");
+});
+
 test("the repository's setup, a failed deployment and new notes from agents need a person too", () => {
 	const d: RepoState = structuredClone(demoSteps[0]);
 	const pages = (x: RepoState) => needs(x).filter((n) => n.kind === "page").map((n) => n.key);

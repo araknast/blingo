@@ -24,16 +24,16 @@ python3 -c "import json;d=json.load(open('skg.json'));assert 'Tabs, not spaces.'
 [ "$(code $U/repos/$R/skills/nope)" = 404 ] || fail "a missing skill should be 404"
 ok "GET skills/:name gives SKILL.md and each file's size; a missing one is 404"
 
-# Rejecting a task awaiting approval
+# Rejecting a task
 api -X PUT --json '{"taskApproval":true}' $U/repos/$R/settings >/dev/null
 api -X POST --json '{"title":"Keep me","description":"x","kind":"notagent"}' $U/repos/$R/tasks > t1.json; T1=$(j t1.json task)
 api -X POST --json "{\"title\":\"Drop me\",\"description\":\"x\",\"kind\":\"notagent\",\"deps\":[\"$T1\"]}" $U/repos/$R/tasks > t2.json; T2=$(j t2.json task)
-[ "$(q "[t['status'] for t in d['tasks'] if t['id'] in ('$T1','$T2')]")" = "['awaiting-approval', 'awaiting-approval']" ] || fail "new tasks should await approval"
+[ "$(q "[t['status'] for t in d['tasks'] if t['id'] in ('$T1','$T2')]")" = "['open', 'open']" ] || fail "new tasks start without approval"
 [ "$(code -X POST $U/repos/$R/tasks/$T1/reject)" = 409 ] || fail "rejecting a task another depends on should be refused"
 [ "$(code -X POST $U/repos/$R/tasks/$T2/reject)" = 200 ] || fail "reject"
 [ "$(q "'$T2' in [t['id'] for t in d['tasks']]")" = False ] || fail "a rejected task should be gone"
 [ "$(code -X POST $U/repos/$R/tasks/$T1/reject)" = 200 ] || fail "reject once nothing depends on it"
-ok "reject deletes a task awaiting approval, and refuses while another depends on it"
+ok "reject deletes an open task, and refuses while another depends on it"
 
 # The key's provider; partial saves
 api -X PUT --json '{"provider":"openrouter","apiKey":"sk-fake-not-real"}' $U/repos/$R/settings >/dev/null

@@ -95,16 +95,17 @@ created before users existed have no owner, so only the admin can reach them. An
 | `GET /me` | `{username, admin, repos, names}` (`names`: repository id → display name) |
 | `POST /invites` → `{code}` | Admin only. A single-use invite code |
 | `POST /repos {name?}` → `{repo}` | A new, empty repository with a display name |
-| `POST /agents {prompt, repo, bubble?, model?}` | Fork and run Claude Code on it. The repository must have an API key (else 400). No `bubble` → any bubble; `model` overrides the repository's agent model for this run. With task approval on → `{task, awaitingApproval: true}` |
-| `PATCH /repos/:repo/tasks/:id {title?, description?}` / `POST …/approve` / `POST …/reject` | Edit, approve, or reject (delete) a task awaiting approval; reject refuses while another task depends on it |
+| `POST /agents {prompt, repo, bubble?, model?}` | Fork and run Claude Code on it. The repository must have an API key (else 400). No `bubble` → any bubble; `model` overrides the repository's agent model for this run. With task approval on, the task still starts; its fork waits for approval before it merges |
+| `PATCH /repos/:repo/tasks/:id {title?, description?}` / `POST …/approve` / `POST …/reject` / `POST …/delete` | Edit a task that hasn't started; approve a task awaiting approval; reject (delete it, discarding its fork) an open or awaiting-approval task; delete a failed task with its agent runs and forks; both refuse while another task depends on it |
 | `POST /notagents {repo?, bubble?}` | Fork and return a git remote with a 1-hour push token; a push gets placed (or waits as a loose fork when `autoPlaceNotagents` is off) |
 | `GET /agents/:fork` | One agent's sandbox status and log tail |
 | `GET /agents/:fork/transcript` | `{status, events}`: the run's Claude Code stream-json events (thinking, text, tool calls and results) |
-| `GET /repos/:repo` | Bubbles, members, conflicts, bubbles merging, notagents waiting for a push (`waiting`), being placed (`placing`) or pushed and not placed (`loose`), settings, agent runs |
+| `GET /repos/:repo` | Bubbles, members, conflicts, bubbles merging, notagents waiting for a push (`waiting`), being placed (`placing`), closed before their first push (`closed`) or pushed and not placed (`loose`), settings, agent runs |
 | `GET /repos/:repo/settings` / `PUT … {autoPlaceNotagents?, ci?: {enabled?, command?, hosts?}, review?, maxAgentPushes?, provider?, models?: {agent?, superagent?, ferge?}, apiKey?}` | Repository settings. `review`: none / auto / manual / both; `provider`: claude-subscription / openrouter; `fergeAgents`, `taskApproval`: booleans; `apiKey` is write-only (`"" ` removes it; `hasKey` says whether one is set) |
 | `POST /repos/:repo/forks/:fork/place` | Place a loose notagent fork |
 | `POST /repos/:repo/forks/:fork/token` | A fresh 1-hour push token for a notagent's loose fork |
 | `POST /repos/:repo/forks/:fork/review {approve, comment?}` | A manual review of a loose fork waiting for one |
+| `POST /repos/:repo/forks/:fork/close` / `…/open` | Close a notagent that hasn't been pushed to yet (it takes no more pushes and its task reads failed); open it again (the task is in-progress) |
 | `GET /repos/:repo/:fork` | Kept diff of a merged fork |
 | `GET /repos/:repo/:fork?path=…` | A file as that fork sees it |
 | `DELETE /repos/:repo` | Delete the repository's git repos and all its records |

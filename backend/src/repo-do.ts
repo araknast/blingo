@@ -53,6 +53,8 @@ type Loose = {
 	review_manual: string | null;
 	review_note: string | null;
 	agent_pushes: number;
+	// A person closed it (closeFork): it takes no pushes and its task reads failed, until it is opened again.
+	closed: number;
 };
 const ciState = (l: Loose) => ({ ci: l.ci, reviewAuto: l.review_auto, reviewManual: l.review_manual });
 type AgentRun = { fork: string; prompt: string; started: number; status: string; finished: number | null; log: string | null };
@@ -69,6 +71,7 @@ type TaskRow = TaskState & {
 	model: string | null; // a model chosen for this task alone, over the role's
 	skills: string | null; // JSON list of skill names its agent loads; NULL = all of the repository's
 	prev_fork: string | null; // retried: the failed attempt's run, whose context the next agent gets
+	approved: number; // with taskApproval on: 1 once a person approved its fork's merge (else 0, or 1 at filing when approval is off)
 	start_error: string | null; // why its last start failed (cleared once one succeeds)
 };
 // A task to add: a superagent's plan item (deps by key within the batch), or one from the API.
@@ -147,7 +150,11 @@ export class RepoDO extends DurableObject<Env> {
 		this.addColumn("task", "skills", "TEXT"); // JSON list of the skills its agent loads (NULL = all)
 		this.addColumn("task", "prev_fork", "TEXT"); // a retried task's failed attempt (its Box keeps the run)
 		this.addColumn("task", "start_error", "TEXT");
-		for (const [c, d] of [["kind", "TEXT NOT NULL DEFAULT 'notagent'"], ["ci", "TEXT"], ["ci_log", "TEXT"], ["review_auto", "TEXT"], ["review_manual", "TEXT"], ["review_note", "TEXT"], ["agent_pushes", "INTEGER NOT NULL DEFAULT 0"]]) {
+		// Task approval used to hold a new task at awaiting-approval before it started; it now gates only
+		// the fork's merge. Tasks from before get `approved` = 1 (they already started); one still awaiting
+		// approval never started, so reopen it (and gate its merge, since approval is what it was waiting on).
+		if (this.addColumn("task", "approved", "INTEGER NOT NULL DEFAULT 1")) this.sql.exec("UPDATE task SET status = 'open', approved = 0 WHERE status = 'awaiting-approval'");
+		for (const [c, d] of [["kind", "TEXT NOT NULL DEFAULT 'notagent'"], ["ci", "TEXT"], ["ci_log", "TEXT"], ["review_auto", "TEXT"], ["review_manual", "TEXT"], ["review_note", "TEXT"], ["agent_pushes", "INTEGER NOT NULL DEFAULT 0"], ["closed", "INTEGER NOT NULL DEFAULT 0"]]) {
 			this.addColumn("loose", c, d);
 		}
 		// Watched notagent forks from before loose forks: pushed ones go on to placement.
@@ -327,22 +334,23 @@ export class RepoDO extends DurableObject<Env> {
 			if ("error" in r) return r;
 		}
 		this.ctx.storage.kv.put("repo", repo);
-		const status = this.settings().taskApproval ? "awaiting-approval" : "open";
+		// A task always starts; with task approval on, its fork waits for a person before it merges.
+		const approved = this.settings().taskApproval ? 0 : 1;
 		items.forEach((i, n) => {
 			const id = ids.get(i.key ?? String(n))!;
 			this.sql.exec(
-				"INSERT INTO task (id, title, description, kind, status, bubble, superagent, created, role, model, skills) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				"INSERT INTO task (id, title, description, kind, status, bubble, superagent, created, role, model, skills, approved) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)",
 				id,
 				i.title,
 				i.description,
 				i.kind,
-				status,
 				i.bubble ?? null,
 				superagent,
 				Date.now(),
 				i.role ?? null,
 				i.model || null,
 				i.skills === undefined ? null : JSON.stringify(i.skills),
+				approved,
 			);
 			for (const d of i.deps) this.sql.exec("INSERT OR IGNORE INTO task_dep (task, dep) VALUES (?, ?)", id, dep(d));
 		});
@@ -354,28 +362,64 @@ export class RepoDO extends DurableObject<Env> {
 		return this.sql.exec<Omit<TaskRow, "deps">>("SELECT * FROM task WHERE id = ?", id).toArray()[0] ?? null;
 	}
 
-	// With task approval on: a task awaiting approval can be edited, then approved to start.
+	// A task that hasn't started can be edited. An agent task's window is brief (it starts on the next
+	// alarm); a notagent's lasts until someone takes it.
 	editTask(id: string, title: string | undefined, description: string | undefined): { ok: true } | { error: string } {
-		if (this.task(id)?.status !== "awaiting-approval") return { error: "only a task awaiting approval can be edited" };
+		if (this.task(id)?.status !== "open") return { error: "only a task that hasn't started can be edited" };
 		if (title !== undefined) this.sql.exec("UPDATE task SET title = ? WHERE id = ?", title, id);
 		if (description !== undefined) this.sql.exec("UPDATE task SET description = ? WHERE id = ?", description, id);
 		return { ok: true };
 	}
 
+	// A person approves a task awaiting approval: its fork is no longer held back, so it places.
 	async approveTask(id: string): Promise<boolean> {
-		const n = this.sql.exec("UPDATE task SET status = 'open' WHERE id = ? AND status = 'awaiting-approval'", id).rowsWritten;
-		if (n) await this.schedule();
-		return n > 0;
+		const t = this.task(id);
+		if (t?.status !== "awaiting-approval") return false;
+		this.sql.exec("UPDATE task SET approved = 1, status = 'in-progress' WHERE id = ?", id);
+		const l = t.fork ? this.loose(t.fork) : undefined;
+		if (t.fork && l && !l.placing && l.pushes) await this.startPlacing(t.fork);
+		await this.schedule();
+		return true;
 	}
 
-	// Turns down a task awaiting approval: it's deleted. Not while another task depends on it, which
-	// would then wait forever; reject those first.
-	rejectTask(id: string): { ok: true } | { error: string } {
-		if (this.task(id)?.status !== "awaiting-approval") return { error: "only a task awaiting approval can be rejected" };
+	// Turns down a task that hasn't merged: its fork is discarded (the work never merges) and the task is
+	// deleted. An awaiting-approval task has done its work; an open one hasn't started. Not while another
+	// task depends on it, which would then wait forever; reject those first.
+	async rejectTask(id: string): Promise<{ ok: true } | { error: string }> {
+		const t = this.task(id);
+		if (t?.status !== "awaiting-approval" && t?.status !== "open") return { error: "only a task that hasn't merged can be rejected" };
 		const n = this.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM task_dep WHERE dep = ?", id).one().n;
 		if (n) return { error: `${n === 1 ? "a task depends" : `${n} tasks depend`} on it: reject ${n === 1 ? "that one" : "those"} first` };
+		if (t.fork) {
+			this.sql.exec("DELETE FROM loose WHERE fork = ?", t.fork);
+			this.sql.exec("DELETE FROM basis WHERE fork = ?", t.fork);
+			await this.env.ARTIFACTS.delete(t.fork).catch(() => false);
+		}
 		this.sql.exec("DELETE FROM task_dep WHERE task = ?", id);
 		this.sql.exec("DELETE FROM task WHERE id = ?", id);
+		await this.kick();
+		return { ok: true };
+	}
+
+	// Deletes a failed task and everything it left behind: its agent run, that run's Box and the fork's
+	// git repo — and, for a task retried since it failed, the attempt it learned from. Not while another
+	// task depends on it, which would then wait forever; reject those first.
+	async deleteTask(id: string): Promise<{ ok: true } | { error: string }> {
+		const t = this.task(id);
+		if (t?.status !== "failed") return { error: "only a failed task can be deleted" };
+		const n = this.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM task_dep WHERE dep = ?", id).one().n;
+		if (n) return { error: `${n === 1 ? "a task depends" : `${n} tasks depend`} on it: reject ${n === 1 ? "that one" : "those"} first` };
+		const forks = [t.fork, t.prev_fork].filter((f): f is string => !!f);
+		await Promise.all(forks.map((f) => this.env.BOX.getByName(f).stop()));
+		for (const f of forks) {
+			this.sql.exec("DELETE FROM agent_run WHERE fork = ?", f);
+			this.sql.exec("DELETE FROM basis WHERE fork = ?", f);
+			this.sql.exec("DELETE FROM loose WHERE fork = ?", f);
+			await this.env.ARTIFACTS.delete(f).catch(() => false);
+		}
+		this.sql.exec("DELETE FROM task_dep WHERE task = ?", id);
+		this.sql.exec("DELETE FROM task WHERE id = ?", id);
+		await this.kick();
 		return { ok: true };
 	}
 
@@ -389,6 +433,9 @@ export class RepoDO extends DurableObject<Env> {
 	// of this repository).
 	async retryTask(id: string, previous?: string): Promise<{ error: string } | { ok: true }> {
 		if (previous && !this.sql.exec("SELECT 1 FROM agent_run WHERE fork = ?", previous).toArray().length) return { error: "no such agent run in this repository" };
+		// A closed notagent isn't retried: open it again instead, so its fork (and push token) stay put.
+		const t = this.task(id);
+		if (t?.fork && this.loose(t.fork)?.closed) return { error: "open its notagent first" };
 		const n = this.sql.exec("UPDATE task SET status = 'open', prev_fork = COALESCE(?, fork), fork = NULL, finished = NULL WHERE id = ? AND status = 'failed'", previous ?? null, id).rowsWritten;
 		if (!n) return { error: "that task hasn't failed" };
 		await this.schedule();
@@ -400,6 +447,33 @@ export class RepoDO extends DurableObject<Env> {
 		const t = this.task(id);
 		if (t?.kind !== "agent" || t.status !== "in-progress" || !t.fork) return { error: "that task has no running agent" };
 		return (await this.env.BOX.getByName(t.fork).stopAgent()) ? { ok: true } : { error: "its agent isn't running" };
+	}
+
+	// A person closes a notagent that hasn't been pushed to yet: it stops taking pushes (its token is
+	// revoked, so nothing can arrive) and its task reads failed, like an agent run that failed. The fork
+	// is kept, so opening it again puts the task back to in-progress and it can be pushed to as before.
+	async closeFork(fork: string): Promise<{ ok: true } | { error: string }> {
+		const l = this.loose(fork);
+		if (l?.kind !== "notagent") return { error: "that fork isn't a notagent's" };
+		if (l.closed) return { error: "it is already closed" };
+		if (l.pushes) return { error: "it has already been pushed to" };
+		this.sql.exec("UPDATE loose SET closed = 1 WHERE fork = ?", fork);
+		await this.revokePushToken(fork, l.token);
+		this.sql.exec("UPDATE task SET status = 'failed', finished = ? WHERE fork = ? AND status = 'in-progress'", Date.now(), fork);
+		await this.kick();
+		return { ok: true };
+	}
+
+	// A person opens a closed notagent again: its task reads in-progress and it can be pushed to (a fresh
+	// token through pushToken, or by taking the task again). Only a closed fork is affected.
+	async openFork(fork: string): Promise<{ ok: true } | { error: string }> {
+		const l = this.loose(fork);
+		if (l?.kind !== "notagent") return { error: "that fork isn't a notagent's" };
+		if (!l.closed) return { error: "it isn't closed" };
+		this.sql.exec("UPDATE loose SET closed = 0 WHERE fork = ?", fork);
+		this.sql.exec("UPDATE task SET status = 'in-progress', finished = NULL WHERE fork = ? AND status = 'failed'", fork);
+		await this.kick();
+		return { ok: true };
 	}
 
 	// A human takes an open notagent task: it gets a loose fork with a 1-hour push token. The task is
@@ -638,7 +712,7 @@ export class RepoDO extends DurableObject<Env> {
 		const added = await this.addTasks(repo, [{ title: shortTitle(`Resolve the conflicts in ${b.name}`), description: `Resolved by ${author} in the conflict resolver:\n${Object.keys(files).map((f) => `- ${f}`).join("\n")}`, kind: "notagent", deps: [], bubble }]);
 		if ("error" in added) return added;
 		const [task] = added.ids;
-		this.sql.exec("UPDATE task SET status = 'open' WHERE id = ? AND status = 'awaiting-approval'", task); // asked for by a person
+		this.sql.exec("UPDATE task SET approved = 1 WHERE id = ?", task); // a person resolved it: no separate approval to wait on
 		const taken = await this.takeTask(task);
 		if (taken.error !== undefined) return { error: taken.error };
 		const { url } = await authRemote(this.env, taken.fork, "write");
@@ -673,7 +747,7 @@ export class RepoDO extends DurableObject<Env> {
 		const n = (q: string, ...p: unknown[]) => this.sql.exec<{ n: number }>(q, ...p).one().n;
 		const s = this.settings();
 		const loose = n(
-			`SELECT COUNT(*) AS n FROM loose WHERE pushes > 0 AND placing = 0 AND (review_manual = 'pending' OR (kind = 'notagent' AND (reason IS NOT NULL
+			`SELECT COUNT(*) AS n FROM loose WHERE pushes > 0 AND placing = 0 AND fork NOT IN (SELECT fork FROM task WHERE status = 'awaiting-approval' AND fork IS NOT NULL) AND (review_manual = 'pending' OR (kind = 'notagent' AND (reason IS NOT NULL
 				OR ci = 'failed' OR review_auto = 'rejected' OR review_manual = 'rejected' OR (? AND COALESCE(ci, '') <> 'running' AND COALESCE(review_auto, '') <> 'pending'))))`,
 			s.autoPlaceNotagents ? 0 : 1,
 		);
@@ -715,9 +789,11 @@ export class RepoDO extends DurableObject<Env> {
 			conflicts: this.sql.exec<{ k: string }>("SELECT k FROM conflict").toArray().map((r) => r.k.split("|")),
 			merging: this.sql.exec<{ a: string; b: string }>("SELECT a, b FROM merging").toArray().map((r) => [r.a, r.b]),
 			// Notagent forks waiting for their first push, pushed ones being placed, and pushed ones waiting
-			// to be placed (`loose`: auto-placement is off, or their placement failed).
-			waiting: this.sql.exec<{ fork: string }>("SELECT fork FROM loose WHERE pushes = 0").toArray().map((r) => r.fork),
+			// to be placed (`loose`: auto-placement is off, or their placement failed). A closed notagent
+			// isn't waiting (it takes no pushes); it is in `closed` instead.
+			waiting: this.sql.exec<{ fork: string }>("SELECT fork FROM loose WHERE pushes = 0 AND closed = 0").toArray().map((r) => r.fork),
 			placing: this.sql.exec<{ fork: string }>("SELECT fork FROM loose WHERE placing = 1").toArray().map((r) => r.fork),
+			closed: this.sql.exec<{ fork: string }>("SELECT fork FROM loose WHERE closed = 1").toArray().map((r) => r.fork),
 			loose: this.sql
 				.exec<Loose>("SELECT * FROM loose WHERE pushes > 0 AND placing = 0")
 				.toArray()
@@ -958,6 +1034,19 @@ export class RepoDO extends DurableObject<Env> {
 		return this.sql.exec<Loose>("SELECT * FROM loose WHERE fork = ?", fork).toArray()[0];
 	}
 
+	// With task approval on, a task's fork may not begin placement until a person approves it
+	// (approveTask). A fork with no task (or one filed while approval was off) is not held.
+	private approvalNeeded(fork: string): boolean {
+		if (!this.settings().taskApproval) return false;
+		const t = this.sql.exec<{ approved: number }>("SELECT approved FROM task WHERE fork = ?", fork).toArray()[0];
+		return !!t && !t.approved;
+	}
+
+	// Holds a task's fork back from placement: the task reads as awaiting approval until one approves it.
+	private holdForApproval(fork: string) {
+		this.sql.exec("UPDATE task SET status = 'awaiting-approval' WHERE fork = ? AND status = 'in-progress'", fork);
+	}
+
 	// When the alarm must look at loose forks again: a fork being placed now; a fork that can still be
 	// pushed to every POLL_MS. null = nothing to look at.
 	private nextLooseCheck(): number | null {
@@ -977,7 +1066,8 @@ export class RepoDO extends DurableObject<Env> {
 	// patch series `files`/`mbox`); with CI on it becomes a loose fork and its new head goes through CI.
 	async submit(fork: string, files: string[], mbox: string): Promise<{ bubble: string | null } | { loose: true } | { error: string }> {
 		const l = this.loose(fork);
-		if (!l && !this.settings().ci.enabled) return this.place(fork, files, mbox);
+		// A task awaiting approval becomes a loose fork too, so it has somewhere to wait (newHead holds it).
+		if (!l && !this.settings().ci.enabled && !this.approvalNeeded(fork)) return this.place(fork, files, mbox);
 		const head = await headOf(this.env, fork);
 		if (!l) {
 			const base = this.sql.exec<{ base_head: string | null }>("SELECT base_head FROM task WHERE fork = ?", fork).toArray()[0]?.base_head ?? "";
@@ -1005,7 +1095,10 @@ export class RepoDO extends DurableObject<Env> {
 		const s = this.settings();
 		const l = this.loose(fork)!;
 		if (!s.ci.enabled) {
-			if (l.kind === "agent" || s.autoPlaceNotagents) await this.startPlacing(fork);
+			if (l.kind === "agent" || s.autoPlaceNotagents) {
+				if (this.approvalNeeded(fork)) return this.holdForApproval(fork);
+				await this.startPlacing(fork);
+			}
 			return;
 		}
 		this.sql.exec("UPDATE loose SET ci = 'running', ci_log = NULL, review_auto = NULL, review_manual = NULL, review_note = NULL WHERE fork = ?", fork);
@@ -1061,7 +1154,10 @@ export class RepoDO extends DurableObject<Env> {
 		if (g === "waiting") return;
 		if (g !== "passed") return this.failed(fork, g.failed);
 		this.sql.exec("UPDATE loose SET reason = NULL WHERE fork = ?", fork);
-		if (l.kind === "agent" || s.autoPlaceNotagents) await this.startPlacing(fork);
+		if (l.kind === "agent" || s.autoPlaceNotagents) {
+			if (this.approvalNeeded(fork)) return this.holdForApproval(fork);
+			await this.startPlacing(fork);
+		}
 	}
 
 	// A CI step failed. An agent's fork gets a fixer agent while it has pushes left; then it becomes a
@@ -1106,17 +1202,28 @@ export class RepoDO extends DurableObject<Env> {
 		if (l.placing) return { error: "it is already being placed" };
 		if (!l.pushes) return { error: "nothing has been pushed to it yet" };
 		if (gate(this.settings(), ciState(l)) !== "passed") return { error: "it hasn't passed CI" };
+		if (this.approvalNeeded(fork)) {
+			this.holdForApproval(fork);
+			return { error: "its task is waiting for your approval before it can merge" };
+		}
 		await this.startPlacing(fork);
 		return { ok: true };
 	}
 
+	// Drops a loose fork's live push token, so nothing more can be pushed to it (revoking the token in
+	// Artifacts, where one is recorded).
+	private async revokePushToken(fork: string, token: string | null) {
+		this.sql.exec("UPDATE loose SET token = NULL WHERE fork = ?", fork);
+		if (token) {
+			using repo = await this.env.ARTIFACTS.get(fork);
+			await repo.revokeToken(token).catch(() => false);
+		}
+	}
+
 	private async startPlacing(fork: string) {
 		const l = this.loose(fork);
-		this.sql.exec("UPDATE loose SET placing = 1, token = NULL WHERE fork = ?", fork);
-		if (l?.token) {
-			using repo = await this.env.ARTIFACTS.get(fork);
-			await repo.revokeToken(l.token).catch(() => false);
-		}
+		this.sql.exec("UPDATE loose SET placing = 1 WHERE fork = ?", fork);
+		await this.revokePushToken(fork, l?.token ?? null);
 		await this.kick();
 	}
 
@@ -1126,6 +1233,7 @@ export class RepoDO extends DurableObject<Env> {
 		const l = this.sql.exec<Loose>("SELECT * FROM loose WHERE fork = ? AND placing = 0", fork).toArray()[0];
 		if (!l) return { error: "no such loose fork" };
 		if (l.kind !== "notagent") return { error: "an agent is working on that fork" };
+		if (l.closed) return { error: "it is closed: open it first" };
 		const { url: authed, remote, token } = await authRemote(this.env, fork, "write", 3600);
 		this.sql.exec("UPDATE loose SET token = ?, expires = ? WHERE fork = ?", token.id, Date.parse(token.expiresAt), fork);
 		await this.kick();

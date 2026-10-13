@@ -51,13 +51,14 @@
 	{repo}
 	{data}
 >
-	{#snippet actions()}
-		{#if !missingRepo}<button onclick={clone}>Clone</button>{/if}
-	{/snippet}
 	{#if missingRepo}
 		<div class="page"><h1>This repository isn't available</h1><p class="muted">It doesn't exist, or it belongs to someone else.</p></div>
 	{:else}
-		<div class="page"><BubbleView {repo} {bubble} {rest} {base} {data} {refresh} /></div>
+		<div class="page">
+			<BubbleView {repo} {bubble} {rest} {base} {data} {refresh}>
+				{#snippet actions()}<button onclick={clone}>Clone</button>{/snippet}
+			</BubbleView>
+		</div>
 	{/if}
 </Shell>
 

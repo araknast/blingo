@@ -17,6 +17,7 @@
 	const l = $derived(data?.loose.find((x) => x.fork === fork));
 	const placing = $derived(data?.placing.includes(fork));
 	const waiting = $derived(data?.waiting.includes(fork));
+	const closed = $derived(data?.closed.includes(fork));
 	const placedIn = $derived(data?.bubbles.find((b) => b.members.some((m) => m.name === fork)));
 	const task = $derived(data?.tasks.find((t) => t.fork === fork));
 	const ci = $derived(data?.settings.ci.enabled);
@@ -60,7 +61,14 @@
 	<p class="state"><Mark status="placing" /> Being placed in a bubble…</p>
 {:else if waiting}
 	<p class="state"><Mark status="waiting" /> Waiting for its first push.</p>
-	<div class="actions"><button class="primary" onclick={() => act("token")} disabled={busy}>Push to it</button></div>
+	<div class="actions">
+		<button class="primary" onclick={() => act("token")} disabled={busy}>Push to it</button>
+		<button disabled={busy} onclick={() => act("close", undefined, "Closed")}>Close it</button>
+	</div>
+{:else if closed}
+	<p class="state"><Mark status="failed" /> Closed: it takes no more pushes.</p>
+	<p class="muted">Its task reads as failed while it's closed. Open it again to take a push.</p>
+	<div class="actions"><button class="primary" disabled={busy} onclick={() => act("open", undefined, "Opened")}>Open it</button></div>
 {:else if !l}
 	<p class="muted">This fork isn't waiting to be placed. <a href="/repos/{repo}">Back to the map</a></p>
 {:else}

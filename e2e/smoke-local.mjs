@@ -93,6 +93,22 @@ try {
 	const tk = await call("POST", `/repos/${R}/tasks/${free.task}/take`);
 	check(tk.status === 201 && tk.fork && tk.clone, "tasks: take a ready human task");
 
+	// a notagent that hasn't been pushed to can be closed: it takes no more pushes and its task reads
+	// failed; opening it again puts the task back to in-progress
+	check((await call("POST", `/repos/${R}/forks/${tk.fork}/close`)).status === 202, "notagent: close");
+	let st2 = await state(R);
+	check(st2.closed.includes(tk.fork) && !st2.waiting.includes(tk.fork), "notagent: closed, no longer waiting");
+	check((await task(R, free.task))?.status === "failed", "notagent: closing it fails its task");
+	check((await call("POST", `/repos/${R}/forks/${tk.fork}/close`)).status === 409, "notagent: close again → 409");
+	check((await call("POST", `/repos/${R}/forks/${tk.fork}/token`)).status === 409, "notagent: no push token while closed");
+	check((await call("POST", `/repos/${R}/tasks/${free.task}/retry`)).status === 409, "notagent: retry a closed one → 409");
+	check((await call("POST", `/repos/${R}/forks/nope-f-x/close`)).status === 409, "notagent: close an unknown fork → 409");
+	check((await call("POST", `/repos/${R}/forks/${tk.fork}/open`)).status === 202, "notagent: open");
+	st2 = await state(R);
+	check(!st2.closed.includes(tk.fork) && st2.waiting.includes(tk.fork), "notagent: open, waiting again");
+	check((await task(R, free.task))?.status === "in-progress", "notagent: opening it puts the task back to in-progress");
+	check((await call("POST", `/repos/${R}/forks/${tk.fork}/open`)).status === 409, "notagent: open again → 409");
+
 	// order: creation order
 	const ids = (await state(R)).tasks.map((t) => t.id);
 	check(ids.join() === [sk.task, n1.task, n2.task, h.task, free.task].join(), "list keeps creation order");
@@ -108,6 +124,7 @@ try {
 		placing = (await state(R)).placing.includes(n1.fork);
 	}
 	check(placing, "push detected (placing; placement itself needs containers)");
+	check((await call("POST", `/repos/${R}/forks/${n1.fork}/close`)).status === 409, "notagent: close a pushed fork → 409");
 } finally {
 	console.log("cleanup:", (await call("DELETE", `/repos/${R}`)).deleted?.length, "repos deleted");
 	console.log(fails.length ? `FAILURES (${fails.length}):\n- ${fails.join("\n- ")}` : "ALL PASSED");

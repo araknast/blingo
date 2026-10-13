@@ -31,7 +31,7 @@ const agents = (...prompts: [string, string][]) =>
 const P1: [string, string] = ["a7c3e5d2", "Add keyboard shortcuts to the editor"];
 const P2: [string, string] = ["e2b8f6c1", "Write a CLI for exporting reports"];
 
-const state = (bubbles: Bubble[], o: Partial<RepoState> = {}): RepoState => ({ name: "demo", bubbles, conflicts: [], merging: [], waiting: [], placing: [], loose: [], settings: { autoPlaceNotagents: true, ci: { enabled: false, command: "", hosts: [] }, review: "none", maxAgentPushes: 3, provider: "claude-subscription", models: { agent: "", superagent: "", ferge: "" }, fergeAgents: false, autoFerge: false, taskApproval: false, deploys: [], hasKey: false, hasReviewerKey: false }, agents: [], tasks: [], memory: [], skills: [], deploys: [], ...o });
+const state = (bubbles: Bubble[], o: Partial<RepoState> = {}): RepoState => ({ name: "demo", bubbles, conflicts: [], merging: [], waiting: [], placing: [], closed: [], loose: [], settings: { autoPlaceNotagents: true, ci: { enabled: false, command: "", hosts: [] }, review: "none", maxAgentPushes: 3, provider: "claude-subscription", models: { agent: "", superagent: "", ferge: "" }, fergeAgents: false, autoFerge: false, taskApproval: false, deploys: [], hasKey: false, hasReviewerKey: false }, agents: [], tasks: [], memory: [], skills: [], deploys: [], ...o });
 
 export const demoSteps: RepoState[] = [
 	state([A(), B(), C()], { waiting: [f("44f0b9a6")], agents: agents(P1, P2) }),

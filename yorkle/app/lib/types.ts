@@ -74,6 +74,8 @@ export type RepoState = {
 	merging: [string, string][];
 	waiting: string[];
 	placing: string[];
+	// Notagent forks a person closed before their first push: they take no pushes, and their task reads failed.
+	closed: string[];
 	loose: LooseFork[];
 	settings: Settings;
 	agents: AgentRun[];

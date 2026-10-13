@@ -73,6 +73,10 @@
 			await api("PUT", repo ? `/repos/${repo}/settings` : "/me/defaults", body);
 			apiKey = reviewerKey = "";
 			dropKey = dropReviewerKey = false;
+			// The save landed, so treat what the form holds as the stored state right away. The refresh
+			// below re-fetches the whole repo and can take a while; without this, leaving during it would
+			// warn about changes that are already saved.
+			saved = JSON.stringify(form);
 			await reload();
 			form = null; // take the saved values (after the refresh, or the stale ones come back)
 			toast("Settings saved");
@@ -272,8 +276,8 @@
 
 				<section>
 					<h2>Tasks</h2>
-					<label class="check"><input type="checkbox" bind:checked={form.taskApproval} aria-describedby="approval-hint" /> New tasks wait for approval before they start</label>
-					<p class="hint" id="approval-hint">Every new task, including a superagent's plan and ferge agents', waits on the Tasks tab until you approve it, edit it, or reject it.</p>
+					<label class="check"><input type="checkbox" bind:checked={form.taskApproval} aria-describedby="approval-hint" /> New tasks wait for approval before they merge</label>
+					<p class="hint" id="approval-hint">Every new task, including a superagent's plan and ferge agents', starts as usual, but its fork doesn't merge until you approve it on the Tasks tab. Until then the task reads as awaiting approval.</p>
 				</section>
 
 				{#if repo}

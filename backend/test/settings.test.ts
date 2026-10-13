@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { DEFAULTS, NO_KEY, ciHostAllowed, deployHeaders, deployKey, deployValues, egress, gate, keyError, readSettings, updateSettings, type Settings } from "../src/settings";
+import { DEFAULTS, NO_KEY, ciHostAllowed, deployHeaders, issuedToken, deployKey, deployValues, egress, gate, keyError, readSettings, updateSettings, type Settings } from "../src/settings";
 
 const on = (o: Partial<Settings> = {}): Settings => ({ ...DEFAULTS, ...o, ci: { ...DEFAULTS.ci, enabled: true, ...o.ci } });
 
@@ -88,6 +88,13 @@ test("a deployment's headers go only to their host (and its subdomains)", () => 
 	expect(deployHeaders(d, "evilapi.example.com", values)).toEqual([]);
 	expect(deployHeaders(d, "api.example.com", {})).toEqual([]); // no value stored
 	expect(deployHeaders(undefined, "api.example.com", values)).toEqual([]);
+});
+
+test("a bearer JWT the host issued is kept; placeholders are replaced", () => {
+	expect(issuedToken("Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln-_x")).toBe(true);
+	expect(issuedToken("Bearer cfat_000000000000000000000000000000000000000000000000")).toBe(false);
+	expect(issuedToken("Bearer added-by-outbound")).toBe(false);
+	expect(issuedToken(null)).toBe(false);
 });
 
 test("claude-subscription provider: accepted, and its key only goes to api.anthropic.com", () => {

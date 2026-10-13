@@ -1,6 +1,8 @@
 <script lang="ts">
 	// A bubble's code: Source, Commits, Forks, and a ferge's Conflicts. On its own page (BubbleCode) and
 	// in the Overview's drawer. `base` is where its links go: a path, or the drawer's URL with `&p=`.
+	// `actions` puts page-level buttons (the Clone button) beside the title, on the page itself.
+	import type { Snippet } from "svelte";
 	import { route } from "./router.svelte";
 	import type { RepoState } from "./types";
 	import { fergeAgent } from "./attention";
@@ -19,7 +21,8 @@
 		at,
 		data,
 		refresh,
-	}: { repo: string; bubble: string; rest: string; base: string; at?: string; data: RepoState | null; refresh: () => unknown } = $props();
+		actions,
+	}: { repo: string; bubble: string; rest: string; base: string; at?: string; data: RepoState | null; refresh: () => unknown; actions?: Snippet } = $props();
 
 	const b = $derived(data?.bubbles.find((x) => x.id === bubble));
 	// A fork not in a bubble yet (one waiting for review, say) can be browsed the same way.
@@ -60,6 +63,7 @@
 						{:else}&nbsp;{/if}
 					</p>
 				</div>
+				{#if actions}<div class="head-actions">{@render actions()}</div>{/if}
 			</header>
 
 			<nav class="tabs" aria-label="Bubble">
@@ -87,6 +91,7 @@
 	.page { min-width: 0; }
 	.gone p { margin-top: 0.75rem; color: var(--ink-2); }
 	.head { display: flex; gap: 0.9rem; align-items: center; margin-bottom: 1.25rem; }
+	.head-actions { margin-left: auto; }
 	.film { flex: none; }
 	.id { font-size: 1.375rem; font-weight: 400; letter-spacing: -0.02em; }
 	.meta { font-size: 0.875rem; display: flex; gap: 0.5rem; align-items: center; margin-top: 0.15rem; }

@@ -1,8 +1,9 @@
 # names.sh: repository and bubble names, ferge bubbles, ferge agents, task approval. The repository's
 # first bubble is called after it, later ones "adjective noun", a ferge bubble after the two it came
 # from; with fergeAgents on, a ferge files an agent task (model role "ferge") on its ferge bubble; with
-# taskApproval on, tasks wait for approval and can be edited until then. No model cost (the ferge
-# agent's run may fail without credit; only its task is checked). ~4 min.
+# taskApproval on, a task still starts and can be edited until it does, but its fork waits for approval
+# before it merges. No model cost (the ferge agent's run may fail without credit; only its task is
+# checked). ~4 min.
 . "$(dirname "$0")/env.sh"
 S=${WORK:-$(mktemp -d)}; mkdir -p "$S" && cd "$S" || exit 1; echo "work dir $S"
 fail() { echo "FAIL $*"; [ -n "${R:-}" ] && api -X DELETE $U/repos/$R >/dev/null; exit 1; }
@@ -34,19 +35,22 @@ api -X POST --json "{\"a\":\"$A\",\"b\":\"$B\"}" $U/repos/$R/ferge > ferge.json;
 got=$(q "$(bname $L)"); [ "$got" = "$(echo "$BN" | cut -d' ' -f1) e2e names$(echo "$BN" | cut -d' ' -f2) ferge" ] || fail "ferge name: $got"
 [ "$(q "[b['ferge'] for b in d['bubbles'] if b['id']=='$L']")" = "[True]" ] || fail "ferge flag"
 ok "ferge bubble named after both: $got"
-[ "$(q "[(t['kind'], t['role'], t['bubble'], t['status']) for t in d['tasks'] if t['title'].startswith('Resolve the conflicts')]")" = "[('agent', 'ferge', '$L', 'awaiting-approval')]" ] || fail "ferge agent task: $(q "d['tasks']")"
-ok "ferge agent task filed on the ferge bubble (awaiting approval)"
+[ "$(q "[(t['kind'], t['role'], t['bubble']) for t in d['tasks'] if t['title'].startswith('Resolve the conflicts')]")" = "[('agent', 'ferge', '$L')]" ] || fail "ferge agent task: $(q "d['tasks']")"
+ok "ferge agent task filed on the ferge bubble (model role ferge)"
 
 T1=$(api -X POST --json '{"title":"draft","description":"first draft","kind":"notagent"}' $U/repos/$R/tasks | python3 -c "import json,sys;print(json.load(sys.stdin)['task'])")
-[ "$(q "[(t['status'], t['ready']) for t in d['tasks'] if t['id']=='$T1']")" = "[('awaiting-approval', False)]" ] || fail "new task should await approval"
-code=$(api -o /dev/null -w '%{http_code}' -X POST $U/repos/$R/tasks/$T1/take); [ "$code" = 409 ] || fail "taking an unapproved task gave $code"
+[ "$(q "[t['status'] for t in d['tasks'] if t['id']=='$T1']")" = "['open']" ] || fail "a new task should start without approval: $(q "d['tasks']")"
+ok "a new task starts without approval"
 api -X PATCH --json '{"title":"final title","description":"edited"}' $U/repos/$R/tasks/$T1 >/dev/null
-[ "$(q "[(t['title'], t['description']) for t in d['tasks'] if t['id']=='$T1']")" = "[('final title', 'edited')]" ] || fail "edit"
+[ "$(q "[(t['title'], t['description']) for t in d['tasks'] if t['id']=='$T1']")" = "[('final title', 'edited')]" ] || fail "edit before it starts"
+api -X POST $U/repos/$R/tasks/$T1/take > t1.json; FT=$(j t1.json fork) || fail "take: $(cat t1.json)"
+push t1.json t1 'printf "from the task\n" > task.txt' >/dev/null || fail "push the task's fork"
+until_ "[t['status'] for t in d['tasks'] if t['id']=='$T1'] == ['awaiting-approval']" "the pushed task waits for approval to merge"
+code=$(api -o /dev/null -w '%{http_code}' -X PATCH --json '{"title":"late"}' $U/repos/$R/tasks/$T1); [ "$code" = 409 ] || fail "editing a started task gave $code"
+[ "$(q "any(m['name']=='$FT' for b in d['bubbles'] for m in b['members'])")" = False ] || fail "it must not merge before approval"
 api -X POST $U/repos/$R/tasks/$T1/approve >/dev/null
-[ "$(q "[t['status'] for t in d['tasks'] if t['id']=='$T1']")" = "['open']" ] || fail "approve"
-code=$(api -o /dev/null -w '%{http_code}' -X PATCH --json '{"title":"late"}' $U/repos/$R/tasks/$T1); [ "$code" = 409 ] || fail "editing an approved task gave $code"
-r=$(api -X POST --json "{\"repo\":\"$R\",\"description\":\"needs approval\"}" $U/notagents); echo "$r" | grep -q '"awaitingApproval":true' || fail "notagent with approval on: $r"
-ok "tasks await approval, can be edited until approved, then open"
+until_ "any(m['name']=='$FT' for b in d['bubbles'] for m in b['members'])" "approving merges the fork"
+ok "a task's fork waits for approval before it merges, then merges once approved"
 
 echo "== cleanup: $(api -X DELETE $U/repos/$R)"
 echo "PASS"

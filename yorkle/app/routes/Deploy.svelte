@@ -1,8 +1,8 @@
 <script lang="ts">
 	// The repository's deployments: every run and its status, and starting one on a bubble. `?bubble=`
 	// (from the map's menu) picks the bubble.
-	import { atFailure } from "../lib/atFailure";
 	import { ask } from "../lib/confirm.svelte";
+	import DeployLog from "../lib/DeployLog.svelte";
 	import Dialog from "../lib/Dialog.svelte";
 	import Mark from "../lib/Mark.svelte";
 	import Pager, { PAGE } from "../lib/Pager.svelte";
@@ -104,7 +104,7 @@
 								<span class="muted">on {bubbleName(d.bubble)} at <span class="mono">{d.head ? d.head.slice(0, 7) : "an unknown commit"}</span></span>
 								<span class="muted small">by {by(d.by)}, {ago(d.started)}{d.finished ? `, took ${duration(d.finished - d.started)}` : ""}</span>
 							</summary>
-							<pre use:atFailure>{d.log || (d.status === "running" ? "Running…" : "(no output)")}</pre>
+							<DeployLog {repo} id={d.id} running={d.status === "running"} stored={d.log} />
 							{#if d.status === "running"}
 								<div class="again"><button class="danger" onclick={() => cancel(d.id, `${d.name} on ${bubbleName(d.bubble)}`)}>Cancel</button></div>
 							{:else if configs.some((c) => c.name === d.name)}
@@ -165,7 +165,6 @@
 	details[open] summary::before { rotate: 45deg; }
 	summary:hover { background: var(--paper); }
 	summary:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
-	pre { margin: 0; padding: 0.75rem 1rem; border-top: 1px solid var(--line); max-height: 24rem; overflow: auto; font-size: 0.8125rem; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--paper); }
 	.danger { color: var(--conflict); }
 	.again { padding: 0.6rem 1rem; border-top: 1px solid var(--line-2); }
 	.status { display: inline-flex; align-items: center; gap: 0.4rem; font-weight: 600; }
