@@ -22,6 +22,7 @@ export type Task = {
 	fork: string | null;
 	deps: string[];
 	explanation: string | null;
+	start_error?: string | null; // why its last start failed; it retries meanwhile
 	superagent: string | null;
 	created: number;
 	finished: number | null;

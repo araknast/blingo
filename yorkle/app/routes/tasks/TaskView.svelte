@@ -118,6 +118,13 @@
 			<Markdown text={t.description} />
 		</section>
 
+		{#if t.start_error && (t.status === "open" || t.status === "in-progress") && !t.fork}
+			<section class="card">
+				<h2 class="card-head">Last start failed (retrying)</h2>
+				<pre>{t.start_error}</pre>
+			</section>
+		{/if}
+
 		{#if t.explanation}
 			<section class="card">
 				<h2 class="card-head">Work done</h2>

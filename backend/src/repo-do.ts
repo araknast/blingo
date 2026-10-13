@@ -69,6 +69,7 @@ type TaskRow = TaskState & {
 	model: string | null; // a model chosen for this task alone, over the role's
 	skills: string | null; // JSON list of skill names its agent loads; NULL = all of the repository's
 	prev_fork: string | null; // retried: the failed attempt's run, whose context the next agent gets
+	start_error: string | null; // why its last start failed (cleared once one succeeds)
 };
 // A task to add: a superagent's plan item (deps by key within the batch), or one from the API.
 export type NewTask = Omit<PlanItem, "key"> & { key?: string; bubble?: string | null; role?: Role; model?: string };
@@ -145,6 +146,7 @@ export class RepoDO extends DurableObject<Env> {
 		this.addColumn("task", "model", "TEXT");
 		this.addColumn("task", "skills", "TEXT"); // JSON list of the skills its agent loads (NULL = all)
 		this.addColumn("task", "prev_fork", "TEXT"); // a retried task's failed attempt (its Box keeps the run)
+		this.addColumn("task", "start_error", "TEXT");
 		for (const [c, d] of [["kind", "TEXT NOT NULL DEFAULT 'notagent'"], ["ci", "TEXT"], ["ci_log", "TEXT"], ["review_auto", "TEXT"], ["review_manual", "TEXT"], ["review_note", "TEXT"], ["agent_pushes", "INTEGER NOT NULL DEFAULT 0"]]) {
 			this.addColumn("loose", c, d);
 		}
@@ -527,12 +529,13 @@ export class RepoDO extends DurableObject<Env> {
 					const { url: remote } = await authRemote(this.env, fork, "write", 3 * 3600);
 					const prompt = `# ${t.title}\n\n${t.description}`;
 					await this.env.BOX.getByName(fork).startAgent({ repo, fork, remote, prompt, kind: "agent", memory, skills: this.skillPack(t.skills), previous: t.prev_fork ?? undefined, ...this.agentConfig(t.role ?? "agent", t.model) });
+					this.sql.exec("UPDATE task SET start_error = NULL WHERE id = ?", t.id);
 					this.agentStarted(fork, t.title);
 				} catch (e) {
 					console.error(`starting task ${t.id}`, e);
 					const fork = this.task(t.id)?.fork;
 					if (fork) await this.env.ARTIFACTS.delete(fork).catch(() => false);
-					this.sql.exec("UPDATE task SET status = 'open', fork = NULL WHERE id = ?", t.id);
+					this.sql.exec("UPDATE task SET status = 'open', fork = NULL, start_error = ? WHERE id = ?", String(e), t.id);
 					if ((await this.ctx.storage.getAlarm()) === null) await this.ctx.storage.setAlarm(Date.now() + 30_000); // retry
 				}
 			}),
