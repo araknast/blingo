@@ -44,7 +44,7 @@ browser ──► yorkle Worker ──(service binding)──► blingo Worker �
 | `conflict(k)` | `"a|b"` bubble pairs whose merge failed; never retried (except by a ferge). When a bubble is absorbed, its pairs move to the bubble that absorbed it |
 | `locked(id)` | locked bubbles: placeable, but excluded from neighbour merges |
 | `hidden(id, since)` | lease for a bubble hidden by a running merge or ferge (see Merge loop) |
-| `loose(fork, base, head, token, expires, pushes, placing, sub, reason, kind, ci, ci_log, review_auto, review_manual, review_note, agent_pushes, closed)` | forks not placed yet (a notagent's, or with CI on an agent's): `base` = where it started, `head` = last seen, `token` = live push token id (NULL once revoked or expired), `placing`, `reason` = why it isn't placed, `closed` = a person closed a notagent before its first push (it takes no pushes; its task reads failed until opened again). CI results are for `head`: `ci` running/passed/failed and its log tail, each review pending/approved/rejected (NULL = not required) and their comments; `agent_pushes` counts an agent's attempts. Replaces `watch`/`pushed` (emptied into it on startup). Some rows have an unused `sub` column |
+| `loose(fork, base, head, token, expires, pushes, placing, sub, reason, kind, ci, ci_log, review_auto, review_manual, review_note, agent_pushes, closed)` | forks not placed yet (a notagent's, or with CI on an agent's): `base` = where it started, `head` = last seen, `token` = live push token id (NULL once revoked or expired), `placing`, `reason` = why it isn't placed, `closed` = a person closed a notagent (it takes no pushes and isn't placed; its task reads failed until opened again). CI results are for `head`: `ci` running/passed/failed and its log tail, each review pending/approved/rejected (NULL = not required) and their comments; `agent_pushes` counts an agent's attempts. Replaces `watch`/`pushed` (emptied into it on startup). Some rows have an unused `sub` column |
 | `agent_run(fork, prompt, started, status, finished, log)` | agent and superagent runs (`-s-` ids), kept after they finish |
 | `task(id, title, description, kind, status, bubble, fork, base_head, explanation, superagent, created, finished)` | tasks: a short `title` (≤ 60 chars); `kind` agent / notagent; `skills` = JSON list of the skills its agent loads (NULL = all, added in place); `status` open / in-progress / completed / failed; `bubble` = where it should start, then where it did. Listed in `rowid` (creation) order. `title` was added in place: objects from before it get the column and titles from their descriptions on startup |
 | `task_dep(task, dep)` | task dependencies |
@@ -196,11 +196,11 @@ started (`PATCH_SH`), and `place()` queues it, all forks in parallel; infra fail
 placement that fails (merge commits in its history, which `format-patch` can't carry; a ferge fix
 that no longer fits; too big) leaves the fork loose with the reason. `POST …/forks/:fork/token` mints
 a fresh push token for another try. A fork never pushed to is deleted, and its task reopened, when its
-token expires. A person can **close** a notagent that hasn't been pushed to yet (`POST …/forks/:fork/close`):
+token expires. A person can **close** a notagent that isn't being placed (`POST …/forks/:fork/close`):
 its token is revoked, so no push can arrive, and its task reads `failed`, the way a failed agent run does.
 `POST …/open` opens it again: the task is `in-progress` and it can be pushed to as before (a fresh token
-through `POST …/token`). The API reports `waiting` (no push yet), `placing`, `closed` (closed before its
-first push) and `loose` (pushed, not placed).
+through `POST …/token`). The API reports `waiting` (no push yet), `placing`, `closed` (closed by a person)
+and `loose` (pushed, not placed).
 
 **CI and review** (repo settings `ci {enabled, command, hosts}`, `review`, `maxAgentPushes`;
 `src/settings.ts` `gate`). With CI on, every new head of a loose fork runs CI: the command runs in its

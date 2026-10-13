@@ -356,7 +356,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
 		return Response.json(r, { status: "error" in r ? 400 : 200 });
 	}
 	// A loose (pushed, unplaced) fork: ask for its placement, get a new push token, review it, or close a
-	// notagent that hasn't been pushed to yet (and open it again).
+	// notagent that isn't being placed (and open it again).
 	if (request.method === "POST" && a === "repos" && b && c === "forks" && d?.startsWith(`${b}-f-`) && (e === "place" || e === "token" || e === "review" || e === "close" || e === "open")) {
 		const repo = env.REPO.getByName(b);
 		let r: { error: string } | object;

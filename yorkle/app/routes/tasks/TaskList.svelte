@@ -36,7 +36,7 @@
 	} = $props();
 
 	const isClosed = (t: Task) => !!t.fork && data.closed.includes(t.fork);
-	const waitingForPush = (t: Task) => t.kind === "notagent" && t.status === "in-progress" && !!t.fork && data.waiting.includes(t.fork);
+	const closable = (t: Task) => t.kind === "notagent" && t.status === "in-progress" && !!t.fork && !data.placing.includes(t.fork);
 
 	const tab = $derived(new URLSearchParams(route.search).get("state") === "completed" ? "completed" : "open");
 	const byId = $derived(new Map(data.tasks.map((t) => [t.id, t])));
@@ -197,7 +197,7 @@
 						{:else if t.status === "failed"}
 							<button onclick={() => onretry(t.id)}>Retry</button>
 							<button class="quiet danger" onclick={() => ondelete(t.id)}>Delete</button>
-						{:else if waitingForPush(t)}
+						{:else if closable(t)}
 							<button onclick={() => onclose(t.id)}>Close</button>
 						{/if}
 					</div>

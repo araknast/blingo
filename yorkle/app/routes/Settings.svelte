@@ -174,7 +174,7 @@
 							<input
 								id="api-key"
 								type="password"
-								autocomplete="off"
+								autocomplete="new-password"
 								bind:value={apiKey}
 								aria-describedby="api-key-hint"
 								placeholder={dropKey ? "Removed when you save" : form.hasKey ? `${keyFor ? `${PROVIDER[keyFor]} key` : "A key"} is set. Type a new one to replace it` : "Required: agents don't start without one"}
@@ -245,7 +245,7 @@
 								<input
 									id="reviewer-key"
 									type="password"
-									autocomplete="off"
+									autocomplete="new-password"
 									bind:value={reviewerKey}
 									aria-describedby="reviewer-hint"
 									placeholder={dropReviewerKey ? "Removed when you save" : form.hasReviewerKey ? "A key is set. Type a new one to replace it" : form.provider === "claude-subscription" ? "Required: a subscription token can't review" : "Defaults to the repository's key"}
@@ -307,7 +307,7 @@
 									<div class="cred">
 										<input aria-label="{label}, header {j + 1}: host" class="mono" bind:value={a.host} placeholder="api.cloudflare.com" />
 										<input aria-label="{label}, header {j + 1}: name" class="mono" bind:value={a.header} placeholder="Authorization" />
-										<input aria-label="{label}, header {j + 1}: value" type="password" autocomplete="off" bind:value={a.value} placeholder={a.hasValue ? "Set. Type to replace" : "Value"} />
+										<input aria-label="{label}, header {j + 1}: value" type="password" autocomplete="new-password" bind:value={a.value} placeholder={a.hasValue ? "Set. Type to replace" : "Value"} />
 										<button type="button" aria-label="Remove {label}'s header {j + 1}" onclick={() => d.auth.splice(j, 1)}>Remove</button>
 									</div>
 								{/each}

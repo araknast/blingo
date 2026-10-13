@@ -453,14 +453,14 @@ export class RepoDO extends DurableObject<Env> {
 		return (await this.env.BOX.getByName(t.fork).stopAgent()) ? { ok: true } : { error: "its agent isn't running" };
 	}
 
-	// A person closes a notagent that hasn't been pushed to yet: it stops taking pushes (its token is
-	// revoked, so nothing can arrive) and its task reads failed, like an agent run that failed. The fork
+	// A person closes a notagent that isn't being placed: it stops taking pushes (its token is revoked, so
+	// nothing can arrive), isn't placed, and its task reads failed, like an agent run that failed. The fork
 	// is kept, so opening it again puts the task back to in-progress and it can be pushed to as before.
 	async closeFork(fork: string): Promise<{ ok: true } | { error: string }> {
 		const l = this.loose(fork);
 		if (l?.kind !== "notagent") return { error: "that fork isn't a notagent's" };
 		if (l.closed) return { error: "it is already closed" };
-		if (l.pushes) return { error: "it has already been pushed to" };
+		if (l.placing) return { error: "it is being placed" };
 		this.sql.exec("UPDATE loose SET closed = 1 WHERE fork = ?", fork);
 		await this.revokePushToken(fork, l.token);
 		this.sql.exec("UPDATE task SET status = 'failed', finished = ? WHERE fork = ? AND status = 'in-progress'", Date.now(), fork);
@@ -1204,6 +1204,7 @@ export class RepoDO extends DurableObject<Env> {
 		const l = this.loose(fork);
 		if (!l) return { error: "no such loose fork" };
 		if (l.placing) return { error: "it is already being placed" };
+		if (l.closed) return { error: "it is closed: open it first" };
 		if (!l.pushes) return { error: "nothing has been pushed to it yet" };
 		if (gate(this.settings(), ciState(l)) !== "passed") return { error: "it hasn't passed CI" };
 		if (this.approvalNeeded(fork)) {
@@ -1226,6 +1227,7 @@ export class RepoDO extends DurableObject<Env> {
 
 	private async startPlacing(fork: string) {
 		const l = this.loose(fork);
+		if (l?.closed) return;
 		this.sql.exec("UPDATE loose SET placing = 1 WHERE fork = ?", fork);
 		await this.revokePushToken(fork, l?.token ?? null);
 		await this.kick();

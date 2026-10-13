@@ -113,18 +113,25 @@ try {
 	const ids = (await state(R)).tasks.map((t) => t.id);
 	check(ids.join() === [sk.task, n1.task, n2.task, h.task, free.task].join(), "list keeps creation order");
 
-	// push to n1 → it is pushed; placement needs containers, so it stops at "placing" here
+	// push to n1 with auto-placement off → it is loose, and a pushed fork that isn't being placed can
+	// still be closed (and isn't placed while closed); placement needs containers, so it stops at "placing" here
+	check((await call("PUT", `/repos/${R}/settings`, { autoPlaceNotagents: false, taskApproval: false })).status === 200, "settings: auto-placement off");
 	const d = join(mkdtempSync(join(tmpdir(), "smoke-")), "c");
 	execSync(n1.clone.slice(0, -n1.fork.length) + d, { stdio: "ignore" });
 	writeFileSync(join(d, "hello.txt"), "hi\n");
 	execSync(`git add -A && git -c user.name=t -c user.email=t@t commit -qm "Add hello.txt" && ${n1.push}`, { cwd: d, stdio: "ignore" });
-	let placing = false;
-	for (let i = 0; i < 10 && !placing; i++) {
+	let pushed = false;
+	for (let i = 0; i < 10 && !pushed; i++) {
 		await new Promise((r) => setTimeout(r, 2000));
-		placing = (await state(R)).placing.includes(n1.fork);
+		pushed = (await state(R)).loose.some((l) => l.fork === n1.fork);
 	}
-	check(placing, "push detected (placing; placement itself needs containers)");
-	check((await call("POST", `/repos/${R}/forks/${n1.fork}/close`)).status === 409, "notagent: close a pushed fork → 409");
+	check(pushed, "push detected (loose)");
+	check((await call("POST", `/repos/${R}/forks/${n1.fork}/close`)).status === 202, "notagent: close a pushed fork");
+	check((await call("POST", `/repos/${R}/forks/${n1.fork}/place`)).status === 409, "notagent: no placing a closed fork → 409");
+	check((await call("POST", `/repos/${R}/forks/${n1.fork}/open`)).status === 202, "notagent: open the pushed fork again");
+	check((await call("POST", `/repos/${R}/forks/${n1.fork}/place`)).status === 202, "notagent: ask to place it");
+	check((await state(R)).placing.includes(n1.fork), "placing (placement itself needs containers)");
+	check((await call("POST", `/repos/${R}/forks/${n1.fork}/close`)).status === 409, "notagent: close a fork being placed → 409");
 } finally {
 	console.log("cleanup:", (await call("DELETE", `/repos/${R}`)).deleted?.length, "repos deleted");
 	console.log(fails.length ? `FAILURES (${fails.length}):\n- ${fails.join("\n- ")}` : "ALL PASSED");

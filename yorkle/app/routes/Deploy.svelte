@@ -20,6 +20,8 @@
 	const runs = $derived(rd.data?.deploys ?? []);
 	const configs = $derived(rd.data?.settings.deploys ?? []);
 	const bubbles = $derived(rd.data?.bubbles ?? []);
+	// Which runs the reader opened or closed, so a re-render doesn't reset them to the default.
+	let opened = $state<Record<string, boolean>>({});
 	let page = $state(0);
 	const shown = $derived(runs.slice(Math.min(page, Math.max(0, Math.ceil(runs.length / PAGE) - 1)) * PAGE).slice(0, PAGE));
 	const bubbleName = (id: string) => bubbles.find((b) => b.id === id)?.name || short(id);
@@ -97,7 +99,7 @@
 			<ul class="runs">
 				{#each shown as d (d.id)}
 					<li>
-						<details open={d.status === "running" || (d.status === "failed" && d === runs.find((x) => x.name === d.name))}>
+						<details open={opened[d.id] ?? (d.status === "running" || (d.status === "failed" && d === runs.find((x) => x.name === d.name)))} ontoggle={(e) => (opened[d.id] = e.currentTarget.open)}>
 							<summary>
 								<span class="status {d.status}"><Mark status={mark[d.status]} />{label[d.status]}</span>
 								<span class="mono">{d.name}</span>

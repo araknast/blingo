@@ -34,9 +34,9 @@
 	const blocks = $derived(data.tasks.filter((x) => x.deps.includes(t.id)));
 	const run = $derived(t.fork ? data.agents.find((a) => a.fork === t.fork) : undefined);
 	const plan = $derived(t.superagent ? data.agents.find((a) => a.fork === t.superagent) : undefined);
-	// A notagent a person closed before its first push: its task reads failed, and opening it again resumes it.
+	// A notagent a person closed: its task reads failed, and opening it again resumes it.
 	const closed = $derived(!!t.fork && data.closed.includes(t.fork));
-	const waitingForPush = $derived(t.kind === "notagent" && t.status === "in-progress" && !!t.fork && data.waiting.includes(t.fork));
+	const closable = $derived(t.kind === "notagent" && t.status === "in-progress" && !!t.fork && !data.placing.includes(t.fork));
 	const bubbleName = (id: string) => data.bubbles.find((b) => b.id === id)?.name || short(id);
 	const forkHref = $derived(t.fork ? (run ? links.run(t.fork) : links.fork(t.fork)) : undefined);
 	const statusText = $derived(
@@ -190,7 +190,7 @@
 		{:else if t.status === "failed"}
 			<button class="primary wide" onclick={() => act("retry", "Task reopened. A new agent starts on it")}>Retry</button>
 			<button class="danger wide" onclick={remove}>Delete</button>
-		{:else if waitingForPush}
+		{:else if closable}
 			<button class="primary wide" onclick={() => actFork("close", "Notagent closed")}>Close its notagent</button>
 		{/if}
 

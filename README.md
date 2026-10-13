@@ -105,7 +105,7 @@ created before users existed have no owner, so only the admin can reach them. An
 | `POST /repos/:repo/forks/:fork/place` | Place a loose notagent fork |
 | `POST /repos/:repo/forks/:fork/token` | A fresh 1-hour push token for a notagent's loose fork |
 | `POST /repos/:repo/forks/:fork/review {approve, comment?}` | A manual review of a loose fork waiting for one |
-| `POST /repos/:repo/forks/:fork/close` / `…/open` | Close a notagent that hasn't been pushed to yet (it takes no more pushes and its task reads failed); open it again (the task is in-progress) |
+| `POST /repos/:repo/forks/:fork/close` / `…/open` | Close a notagent that isn't being placed (it takes no more pushes, isn't placed, and its task reads failed); open it again (the task is in-progress) |
 | `GET /repos/:repo/:fork` | Kept diff of a merged fork |
 | `GET /repos/:repo/:fork?path=…` | A file as that fork sees it |
 | `DELETE /repos/:repo` | Delete the repository's git repos and all its records |
