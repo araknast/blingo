@@ -59,7 +59,7 @@ export const firstLine =(s: string) => s.split("\n", 1)[0];
 
 // Agent run status → what the UI calls it.
 export const agentLabel = (status: string) =>
-	({ running: "Working", ferging: "Resolving conflicts", placed: "Placed", loose: "Waiting for CI", planned: "Tasks added", failed: "Failed", lost: "Failed: sandbox lost", waiting: "Waiting for a push", pushed: "Pushed", placing: "Finding a bubble" })[status] ?? status;
+	({ running: "Working", ferging: "Resolving conflicts", placed: "Placed", loose: "Waiting for CI", planned: "Tasks added", failed: "Failed", lost: "Failed: sandbox lost", waiting: "Waiting for a push", pushed: "Pushed", placing: "Finding a bubble", rejected: "Rejected" })[status] ?? status;
 
 // Notagent tasks that got a fork, as runs beside the agents' (a fork an agent ran on keeps that run).
 export function notagentRuns(d: RepoState): AgentRun[] {

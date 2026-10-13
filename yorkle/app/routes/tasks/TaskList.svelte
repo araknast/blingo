@@ -193,6 +193,7 @@
 							<button class="quiet danger" onclick={() => onreject(t.id)}>Reject</button>
 						{:else if isClosed(t)}
 							<button onclick={() => onopen(t.id)}>Open</button>
+							<button class="quiet danger" onclick={() => ondelete(t.id)}>Delete</button>
 						{:else if t.status === "failed"}
 							<button onclick={() => onretry(t.id)}>Retry</button>
 							<button class="quiet danger" onclick={() => ondelete(t.id)}>Delete</button>

@@ -186,6 +186,7 @@
 			<div class="row"><button class="grow" onclick={startEdit}>Edit</button><button class="grow danger" onclick={reject}>Reject</button></div>
 		{:else if closed}
 			<button class="primary wide" onclick={() => actFork("open", "Notagent opened")}>Open its notagent</button>
+			<button class="danger wide" onclick={remove}>Delete</button>
 		{:else if t.status === "failed"}
 			<button class="primary wide" onclick={() => act("retry", "Task reopened. A new agent starts on it")}>Retry</button>
 			<button class="danger wide" onclick={remove}>Delete</button>

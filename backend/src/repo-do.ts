@@ -162,6 +162,8 @@ export class RepoDO extends DurableObject<Env> {
 			SELECT w.fork, w.base, w.base, w.token, w.expires, p.fork IS NOT NULL, p.fork IS NOT NULL FROM watch w LEFT JOIN pushed p ON p.fork = w.fork;
 			DELETE FROM watch; DELETE FROM pushed;`);
 		// A fresh instance means any merge or ferge that hid bubbles died with the old one.
+		// Agent runs left reading "loose" after their fork was placed or rejected (from before either updated them).
+		this.sql.exec("UPDATE agent_run SET status = CASE WHEN fork IN (SELECT name FROM fork) THEN 'placed' ELSE 'rejected' END WHERE status = 'loose' AND fork NOT IN (SELECT fork FROM loose)");
 		if (this.recoverHidden(true)) void ctx.blockConcurrencyWhile(() => this.kick());
 		// ...and so did any task start (schedule, takeTask) still between marking it in-progress and its
 		// agent run (or loose fork) being recorded: back to open, to start again.
@@ -312,6 +314,7 @@ export class RepoDO extends DurableObject<Env> {
 		);
 		// Placed: no longer loose, in the same step its task completes (no window where it is both).
 		this.sql.exec("DELETE FROM loose WHERE fork = ?", fork);
+		this.sql.exec("UPDATE agent_run SET status = 'placed' WHERE fork = ? AND status = 'loose'", fork);
 		// The series carries the fork's work now; its repo is only kept as a new bubble's rep.
 		if (target !== "new") await this.env.ARTIFACTS.delete(fork).catch(() => false);
 		await this.kick(); // applies the series; also schedules tasks this unblocks, once their deps land
@@ -392,6 +395,7 @@ export class RepoDO extends DurableObject<Env> {
 		if (n) return { error: `${n === 1 ? "a task depends" : `${n} tasks depend`} on it: reject ${n === 1 ? "that one" : "those"} first` };
 		if (t.fork) {
 			this.sql.exec("DELETE FROM loose WHERE fork = ?", t.fork);
+			this.sql.exec("UPDATE agent_run SET status = 'rejected' WHERE fork = ? AND status = 'loose'", t.fork);
 			this.sql.exec("DELETE FROM basis WHERE fork = ?", t.fork);
 			await this.env.ARTIFACTS.delete(t.fork).catch(() => false);
 		}
