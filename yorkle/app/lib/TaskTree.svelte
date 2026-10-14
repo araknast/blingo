@@ -1,6 +1,7 @@
 <script lang="ts">
 	// A drawer on the map's left edge: the repo's tasks as a tree of what waits on what, all of them unless
-	// a chip hides completed, in-progress or cancelled ones. Its open state is remembered per browser.
+	// a chip hides ready-to-take, in-progress, completed or cancelled ones. Its open state is remembered per
+	// browser.
 	import Mark from "./Mark.svelte";
 	import TaskIcon from "./TaskIcon.svelte";
 	import { taskTree, type TaskNode } from "./taskTree";
@@ -15,14 +16,20 @@
 		try { localStorage.setItem(KEY, open ? "1" : "0"); } catch {}
 	}
 	// Cancelled: a notagent a person closed (its task reads failed). Rejected tasks are deleted.
-	type Kind = "completed" | "in-progress" | "cancelled";
+	// Ready to take: an open notagent whose deps have landed, as the task list groups it.
+	type Kind = "completed" | "in-progress" | "cancelled" | "ready";
 	const KINDS: { id: Kind; label: string; glyph: string }[] = [
-		{ id: "completed", label: "Completed", glyph: "merged" },
+		{ id: "ready", label: "Ready to take", glyph: "pending" },
 		{ id: "in-progress", label: "In progress", glyph: "running" },
+		{ id: "completed", label: "Completed", glyph: "merged" },
 		{ id: "cancelled", label: "Cancelled", glyph: "failed" },
 	];
-	let shown = $state<Record<Kind, boolean>>({ completed: true, "in-progress": true, cancelled: true });
-	const kindOf = (t: Task): Kind | null => (t.fork && data?.closed.includes(t.fork) ? "cancelled" : t.status === "completed" || t.status === "in-progress" ? t.status : null);
+	let shown = $state<Record<Kind, boolean>>({ completed: true, "in-progress": true, cancelled: true, ready: true });
+	const kindOf = (t: Task): Kind | null =>
+		t.fork && data?.closed.includes(t.fork) ? "cancelled"
+		: t.status === "completed" || t.status === "in-progress" ? t.status
+		: t.status === "open" && t.ready && t.kind === "notagent" ? "ready"
+		: null;
 	const tasks = $derived(data?.tasks.filter((t) => { const k = kindOf(t); return !k || shown[k]; }) ?? []);
 	const tree = $derived(taskTree(tasks));
 </script>
@@ -57,9 +64,12 @@
 {#snippet nodes(ns: TaskNode[])}
 	{#each ns as n (n.task.id)}
 		<li>
-			<a href={href(n.task.id)} title={n.task.title} aria-current={n.task.id === current ? "page" : undefined} class:done={!!kindOf(n.task) && kindOf(n.task) !== "in-progress"}>
+			<a href={href(n.task.id)} title={n.task.title} aria-current={n.task.id === current ? "page" : undefined} class:done={kindOf(n.task) === "completed" || kindOf(n.task) === "cancelled"}>
 				<TaskIcon status={n.task.status} />
-				<span class="t">{n.task.title}</span>
+				<span class="body">
+					<span class="t">{n.task.title}</span>
+					{#if kindOf(n.task) === "ready"}<span class="badge">Ready to take</span>{/if}
+				</span>
 				{#if n.also}<span class="also" title="Also waits for {n.also} more">+{n.also}</span>{/if}
 			</a>
 			{#if n.children.length}<ul>{@render nodes(n.children)}</ul>{/if}
@@ -121,7 +131,7 @@
 	.top a:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
 	.top a path { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 	/* Toggles, all on by default: on reads as a plain chip, off fades to a dashed outline. */
-	.chips { gap: 0.3rem; }
+	.chips { display: grid; grid-template-columns: 1fr 1fr; gap: 0.3rem; }
 	.chips button { padding: 0.15rem 0.55rem 0.15rem 0.4rem; font-size: 0.75rem; gap: 0.3rem; }
 	.chips button[aria-pressed="true"] { background: var(--raised); border-color: var(--line); color: var(--ink); }
 	.chips button[aria-pressed="true"]:hover { border-color: var(--ink-3); }
@@ -156,6 +166,8 @@
 	li a:hover { background: var(--paper); color: var(--ink); }
 	li a[aria-current="page"] { background: var(--raised); color: var(--ink); font-weight: 600; box-shadow: 0 1px 2px rgb(15 24 33 / 0.08), 0 0 0 1px var(--line-2); }
 	li a:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
-	.t { flex: 1; min-width: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
+	.body { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 0.2rem; }
+	.body .badge { font-weight: 500; }
+	.t { max-width: 100%; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
 	.also { flex: none; margin-top: 0.1rem; padding: 0 0.35rem; border: 1px solid var(--line); border-radius: 999px; font-size: 0.6875rem; line-height: 1rem; color: var(--ink-3); font-variant-numeric: tabular-nums; }
 </style>
