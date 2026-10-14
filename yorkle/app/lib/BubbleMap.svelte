@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { forceCollide, forceLink, forceManyBody, forceSimulation, forceX, forceY, type SimulationNodeDatum } from "d3-force";
-	import { onDestroy, untrack } from "svelte";
+	import { onDestroy, untrack, type Snippet } from "svelte";
 	import { fade } from "svelte/transition";
 	import { autoResolves, docked, needs, resolving, type Docked, type Need } from "./attention";
 	import Glyph from "./Glyph.svelte";
@@ -20,6 +20,7 @@
 		oncontext,
 		stale = false,
 		demo = false,
+		controls,
 	}: {
 		data: RepoState | null;
 		hrefFor?: (bubble: string, rest?: string) => string;
@@ -31,6 +32,8 @@
 		oncontext?: (at: { x: number; y: number; bubble: string | null }) => void;
 		stale?: boolean;
 		demo?: boolean;
+		// Rendered first in the top bar: the repository page's view toggle.
+		controls?: Snippet;
 	} = $props();
 
 	type Node = SimulationNodeDatum & { id: string; r: number; b: Bubble; members: Member[]; files: number; film: number };
@@ -638,6 +641,7 @@
 		<p class="visually-hidden" aria-live="polite">{announce}</p>
 
 		<div class="bar" bind:offsetHeight={barH}>
+			{@render controls?.()}
 			<div class="zoom" role="group" aria-label="Zoom">
 				<button aria-label="Zoom out" title="Zoom out (−)" onclick={() => zoomBy(0.8)}>
 					<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6h8" /></svg>

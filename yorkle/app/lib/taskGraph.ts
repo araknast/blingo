@@ -1,6 +1,27 @@
 import type { Task } from "./types";
 
-export const NODE_W = 208, NODE_H = 60, GAP_X = 20, GAP_Y = 56;
+export const NODE_W = 220, NODE_H = 66, GAP_X = 24, GAP_Y = 60;
+
+// Every task is exactly one of these, in lifecycle order. Waiting: open, its deps not landed yet. Ready to
+// take: an open notagent whose deps have landed. In progress includes an open agent task about to start.
+// Cancelled: a notagent a person closed (its task reads failed). Rejected tasks are deleted.
+export const KINDS = [
+	{ id: "approval", label: "Awaiting approval", glyph: "approval" },
+	{ id: "waiting", label: "Waiting", glyph: "waiting" },
+	{ id: "ready", label: "Ready to take", glyph: "pending" },
+	{ id: "in-progress", label: "In progress", glyph: "running" },
+	{ id: "completed", label: "Completed", glyph: "merged" },
+	{ id: "failed", label: "Failed", glyph: "failed" },
+	{ id: "cancelled", label: "Cancelled", glyph: "failed" },
+] as const;
+export type Kind = (typeof KINDS)[number]["id"];
+
+export function kindOf(t: Task, closed: string[]): Kind {
+	if (t.fork && closed.includes(t.fork)) return "cancelled";
+	if (t.status === "awaiting-approval") return "approval";
+	if (t.status !== "open") return t.status;
+	return !t.ready ? "waiting" : t.kind === "notagent" ? "ready" : "in-progress";
+}
 
 export type GraphNode = { task: Task; x: number; y: number; hidden: number };
 export type GraphEdge = { from: string; to: string };

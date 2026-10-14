@@ -27,6 +27,13 @@
 	const refresh = repoData.refresh;
 	const bubbleName = (id: string) => data?.bubbles.find((b) => b.id === id)?.name || short(id);
 	let map = $state<ReturnType<typeof BubbleMap>>();
+	// The stage shows the bubble map or the task graph; the choice is remembered per browser.
+	const VIEW = "yorkle.mapView";
+	let view = $state<"bubbles" | "tasks">((() => { try { return localStorage.getItem(VIEW) === "tasks" ? "tasks" : "bubbles"; } catch { return "bubbles"; } })());
+	function show(v: "bubbles" | "tasks") {
+		view = v;
+		try { localStorage.setItem(VIEW, v); } catch {}
+	}
 
 	// ---- Drawer: a run, a fork or a task opens beside the map (?d=run:<fork>, fork:<fork>, task:<id>) ----
 	const drawer = $derived.by(() => {
@@ -177,6 +184,17 @@
 
 <svelte:window onkeydown={drawerKeys} />
 
+{#snippet viewToggle()}
+	<div class="views" role="group" aria-label="View">
+		<button aria-pressed={view === "bubbles"} onclick={() => show("bubbles")}>
+			<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><circle cx="5" cy="8.5" r="3.5" /><circle cx="10.5" cy="4.5" r="2.5" /></svg>Bubbles
+		</button>
+		<button aria-pressed={view === "tasks"} onclick={() => show("tasks")}>
+			<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="1.5" width="5" height="3.5" rx="1" /><rect x="7.5" y="9" width="5" height="3.5" rx="1" /><path d="M4 5v2.5c0 1 .5 1.5 1.5 1.5h2" /></svg>Tasks
+		</button>
+	</div>
+{/snippet}
+
 <Shell
 	crumbs={[{ label: "Repositories", href: "/repos" }, { label: repoName(repo, session.me?.names) }]}
 	{repo}
@@ -189,21 +207,24 @@
 			<p>It doesn't exist, or it belongs to someone else. <a href="/repos">Go to your repositories</a>.</p>
 		</div>
 	{:else}
-		<section class="stage" class:drawn={!!drawer} aria-label="Bubble map">
-			<BubbleMap
-				bind:this={map}
-				{data}
-				stale={repoData.stale}
-				taskHref={(id) => open("task", id)}
-				pageHref={(tab) => `/repos/${repo}/${tab}`}
-				hrefFor={(id, rest = "") => bubbleBase(id) + (rest ? `/${rest}` : "")}
-				agentHref={(fork) => open("run", fork)}
-				looseHref={(fork) => open("fork", fork)}
-				onconflict={askFerge}
-				oncontext={(at) => (menu = at)}
-			>
-			</BubbleMap>
-			<TaskGraph {data} href={(id) => open("task", id)} allHref="/repos/{repo}/tasks" current={drawer?.kind === "task" ? drawer.id : undefined} />
+		<section class="stage" class:drawn={!!drawer} aria-label={view === "tasks" ? "Task graph" : "Bubble map"}>
+			{#if view === "tasks"}
+				<TaskGraph {data} href={(id) => open("task", id)} current={drawer?.kind === "task" ? drawer.id : undefined} controls={viewToggle} />
+			{:else}
+				<BubbleMap
+					bind:this={map}
+					{data}
+					stale={repoData.stale}
+					taskHref={(id) => open("task", id)}
+					pageHref={(tab) => `/repos/${repo}/${tab}`}
+					hrefFor={(id, rest = "") => bubbleBase(id) + (rest ? `/${rest}` : "")}
+					agentHref={(fork) => open("run", fork)}
+					looseHref={(fork) => open("fork", fork)}
+					onconflict={askFerge}
+					oncontext={(at) => (menu = at)}
+					controls={viewToggle}
+				/>
+			{/if}
 			{#if drawer}
 				<aside class="drawer" bind:this={drawerEl} aria-label="Details">
 					<header class="drawer-bar">
@@ -360,6 +381,12 @@
 	.files-head { font-size: 0.875rem; font-weight: 600; margin-bottom: 0.35rem; }
 	.files { list-style: none; margin: 0 0 1.25rem; padding: 0.5rem 0.75rem; display: grid; gap: 0.15rem; background: var(--fog); border-radius: var(--r-sm); }
 	.files code { font-size: 0.8125rem; overflow-wrap: anywhere; }
+	/* The view toggle, first in the stage's top bar: a segmented control. */
+	.views { pointer-events: auto; display: flex; padding: 2px; gap: 2px; background: var(--raised); border: 1px solid var(--line); border-radius: var(--r-sm); box-shadow: 0 2px 8px rgb(15 24 33 / 0.06); }
+	.views button { gap: 0.35rem; padding: 0.2rem 0.6rem 0.2rem 0.5rem; border: 0; background: none; font-size: 0.875rem; color: var(--ink-2); }
+	.views button:hover { color: var(--ink); background: var(--fog); }
+	.views button[aria-pressed="true"] { background: var(--harbor); color: var(--on-harbor); }
+	.views svg * { fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; }
 	.missing { padding: 2rem clamp(1rem, 3vw, 2.5rem); }
 	.missing p { margin-top: 0.75rem; color: var(--ink-2); }
 	@media (max-width: 900px) {
