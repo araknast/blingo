@@ -1,9 +1,9 @@
 <script lang="ts">
-	// A drawer on the map's left edge: the open tasks as a tree of what waits on what. Its open state
-	// is remembered per browser.
+	// A drawer on the map's left edge: the repo's tasks as a tree of what waits on what, all of them unless
+	// a chip hides completed, in-progress or cancelled ones. Its open state is remembered per browser.
 	import TaskIcon from "./TaskIcon.svelte";
 	import { taskTree, type TaskNode } from "./taskTree";
-	import type { RepoState } from "./types";
+	import type { RepoState, Task } from "./types";
 
 	let { data, href, allHref, current }: { data: RepoState | null; href: (id: string) => string; allHref: string; current?: string } = $props();
 
@@ -13,21 +13,37 @@
 		open = !open;
 		try { localStorage.setItem(KEY, open ? "1" : "0"); } catch {}
 	}
-	const tree = $derived(data ? taskTree(data.tasks) : []);
-	const count = $derived(data?.tasks.filter((t) => t.status !== "completed").length ?? 0);
+	// Cancelled: a notagent a person closed (its task reads failed). Rejected tasks are deleted.
+	type Kind = "completed" | "in-progress" | "cancelled";
+	const KINDS: { id: Kind; label: string }[] = [
+		{ id: "completed", label: "Completed" },
+		{ id: "in-progress", label: "In progress" },
+		{ id: "cancelled", label: "Cancelled" },
+	];
+	let shown = $state<Record<Kind, boolean>>({ completed: true, "in-progress": true, cancelled: true });
+	const kindOf = (t: Task): Kind | null => (t.fork && data?.closed.includes(t.fork) ? "cancelled" : t.status === "completed" || t.status === "in-progress" ? t.status : null);
+	const tasks = $derived(data?.tasks.filter((t) => { const k = kindOf(t); return !k || shown[k]; }) ?? []);
+	const tree = $derived(taskTree(tasks));
 </script>
 
 <div class="tree-drawer" class:open>
 	<button class="handle" onclick={toggle} aria-expanded={open} aria-controls="task-tree">
 		<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.5 2.5L8 6l-3.5 3.5" /></svg>
-		Tasks <span class="n">{count}</span>
+		Tasks <span class="n">{tasks.length}</span>
 	</button>
 	<nav id="task-tree" class="panel" aria-label="Task tree" inert={!open}>
-		<header><a href={allHref}>All tasks</a></header>
+		<header>
+			<a href={allHref}>All tasks</a>
+			<div class="chips" role="group" aria-label="Show">
+				{#each KINDS as k (k.id)}
+					<button aria-pressed={shown[k.id]} onclick={() => (shown[k.id] = !shown[k.id])}>{k.label}</button>
+				{/each}
+			</div>
+		</header>
 		{#if !data}
 			<p class="muted">Loading…</p>
 		{:else if !tree.length}
-			<p class="muted">No open tasks.</p>
+			<p class="muted">{data.tasks.length ? "Every task is hidden." : "No tasks yet."}</p>
 		{:else}
 			<ul>{@render nodes(tree)}</ul>
 		{/if}
@@ -95,6 +111,7 @@
 	}
 	.open .panel { visibility: visible; transition: none; }
 	header { padding: 0.75rem 1rem; border-bottom: 1px solid var(--line-2); background: var(--paper); font-size: 0.875rem; font-weight: 600; }
+	.chips { margin-top: 0.5rem; font-weight: 500; }
 	header a { color: var(--ink); text-decoration: none; }
 	header a:hover { text-decoration: underline; }
 	.muted { padding: 1rem; }
