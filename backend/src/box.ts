@@ -18,6 +18,17 @@ const TASK = "/workspace/task";
 const CHECK_MS = 30_000;
 const CI_CHECK_MS = 10_000;
 
+// Claude Code with the agent args below. `claude --print` stays up after its result while a process the
+// agent started (a dev server, say) lives on, so once the result is out it's stopped; the run's outcome
+// is then the result's.
+const CLAUDE_SH = `claude --print --dangerously-skip-permissions --no-session-persistence --output-format stream-json --verbose --settings "$4" --model "$MODEL" --append-system-prompt "$3" -- "$2" >${TASK}/transcript.jsonl &
+c=$!
+while kill -0 $c 2>/dev/null; do
+	if tail -n 1 ${TASK}/transcript.jsonl | grep -q '"type":"result"'; then sleep 5; kill $c 2>/dev/null || true; break; fi
+	sleep 2
+done
+wait $c || tail -n 1 ${TASK}/transcript.jsonl | grep -q '"is_error":false'`;
+
 // $1 remote, $2 prompt, $3 system prompt (memory items + how to leave notes), $4 Claude Code settings
 // (the memory hook). Runs Claude Code on a clone, its whole run as stream-json in $TASK/transcript.jsonl,
 // then commits. The Box pushes it to its own fork afterwards with a fresh token (a run can outlive the
@@ -26,14 +37,14 @@ const CI_CHECK_MS = 10_000;
 const AGENT_SH = `set -e
 rm -rf /workspace/repo; git clone -q --single-branch "$1" /workspace/repo; cd /workspace/repo
 git rev-parse -q --verify HEAD >${TASK}/base || true
-claude --print --dangerously-skip-permissions --no-session-persistence --output-format stream-json --verbose --settings "$4" --model "$MODEL" --append-system-prompt "$3" -- "$2" >${TASK}/transcript.jsonl
+${CLAUDE_SH}
 git add -A
 git commit -q --no-verify -m "$2" || true`;
 
 // Superagent: same args, but a read-only clone and nothing is pushed; its plan is $TASK/tasks.json.
 const SUPER_SH = `set -e
 rm -rf /workspace/repo; git clone -q --single-branch "$1" /workspace/repo; cd /workspace/repo
-claude --print --dangerously-skip-permissions --no-session-persistence --output-format stream-json --verbose --settings "$4" --model "$MODEL" --append-system-prompt "$3" -- "$2" >${TASK}/transcript.jsonl`;
+${CLAUDE_SH}`;
 
 // CI: $1 fork remote (read), $2 the commit to check, $3 the repository's CI command. Exit = its exit.
 const CI_SH = `set -e
