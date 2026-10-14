@@ -98,7 +98,7 @@
 			</div>
 			<table>
 				<thead>
-					<tr><th>Name</th><th>Bubbles!</th><th>Agents working</th><th>Conflicts</th><th>Created</th></tr>
+					<tr><th>Name</th><th>Bubbles</th><th>Agents working</th><th>Conflicts</th><th>Created</th></tr>
 				</thead>
 				<tbody>
 					{#each visible as r (r)}

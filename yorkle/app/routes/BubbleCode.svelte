@@ -45,7 +45,7 @@
 	crumbs={[
 		{ label: "Repositories", href: "/repos" },
 		{ label: repoName(repo, session.me?.names), href: `/repos/${repo}` },
-		{ label: "Bubbles!", href: `/repos/${repo}/bubbles` },
+		{ label: "Bubbles", href: `/repos/${repo}/bubbles` },
 		{ label: b?.name || `${loose ? "Fork" : "Bubble"} ${short(bubble)}`, href: base },
 	]}
 	{repo}

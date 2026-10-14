@@ -187,7 +187,7 @@
 {#snippet viewToggle()}
 	<div class="views" role="group" aria-label="View">
 		<button aria-pressed={view === "bubbles"} onclick={() => show("bubbles")}>
-			<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><circle cx="5" cy="8.5" r="3.5" /><circle cx="10.5" cy="4.5" r="2.5" /></svg>Bubbles!
+			<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><circle cx="5" cy="8.5" r="3.5" /><circle cx="10.5" cy="4.5" r="2.5" /></svg>Bubbles
 		</button>
 		<button aria-pressed={view === "tasks"} onclick={() => show("tasks")}>
 			<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="1.5" width="5" height="3.5" rx="1" /><rect x="7.5" y="9" width="5" height="3.5" rx="1" /><path d="M4 5v2.5c0 1 .5 1.5 1.5 1.5h2" /></svg>Tasks
