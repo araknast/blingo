@@ -40,7 +40,7 @@
 		const under = (s: string) => p === `${base}/${s}` || p.startsWith(`${base}/${s}/`);
 		const tab = (id: Tab | "skills", label: string, active = under(id)) => ({ label, href: `${base}/${id}`, active, need: counts.need[id as Tab] ?? 0, info: counts.info[id] ?? 0 });
 		return [
-			tab("bubbles", "Bubbles", under("bubbles") || under("b")),
+			tab("bubbles", "Bubbles!", under("bubbles") || under("b")),
 			tab("tasks", "Tasks"),
 			tab("agents", "Agents", under("agents") || under("forks")),
 			tab("deploy", "Deploy"),

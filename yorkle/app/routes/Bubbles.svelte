@@ -66,12 +66,12 @@
 </script>
 
 <Shell
-	crumbs={[{ label: "Repositories", href: "/repos" }, { label: repoName(repo, session.me?.names), href: `/repos/${repo}` }, { label: "Bubbles" }]}
+	crumbs={[{ label: "Repositories", href: "/repos" }, { label: repoName(repo, session.me?.names), href: `/repos/${repo}` }, { label: "Bubbles!" }]}
 	{repo}
 	{data}
 >
 	<div class="page">
-		<h1>Bubbles</h1>
+		<h1>Bubbles!</h1>
 		<p class="lede">Each bubble holds forks that changed different files, and merges them as they come. The Overview shows them as a map; here you can manage them one by one.</p>
 		{#if rd.missing}
 			<p class="muted">This repository isn't available. <a href="/repos">Go to your repositories</a>.</p>
