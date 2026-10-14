@@ -9,7 +9,7 @@
 	import ForkDetail from "../lib/ForkDetail.svelte";
 	import Shell from "../lib/Shell.svelte";
 	import AgentView from "./agents/AgentView.svelte";
-	import TaskTree from "../lib/TaskTree.svelte";
+	import TaskGraph from "../lib/TaskGraph.svelte";
 	import TaskView, { type TaskLinks } from "./tasks/TaskView.svelte";
 	import SuperagentDialog from "../lib/SuperagentDialog.svelte";
 	import { repoState } from "../lib/repoState.svelte";
@@ -203,7 +203,7 @@
 				oncontext={(at) => (menu = at)}
 			>
 			</BubbleMap>
-			<TaskTree {data} href={(id) => open("task", id)} allHref="/repos/{repo}/tasks" current={drawer?.kind === "task" ? drawer.id : undefined} />
+			<TaskGraph {data} href={(id) => open("task", id)} allHref="/repos/{repo}/tasks" current={drawer?.kind === "task" ? drawer.id : undefined} />
 			{#if drawer}
 				<aside class="drawer" bind:this={drawerEl} aria-label="Details">
 					<header class="drawer-bar">
